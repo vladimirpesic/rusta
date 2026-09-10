@@ -1,0 +1,18 @@
+---
+source: crates/rusta-edit/src/apply.rs
+expression: "report.feedback.as_deref().unwrap_or(\"<none>\")"
+---
+# 1 SEARCH/REPLACE block failed to match!
+
+## SearchReplaceNoExactMatch: This SEARCH block failed to exactly match lines in snap4.rs
+<<<<<<< SEARCH
+nope
+=======
+NADA
+>>>>>>> REPLACE
+
+The SEARCH section must exactly match an existing block of lines including all white space, comments, indentation, docstrings, etc
+
+# The other 1 SEARCH/REPLACE block were applied successfully.
+Don't re-send them.
+Just reply with fixed versions of the block above that failed to match.

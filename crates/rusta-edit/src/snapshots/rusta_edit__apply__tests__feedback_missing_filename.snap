@@ -1,0 +1,22 @@
+---
+source: crates/rusta-edit/src/apply.rs
+expression: "report.feedback.as_deref().unwrap_or(\"<none>\")"
+---
+# 1 SEARCH/REPLACE block failed to match!
+
+## MissingFilename: no filename found for a SEARCH/REPLACE block
+<<<<<<< SEARCH
+z
+=======
+w
+>>>>>>> REPLACE
+Put the filename alone on its own line directly above `<<<<<<< SEARCH`, like this:
+
+```
+src/main.rs
+<<<<<<< SEARCH
+existing lines
+=======
+replacement lines
+>>>>>>> REPLACE
+```

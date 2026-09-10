@@ -30,6 +30,9 @@ serde_json = "1"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# Snapshot testing (DEVELOPMENT_PLAN.md §10, dev-only) — failure-feedback
+# contract of rusta-edit and later validator/repomap golden files.
+insta = "1"
 # Embedded backend (DEVELOPMENT_PLAN.md §6.2, §10): pinned EXACT — the crate
 # ignores semver. Default features stay off (no OpenMP, no android stdcxx
 # flags) so every consumer only needs cmake + a C++ toolchain; rusta-llm's
