@@ -26,6 +26,26 @@ pub enum Error {
         message: String,
     },
 
+    /// The embedded backend failed to load the GGUF model (plan §6.2, §6.11).
+    #[error(
+        "failed to load GGUF model {path}: {cause}. Remedy: verify the path and file integrity; \
+         keep gpu_layers = 0 unless llama.cpp was built with GPU support (embedded-cuda)"
+    )]
+    ModelLoad {
+        /// The model path as configured.
+        path: String,
+        /// Underlying load failure.
+        cause: String,
+    },
+
+    /// Embedded inference failed — template render, tokenization, or decode
+    /// (plan §6.2). Mid-stream failures are surfaced as [`crate::StreamEvent::Failed`].
+    #[error("embedded inference failed: {cause}")]
+    Inference {
+        /// What failed, with a remedy where one exists.
+        cause: String,
+    },
+
     /// All retry attempts failed — connection errors or 5xx (plan §6.2: 3 attempts).
     #[error(
         "backend unreachable after {attempts} attempts: {cause}. \

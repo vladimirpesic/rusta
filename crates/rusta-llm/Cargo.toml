@@ -8,7 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+encoding_rs = { workspace = true, optional = true }
 futures.workspace = true
+llama-cpp-2 = { workspace = true, optional = true }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -17,6 +19,14 @@ tokio.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["net"] }
+
+[features]
+# In-process llama.cpp backend (DEVELOPMENT_PLAN.md §6.2, §10). Opt-in: the
+# default artifact stays cmake-free; enabling this builds llama.cpp.
+default = []
+embedded = ["dep:llama-cpp-2", "dep:encoding_rs", "llama-cpp-2/sampler"]
+# GPU offload: `embedded` plus llama.cpp CUDA kernels (CUDA toolkit required).
+embedded-cuda = ["embedded", "llama-cpp-2/cuda"]
 
 [lints]
 workspace = true

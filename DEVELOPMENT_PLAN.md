@@ -1,7 +1,7 @@
 # Rusta — Development Plan
 
 **Project:** Rusta — a lean, lightweight, all-encompassing AI coding agent harness for small, locally hosted coding LLMs (8B–35B parameters).
-**Version:** 1.1 (implementation-ready; revised after line-by-line review of the reference sources) · **Date:** 2026-09-10 · **Status:** Approved — implementation underway (M0 ✅, M1 ✅)
+**Version:** 1.1 (implementation-ready; revised after line-by-line review of the reference sources) · **Date:** 2026-09-10 · **Status:** Approved — implementation underway (M0 ✅, M1 ✅, M1.5 ✅)
 
 **Specification sources (authoritative):**
 
@@ -501,7 +501,7 @@ Legend: ✅ — completed; all acceptance criteria verified locally (fmt, clippy
 | --- | ------------- | ------------------------------------- |
 | M0 ✅ | Workspace skeleton: 8 crates, CI (fmt + `clippy -D warnings` + test + LoC gate), `rusta --version` | builds; `scripts/loc_budget.sh` wired into CI; deny.toml; LICENSE MIT — **verified 2026-09-10** |
 | M1 ✅ | `Backend` trait + `HttpBackend` (SSE streaming, retries, config precedence, base_url error hints, `tool_calls` passthrough) + mock SSE server test | token stream from mock server e2e; retry/backoff tested with a flaky mock; 404-hint tested; JSONL session scaffold (`§6.10` events round-trip) — **verified 2026-09-10** (11 unit + 9 e2e + 3 session tests; enum dispatch per §6.2) |
-| M1.5 | `EmbeddedBackend` (feature `embedded`): GGUF load, chat template, inference thread → mpsc, exact token counting, cancellation flag | `#[ignore]` GGUF e2e (env `RUSTA_TEST_GGUF`); template render unit tests; default build compiles without cmake |
+| M1.5 ✅ | `EmbeddedBackend` (feature `embedded`): GGUF load, chat template, inference thread → mpsc, exact token counting, cancellation flag | `#[ignore]` GGUF e2e (env `RUSTA_TEST_GGUF`) — run live against a real GGUF (3/3: load+exact counts, `complete`, streamed deltas+finish); template fallback/conversion unit tests + stop-emitter corpus; default build compiles without cmake (llama.cpp never enters the default graph) — **verified 2026-09-10** (clippy `-D warnings` clean with *and* without the feature; `llama-cpp-2 =0.1.156` pinned; single serialized inference thread; temp→top_p→greedy chain; ChatML fallback; batch-position-aware sampling fix) |
 | M2 | `rusta-edit`: parser + apply chain + failure feedback + ledger | Aider fixture corpus + malformed-input corpus green; `...`-elision tests; cross-file retry tests; failure-feedback snapshot tests; ledger auto-inject test; property test: parser never panics on arbitrary input |
 | M3 | `rusta-core`: state machine + session persistence + prompt compiler | state-transition table exhaustively tested; core prompt < 500 tokens invariant; `/resume` reconstructs ledger + state from a recorded session |
 | M4 | `rusta-repomap`: extraction, ranking, budget-fitted rendering, cache, `map_drill` | golden snapshot maps on 3 sample repos; token-fitting never exceeds budget; cache hit path tested with mtime bumps |
@@ -532,7 +532,9 @@ Legend: ✅ — completed; all acceptance criteria verified locally (fmt, clippy
   edit format) · `clap` 4 (derive) · `anyhow` + `thiserror` · `reedline` (REPL) · `futures` (streams)
 - `tree-sitter` + per-language crates (rust, python, javascript/typescript, go, c, cpp), pinned.
 - `llama-cpp-2 =0.1.156` — **optional**, feature `embedded` (+ `sampler`); `embedded-cuda` adds
-  CUDA. Pinned exact: the crate intentionally does not follow semver.
+  CUDA. Pinned exact: the crate intentionally does not follow semver. Companion: `encoding_rs 0.8`
+  (optional, same feature) — llama-cpp-2's detokenization API takes an `encoding_rs::Decoder` by
+  type, so incremental UTF-8-safe token decoding requires the direct dependency.
 - Dev-only: `insta`, `tempfile`.
 - Explicitly avoided: async-trait (native async traits / enum dispatch), networkx-style graph
   crates (PageRank is ~40 lines), axum/actix, ORM/DAL, anything pulling OpenSSL.

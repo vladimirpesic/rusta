@@ -5,10 +5,14 @@ hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 
 > **Status: pre-alpha.** Development is driven milestone-by-milestone by
 > [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) (v1.1) — the single source of truth.
-> Shipped so far: **M0 — workspace skeleton** (8 crates, CI, LoC-budget gate) and
-> **M1 — `HttpBackend`** (SSE streaming, 3-attempt retry/backoff, 404 `base_url`
-> hints, native `tool_calls` passthrough, mock-server e2e) plus **JSONL session
-> persistence** (§6.10).
+> Shipped so far: **M0 — workspace skeleton** (8 crates, CI, LoC-budget gate), **M1 —
+> `HttpBackend`** (SSE streaming, 3-attempt retry/backoff, 404 `base_url` hints, native
+> `tool_calls` passthrough, mock-server e2e) plus **JSONL session persistence** (§6.10), and
+> **M1.5 — `EmbeddedBackend`** (in-process llama.cpp via `llama-cpp-2` behind the opt-in
+> `embedded` cargo feature: exact token counts, model chat template with ChatML fallback,
+> one serialized inference thread streaming over tokio mpsc, cancellation flag; verified
+> end-to-end against a real GGUF). The default artifact stays cmake-free — no llama.cpp
+> build unless you ask for it.
 
 ## Why
 

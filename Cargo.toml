@@ -30,6 +30,16 @@ serde_json = "1"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# Embedded backend (DEVELOPMENT_PLAN.md §6.2, §10): pinned EXACT — the crate
+# ignores semver. Default features stay off (no OpenMP, no android stdcxx
+# flags) so every consumer only needs cmake + a C++ toolchain; rusta-llm's
+# `embedded` feature additionally enables its `sampler` feature.
+llama-cpp-2 = { version = "=0.1.156", default-features = false }
+# Companion of llama-cpp-2 (same version range, unified by cargo): its
+# detokenization API (`LlamaModel::token_to_piece`) takes an
+# `encoding_rs::Decoder` by type, so incremental UTF-8-safe token decoding
+# requires depending on it directly behind the same `embedded` feature.
+encoding_rs = "0.8"
 
 [workspace.lints.rust]
 # R10 (DEVELOPMENT_PLAN.md §2): no unsafe code in any core crate. The only permitted

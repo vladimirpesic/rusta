@@ -5,19 +5,26 @@
 //!
 //! * [`HttpBackend`] — an OpenAI-compatible streaming client (llama.cpp
 //!   `llama-server`, Ollama, LM Studio, vLLM). Always compiled; the default.
-//! * `EmbeddedBackend` — in-process llama.cpp via `llama-cpp-2`, behind the
-//!   `embedded` cargo feature (milestone M1.5).
+//! * [`EmbeddedBackend`] — in-process llama.cpp via `llama-cpp-2`, behind the
+//!   `embedded` cargo feature (milestone M1.5). Exact token counts; one
+//!   dedicated inference thread serializes completions.
 //!
 //! The choice is invisible to every layer above: both consume the same
 //! [`ChatRequest`] and emit the same [`StreamEvent`]s through enum dispatch on
 //! [`Backend`] — no trait objects, no async-trait (plan §10). Token estimation
-//! lives in `tokens.rs` (heuristic `ceil(chars / 3)`; exact counts when embedded).
+//! lives in `tokens.rs` (heuristic `ceil(chars / 3)`; exact counts when
+//! embedded).
 
 pub mod error;
 pub mod http;
 pub mod tokens;
 pub mod types;
 
+#[cfg(feature = "embedded")]
+pub mod embedded;
+
+#[cfg(feature = "embedded")]
+pub use embedded::{EmbeddedBackend, EmbeddedConfig};
 pub use error::Error;
 pub use http::{HttpBackend, HttpConfig};
 pub use types::{ChatRequest, FinishReason, Message, Role, StreamEvent};
@@ -26,12 +33,14 @@ use tokio::sync::mpsc;
 
 /// Runtime-selectable backend — development plan §6.2.
 ///
-/// Enum dispatch: a closed set, so adding the embedded variant in M1.5 is a
+/// Enum dispatch: a closed set, so the embedded variant (M1.5) is a
 /// compile-checked extension, not a vtable.
 pub enum Backend {
     /// OpenAI-compatible HTTP backend; the default.
     Http(HttpBackend),
-    // `Embedded` arrives in milestone M1.5 behind the `embedded` feature.
+    /// In-process llama.cpp; feature `embedded` (milestone M1.5).
+    #[cfg(feature = "embedded")]
+    Embedded(EmbeddedBackend),
 }
 
 impl Backend {
@@ -40,10 +49,18 @@ impl Backend {
         Ok(Self::Http(HttpBackend::new(config)?))
     }
 
+    /// Loads the embedded GGUF backend (feature `embedded`).
+    #[cfg(feature = "embedded")]
+    pub fn embedded(config: EmbeddedConfig) -> Result<Self, Error> {
+        Ok(Self::Embedded(EmbeddedBackend::new(config)?))
+    }
+
     /// Starts a streaming completion; returns the event channel.
     pub async fn stream(&self, request: ChatRequest) -> Result<mpsc::Receiver<StreamEvent>, Error> {
         match self {
             Backend::Http(backend) => backend.stream(request).await,
+            #[cfg(feature = "embedded")]
+            Backend::Embedded(backend) => backend.stream(request),
         }
     }
 
@@ -51,13 +68,18 @@ impl Backend {
     pub async fn complete(&self, request: ChatRequest) -> Result<String, Error> {
         match self {
             Backend::Http(backend) => backend.complete(request).await,
+            #[cfg(feature = "embedded")]
+            Backend::Embedded(backend) => backend.complete(request).await,
         }
     }
 
-    /// Token count for `text` on this backend.
+    /// Token count for `text` on this backend: exact for embedded, the
+    /// conservative §6.2 heuristic over HTTP.
     pub fn count_tokens(&self, text: &str) -> u64 {
         match self {
             Backend::Http(backend) => backend.count_tokens(text),
+            #[cfg(feature = "embedded")]
+            Backend::Embedded(backend) => backend.count_tokens(text),
         }
     }
 
@@ -65,6 +87,8 @@ impl Backend {
     pub fn context_window(&self) -> u64 {
         match self {
             Backend::Http(backend) => backend.context_window(),
+            #[cfg(feature = "embedded")]
+            Backend::Embedded(backend) => backend.context_window(),
         }
     }
 }
