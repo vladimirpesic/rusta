@@ -23,6 +23,13 @@ repository = "https://github.com/vladimirpesic/rusta"
 # The allowed dependency set is contractual: DEVELOPMENT_PLAN.md §10. Every entry
 # must earn its place — minimal feature sets, no OpenSSL, no async-trait.
 clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [workspace.lints.rust]
 # R10 (DEVELOPMENT_PLAN.md §2): no unsafe code in any core crate. The only permitted

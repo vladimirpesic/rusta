@@ -10,5 +10,11 @@
 //! * the prompt compiler;
 //! * append-only JSONL session persistence with `/resume` replay.
 //!
-//! Build status: milestone M0 (workspace skeleton). The state machine, session
-//! persistence, and prompt compiler land in M3 — DEVELOPMENT_PLAN.md §8.
+//! Build status: session persistence (§6.10) shipped with M1; the state machine
+//! and prompt compiler land in M3 — DEVELOPMENT_PLAN.md §8.
+
+pub mod error;
+pub mod session;
+
+pub use error::Error;
+pub use session::{Event, Session, Status};

@@ -5,8 +5,10 @@ hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 
 > **Status: pre-alpha.** Development is driven milestone-by-milestone by
 > [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) (v1.1) — the single source of truth.
-> Currently shipped: **M0 — workspace skeleton** (8 crates, CI, LoC-budget gate,
-> `rusta --version`).
+> Shipped so far: **M0 — workspace skeleton** (8 crates, CI, LoC-budget gate) and
+> **M1 — `HttpBackend`** (SSE streaming, 3-attempt retry/backoff, 404 `base_url`
+> hints, native `tool_calls` passthrough, mock-server e2e) plus **JSONL session
+> persistence** (§6.10).
 
 ## Why
 
