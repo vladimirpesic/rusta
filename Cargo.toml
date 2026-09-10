@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/rusta-llm",
+    "crates/rusta-edit",
+    "crates/rusta-core",
+    "crates/rusta-tools",
+    "crates/rusta-repomap",
+    "crates/rusta-dispatch",
+    "crates/rusta-validate",
+    "crates/rusta-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/vladimirpesic/rusta"
+
+[workspace.dependencies]
+# Shared dependency versions; member crates inherit with `dep.workspace = true`.
+# The allowed dependency set is contractual: DEVELOPMENT_PLAN.md §10. Every entry
+# must earn its place — minimal feature sets, no OpenSSL, no async-trait.
+clap = { version = "4", features = ["derive"] }
+
+[workspace.lints.rust]
+# R10 (DEVELOPMENT_PLAN.md §2): no unsafe code in any core crate. The only permitted
+# unsafe in the project lives inside the `llama-cpp-2` crate behind the `embedded`
+# feature, isolated from all Rusta code by the Backend trait boundary.
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

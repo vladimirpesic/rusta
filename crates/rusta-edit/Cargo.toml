@@ -1,0 +1,11 @@
+[package]
+name = "rusta-edit"
+description = "Forgiving SEARCH/REPLACE edit protocol for Rusta: multi-format parser, proven apply chain, failure-feedback contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "rusta-cli"
+description = "Rusta CLI: Aider-style REPL harness for small, locally hosted coding LLMs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rusta"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "rusta-tools"
+description = "Phase-gated tool registry for Rusta: the ten canonical agent tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

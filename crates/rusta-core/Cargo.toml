@@ -1,0 +1,11 @@
+[package]
+name = "rusta-core"
+description = "Core of Rusta: phase-gated state machine, context manager, prompt compiler, session persistence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

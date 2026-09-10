@@ -1,0 +1,11 @@
+[package]
+name = "rusta-dispatch"
+description = "Sub-coder dispatch for Rusta: isolated read-only research actors with summarized returns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
