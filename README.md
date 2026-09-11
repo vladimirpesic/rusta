@@ -30,8 +30,15 @@ hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 > exchange verbatim — with `Summary`-event replay sharing the exact live code path;
 > FAMA-lite loop mitigation: four detectors over canonical `tool|args` fingerprints
 > and validator outputs, budget-capped mitigation capsules, and Editing → Planning
-> escalation at double thresholds). The
-> default artifact stays cmake-free — no llama.cpp build unless you ask for it.
+> escalation at double thresholds), and **M6 — `rusta-validate`** (the Reflexion
+> validation gate: config-driven `sh -c` validators with per-command wall-clock
+> timeout and capped output; model-facing feedback that is deduplicated,
+> first→last-error windowed, and hard-capped at 30 lines with clickable
+> `file:line:col` locations; a three-repair bound before surfacing to the user,
+> wired to the phase machine — green exits `Verifying → Exploring`, red regresses
+> `→ Editing`; zero-test detection attaches a write-real-tests capsule even on
+> green). The default artifact stays cmake-free — no llama.cpp build unless you
+> ask for it.
 
 ## Why
 
