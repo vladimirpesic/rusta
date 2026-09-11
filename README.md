@@ -5,8 +5,8 @@ hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 
 > **Status: pre-alpha.** Development is driven milestone-by-milestone by
 > [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) (v1.1) — the single source of truth.
-> **v1 is milestone-complete: M0–M8 all green** (210 tests, clippy `-D warnings`
-> clean, `cargo doc` 0 warnings, 14,305/16,433 LoC against the 15k/20k R1 budget).
+> **v1 is milestone-complete: M0–M8 all green** (214 tests, clippy `-D warnings`
+> clean, `cargo doc` 0 warnings, 14,469/16,681 LoC against the 15k/20k R1 budget).
 > The subsystem trail: **M0 — workspace skeleton** (8 crates, CI, LoC-budget gate), **M1 —
 > `HttpBackend`** (SSE streaming, 3-attempt retry/backoff, 404 `base_url` hints, native
 > `tool_calls` passthrough, mock-server e2e) plus **JSONL session persistence** (§6.10),

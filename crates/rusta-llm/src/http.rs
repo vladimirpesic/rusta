@@ -235,6 +235,13 @@ impl HttpBackend {
     /// POSTs with retry: 3 attempts, exponential backoff (250 ms doubling to a
     /// 2 s cap) on connection errors and 5xx only; 404 yields a `base_url`
     /// remedy; other 4xx surface clipped detail (plan §6.2, §6.11).
+    ///
+    /// The retry scope is deliberate: only *establishment* failures
+    /// (`err.is_connect()`) replay — the request provably never reached the
+    /// server, so resending is safe. A failure once the connection was up
+    /// (timeout mid-body, TLS reset, DNS drop) fails fast as `Unreachable`
+    /// with a remedy instead of blindly replaying a request that may
+    /// already be in flight server-side.
     async fn post_with_retry(&self, body: &WireRequest<'_>) -> Result<reqwest::Response, Error> {
         let url = self.endpoint();
         let mut last_cause = String::from("connection error");

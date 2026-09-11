@@ -1014,6 +1014,23 @@ impl LoopGuard {
     pub fn acknowledge_escalation(&mut self) {
         self.escalation = None;
     }
+
+    /// Starts a new task: every user request earns its own detector state,
+    /// mirroring the §6.7 gate's per-request repair bound. The latched
+    /// escalation is acknowledged (its regression fired during the previous
+    /// task) and stagnation, window, and capsule state is dropped, so a
+    /// fresh request is never pre-biased by the previous one. The turn
+    /// counter keeps running — it only feeds capsule TTLs, which are empty
+    /// now anyway. Within a request the detectors accumulate as usual;
+    /// that is where loops actually run.
+    pub fn start_task(&mut self) {
+        self.acknowledge_escalation();
+        self.stagnation.clear();
+        self.recent.clear();
+        self.last_validator = None;
+        self.noop_edits = 0;
+        self.active.clear();
+    }
 }
 
 /// Applies the §6.6 escalation regression. The §6.4 transition table is
@@ -1524,6 +1541,29 @@ mod tests {
             guard.escalation().expect("latched").reason,
             "mutation_required"
         );
+    }
+
+    #[test]
+    fn start_task_gives_every_request_fresh_detector_state() {
+        // Latch an escalation and accumulate detector + capsule state.
+        let mut guard = LoopGuard::new();
+        let input = json!({"path": "src/lib.rs"});
+        for _ in 0..(2 * STAGNATION_TRIP) {
+            if guard.observe_tool_call("read", &input).escalate {
+                break;
+            }
+        }
+        assert!(guard.escalation().is_some());
+        assert!(!guard.active_capsule_names().is_empty());
+
+        // A new user request starts clean: no latch, no capsules, and the
+        // once-saturated fingerprint no longer trips on its first call.
+        guard.start_task();
+        assert!(guard.escalation().is_none());
+        assert!(guard.active_capsule_names().is_empty());
+        let trip = guard.observe_tool_call("read", &input);
+        assert!(trip.capsules.is_empty(), "{trip:?}");
+        assert!(!trip.escalate);
     }
 
     #[test]

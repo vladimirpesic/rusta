@@ -4,6 +4,8 @@
 
 use std::path::Path;
 
+use rusta_core::Status;
+
 use crate::repl::{App, Control};
 
 /// The §6.9 command table, `/help` text, and the unknown-command remedy.
@@ -66,6 +68,8 @@ pub(crate) async fn run(app: &mut App, command: &str) -> Control {
 
 /// `/add <glob>` — adds matching files to the session chat-set (§6.9): the
 /// read-before-edit ledger, which also steers repo-map ranking (§6.5).
+/// Chat files never render in the map, so the model is told about them
+/// directly via a journaled observation; it reads the content on demand.
 fn add(app: &mut App, pattern: &str) -> Control {
     if pattern.is_empty() {
         app.reporter
@@ -83,6 +87,23 @@ fn add(app: &mut App, pattern: &str) -> Control {
             editor.record_read(rel);
         }
     }
+    // The map never renders session files (§6.5 step 5), so /add must tell
+    // the model itself what just joined the set — a compact, journaled
+    // observation. Content still enters context on demand via reads.
+    let listed = matched
+        .iter()
+        .take(20)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut note = format!(
+        "/add: the user added {} file(s) to the session set: {listed}",
+        matched.len()
+    );
+    if matched.len() > 20 {
+        note.push_str(&format!(", … and {} more", matched.len() - 20));
+    }
+    app.push_observation("session", &note, Status::Ok);
     app.reporter
         .line(&format!("added {} file(s):", matched.len()));
     for rel in matched.iter().take(20) {
@@ -340,9 +361,10 @@ fn resume(app: &mut App, arg: &str) -> Control {
 
 // -------------------------------------------------------------- glob support
 
-/// Walks `root` (skipping `.git`, `target`, `node_modules`, and hidden
-/// entries) collecting `/`-separated relative paths matching `pattern`,
-/// capped at 1,000 entries (the §6.1 glob cap).
+/// Walks `root` (skipping `.git`, `target`, `node_modules`, `dist`, and
+/// hidden entries — the same ignore set as the repo map) collecting
+/// `/`-separated relative paths matching `pattern`, capped at 1,000
+/// entries (the §6.1 glob cap).
 fn walk_matching(root: &Path, pattern: &str) -> Vec<String> {
     const CAP: usize = 1_000;
     let mut out = Vec::new();
@@ -354,7 +376,8 @@ fn walk_matching(root: &Path, pattern: &str) -> Vec<String> {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with('.') || name == "target" || name == "node_modules" {
+            if name.starts_with('.') || name == "target" || name == "node_modules" || name == "dist"
+            {
                 continue;
             }
             let path = entry.path();
@@ -448,12 +471,14 @@ mod tests {
         }
         std::fs::create_dir_all(root.join("target/debug")).expect("mkdir");
         std::fs::write(root.join("target/debug/skip.rs"), "x\n").expect("write");
+        std::fs::create_dir_all(root.join("dist")).expect("mkdir");
+        std::fs::write(root.join("dist/gen.rs"), "x\n").expect("write");
 
         let found = walk_matching(root, "**/*.rs");
         assert_eq!(
             found,
             ["src/deep/mod.rs", "src/lib.rs"],
-            "sorted, no hidden"
+            "sorted, no hidden, no build output (dist skips like the map)"
         );
         assert_eq!(walk_matching(root, "*.md"), ["README.md"]);
         assert!(walk_matching(root, "*.toml").is_empty());

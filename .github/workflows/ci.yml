@@ -37,6 +37,18 @@ jobs:
       - name: LoC budget gate (R1, plan §12)
         run: bash scripts/loc_budget.sh
 
+  embedded:
+    name: embedded feature (llama.cpp)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # llama-cpp-2's cmake build needs cmake + a C++ toolchain, both
+      # preinstalled on ubuntu-latest runners.
+      - name: Check
+        run: cargo check -p rusta-llm --features embedded
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest

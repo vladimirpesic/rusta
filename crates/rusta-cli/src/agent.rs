@@ -264,6 +264,12 @@ impl App {
     /// prose-only answer ends the request, the §6.7 gate finishes it, or the
     /// turn cap forces a wrap-up.
     pub async fn submit(&mut self, request: &str) {
+        // Every user request is its own task: a fresh §6.7 repair bound
+        // (`Gate::reset`) and fresh §6.6 detector state
+        // (`LoopGuard::start_task`) — the previous request's counters never
+        // bias the new one. Within a request both accumulate as usual.
+        self.gate.reset();
+        self.guard.start_task();
         let summary = request_summary(request);
         let _ = self.session.record(Event::UserMessage {
             content: request.to_owned(),
@@ -639,7 +645,7 @@ impl App {
 
     /// Pushes a synthetic observation into history + session (recorded as a
     /// `ToolCall`/`ToolResult` pair so `/resume` replays it verbatim, §6.10).
-    fn push_observation(&mut self, name: &str, content: &str, status: Status) {
+    pub(crate) fn push_observation(&mut self, name: &str, content: &str, status: Status) {
         let _ = self.session.record(Event::ToolCall {
             name: name.to_owned(),
             input: Value::Object(serde_json::Map::new()),

@@ -292,6 +292,90 @@ async fn edit_loop_validates_repairs_and_commits_then_undo_reverts() {
     assert!(undo_text.contains("reverted commit"), "{undo_text}");
 }
 
+/// F1 wiring: every user request earns its own §6.7 repair bound — after a
+/// surfaced (budget-exhausted) failure, the next request repairs again.
+#[tokio::test]
+async fn every_request_earns_a_fresh_repair_budget() {
+    if !git_present() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let dir = init_repo();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    std::fs::write(root.join("src/lib.rs"), "fn a() {}\n").expect("write");
+
+    // The validator always fails, but its output echoes the file's current
+    // line — so §6.6 detector (c) never sees the same fingerprint twice.
+    let script = |request: u32| -> String {
+        let edit = |from: &str, to: &str| {
+            format!(
+                "src/lib.rs\n<<<<<<< SEARCH\nfn {from}() {{}}\n=======\nfn {to}() {{}}\n>>>>>>> REPLACE\n"
+            )
+        };
+        match request {
+            1 => "Plan:\n1. rename fn a step by step".to_owned(),
+            2 => edit("a", "b"),
+            3 => edit("b", "c"),
+            4 => edit("c", "d"),
+            5 => edit("d", "e"),
+            6 => edit("e", "f"),
+            _ => "giving up on the rename for now".to_owned(),
+        }
+    };
+    let mock = Mock::start(script);
+    let capture = Capture::default();
+    let config = Config::parse(&format!(
+        "[backend]\nbase_url = \"http://127.0.0.1:{}/v1\"\n\
+         [agent]\nmax_turns = 16\nauto_approve = true\n\
+         [validate]\ncommands = [\"grep fn src/lib.rs; exit 1\"]\n",
+        mock.port
+    ))
+    .expect("config");
+    let mut app = App::new(
+        config,
+        &Overrides::default(),
+        root.to_path_buf(),
+        root.join(".rusta-test-session.jsonl"),
+        Reporter::new(Box::new(capture.clone())),
+        Mode::Repl,
+    )
+    .expect("app")
+    .with_plan_gate(Box::new(AutoGate));
+
+    // Request 1 burns the whole bound: red → repair(2) → repair(1) →
+    // repair(0) → surface. Request 2 starts on a fresh budget.
+    app.handle_line("rename fn a to fn f in src/lib.rs").await;
+    app.handle_line("keep trying the rename").await;
+
+    assert_eq!(
+        mock.hits(),
+        7,
+        "plan + 4 reds, then fresh-budget repair + wrap-up"
+    );
+    let lib = std::fs::read_to_string(root.join("src/lib.rs")).expect("read");
+    assert_eq!(lib, "fn f() {}\n", "the fresh-budget repair landed");
+
+    // Both requests got a *first* repair round ("attempts left: 2").
+    let first_rounds = app
+        .session
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                rusta_core::Event::ToolResult { summary, .. }
+                    if summary.contains("Repair attempts left: 2.")
+            )
+        })
+        .count();
+    assert_eq!(first_rounds, 2, "each request earned its own bound");
+
+    // Exhaustion surfaced to the user once — during the first request.
+    let text = capture.text();
+    assert_eq!(text.matches("repair budget exhausted").count(), 1, "{text}");
+}
+
 #[tokio::test]
 async fn turn_cap_forces_a_wrap_up_and_returns_control() {
     let dir = tempfile::tempdir().expect("tempdir");

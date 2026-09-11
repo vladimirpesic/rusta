@@ -139,8 +139,9 @@ pub(crate) fn rank_files(
 }
 
 /// Boosts (§6.5 step 3): ×10 user-mentioned identifier; ×10 snake/kebab/
-/// camelCase with length ≥ 8; ×0.1 leading underscore. (×0.1 for `|D| > 5`
-/// lives in [`rank_files`].)
+/// camelCase with length ≥ 8 characters (counted in `char`s, not bytes —
+/// identifiers may be non-ASCII); ×0.1 leading underscore. (×0.1 for
+/// `|D| > 5` lives in [`rank_files`].)
 fn boost_multiplier(ident: &str, mentions: &Mentions) -> f64 {
     let mut mul = 1.0;
     if mentions.idents.contains(ident) {
@@ -150,7 +151,7 @@ fn boost_multiplier(ident: &str, mentions: &Mentions) -> f64 {
     let is_snake = ident.contains('_') && alphabetic;
     let is_kebab = ident.contains('-') && alphabetic;
     let is_camel = ident.chars().any(char::is_uppercase) && ident.chars().any(char::is_lowercase);
-    if (is_snake || is_kebab || is_camel) && ident.len() >= 8 {
+    if (is_snake || is_kebab || is_camel) && ident.chars().count() >= 8 {
         mul *= 10.0;
     }
     if ident.starts_with('_') {
@@ -273,4 +274,33 @@ fn distribute_rank<'a>(
         file.lois.dedup();
     }
     files
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boost_multiplier_counts_characters_not_bytes() {
+        let mentions = Mentions::default();
+        // No case mix, no separator: neutral, whatever the length.
+        assert_eq!(boost_multiplier("plain", &mentions), 1.0);
+        assert_eq!(boost_multiplier("abcdefghij", &mentions), 1.0);
+        // Multi-case/snake with ≥ 8 characters: ×10.
+        assert_eq!(boost_multiplier("Abcdefgh", &mentions), 10.0);
+        assert_eq!(boost_multiplier("some_snake_name", &mentions), 10.0);
+        // Multi-case but fewer than 8 characters: no boost — even when the
+        // byte length crosses 8 (non-ASCII identifiers must not trip a
+        // byte-count check). "AbcdΩfg" is 7 chars / 8 bytes.
+        assert_eq!(boost_multiplier("Abc", &mentions), 1.0);
+        assert_eq!(boost_multiplier("AbcdΩfg", &mentions), 1.0);
+        // Exactly 8 characters still boosts ("Ωbcdefgh" is 8 chars / 9 bytes).
+        assert_eq!(boost_multiplier("Ωbcdefgh", &mentions), 10.0);
+        // Leading underscore: ×0.1 (and too short for the shape boost).
+        assert_eq!(boost_multiplier("_x", &mentions), 0.1);
+        // A user mention stacks with the shape boost.
+        let mut mentioned = Mentions::default();
+        mentioned.idents.insert("some_snake_name".to_owned());
+        assert_eq!(boost_multiplier("some_snake_name", &mentioned), 100.0);
+    }
 }

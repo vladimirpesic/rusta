@@ -55,7 +55,10 @@ impl Git {
             .unwrap_or_else(|| self.root.clone())
     }
 
-    /// Commits exactly `paths` with `message`. Returns the commit SHA, or
+    /// Commits exactly `paths` with `message` (`git commit --only --`):
+    /// the batch paths are taken from the working tree and nothing else is
+    /// committed — unrelated work the user staged beforehand stays staged,
+    /// never absorbed into a `rusta:` commit. Returns the commit SHA, or
     /// `None` when git is unavailable or the commit failed — the edit itself
     /// already succeeded, so a failed commit is reported, never fatal.
     pub fn commit(&self, paths: &[String], message: &str) -> Option<String> {
@@ -73,9 +76,15 @@ impl Git {
         }
         let commit = Command::new("git")
             .arg("commit")
+            // `--only -- <paths>` scopes the commit to the batch: the index
+            // may hold unrelated pre-staged user work, and it must never be
+            // swept into a `rusta:` commit (§6.9 commits edit batches only).
+            .arg("--only")
             .arg("-m")
             .arg(message)
             .arg("--quiet")
+            .arg("--")
+            .args(paths)
             .current_dir(&self.root)
             .output();
         if !commit.is_ok_and(|out| out.status.success()) {
@@ -274,6 +283,47 @@ mod tests {
             git.head().as_deref(),
             Some(user_sha.as_str()),
             "parent restored"
+        );
+    }
+
+    #[test]
+    fn commit_scopes_to_the_batch_not_the_index() {
+        let dir = init_repo();
+        let root = dir.path();
+        // Unrelated user work, staged before the agent's edit lands.
+        std::fs::write(root.join("staged.txt"), "user work\n").expect("write");
+        assert!(
+            Command::new("git")
+                .args(["add", "staged.txt"])
+                .current_dir(root)
+                .output()
+                .expect("stage")
+                .status
+                .success()
+        );
+        std::fs::write(root.join("a.txt"), "one\n").expect("write");
+
+        let git = Git::open(root);
+        let sha = git
+            .commit(&["a.txt".to_owned()], "rusta: batch")
+            .expect("commit");
+
+        // The commit contains exactly the batch path …
+        let names = run(
+            root,
+            ["show", "--name-only", "--pretty=format:", sha.as_str()],
+        )
+        .expect("show");
+        assert_eq!(
+            names.split_whitespace().collect::<Vec<_>>(),
+            vec!["a.txt"],
+            "{names}"
+        );
+        // … and the user's staged work is untouched — still staged.
+        let status = run(root, ["status", "--porcelain"]).expect("status");
+        assert!(
+            status.lines().any(|line| line.starts_with("A  staged.txt")),
+            "{status}"
         );
     }
 

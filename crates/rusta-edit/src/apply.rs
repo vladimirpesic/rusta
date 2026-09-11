@@ -862,10 +862,16 @@ fn block_word(n: usize) -> &'static str {
 
 /// Best matching window of file lines for a failed SEARCH (Aider's
 /// `find_similar_lines`, threshold 0.6): slide a window the size of the
-/// SEARCH over the file lines, score by aligned-line equality (a faithful,
-/// deterministic stand-in for difflib's ratio on equal-length windows),
-/// and when the first/last lines already agree return the window bare —
-/// otherwise pad ±5 lines of context.
+/// SEARCH over the file lines, and when the first/last lines already agree
+/// return the window bare — otherwise pad ±5 lines of context.
+///
+/// Deviation, deliberate: Aider scores each window with difflib's
+/// `SequenceMatcher.ratio`; this port scores aligned-line equality
+/// (`equal lines / n`). The equality score is the exactly-matched-line
+/// component of the ratio — deterministic and allocation-free — and the
+/// 0.6 threshold plus the §7 corpus and snapshot tests pin the chosen
+/// behavior; a character-level matcher would re-bless all of that for
+/// near-miss cases the corpus does not exercise.
 fn best_window(search: &str, content: &str) -> Option<String> {
     let search_lines: Vec<&str> = search.lines().collect();
     let content_lines: Vec<&str> = content.lines().collect();
