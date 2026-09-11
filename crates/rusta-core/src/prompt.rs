@@ -8,7 +8,7 @@
 //! rusta-llm's conservative `ceil(chars / 3)` estimator, so the measured
 //! invariant is stricter than any real tokenizer.
 //!
-//! Tool one-liners come from [`Tool::one_liner`] — the registry and the
+//! Tool one-liners come from `Tool::one_liner` — the registry and the
 //! prompt are the same list and cannot drift apart.
 
 use rusta_llm::Message;

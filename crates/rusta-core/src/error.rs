@@ -24,4 +24,13 @@ pub enum Error {
         /// The illegal scaffold event.
         event: String,
     },
+    /// A JIT skill card could not be loaded; the remedy is in the message
+    /// (plan §6.6 — cards fail loudly at load, never silently at injection).
+    #[error("skill card {path}: {cause}")]
+    SkillCard {
+        /// The offending card file.
+        path: String,
+        /// What could not be parsed or validated.
+        cause: String,
+    },
 }

@@ -8,17 +8,22 @@
 //!   simply not registered in read-only states;
 //! * the prompt compiler ([`prompt`]): a sub-500-token core prompt (CI
 //!   invariant) plus the §6.1 observation formatter;
+//! * the context manager ([`context`]): JIT skill cards, episodic history
+//!   compression, and FAMA-lite loop mitigation (§6.6) — everything the
+//!   model might need that must *not* be resident in the core prompt;
 //! * append-only JSONL session persistence ([`session`]) with `/resume`
 //!   replay that reconstructs messages, ledger, undo stack, and phase.
-//!
-//! Context management (JIT cards, compression, loop mitigation) is §6.6's
-//! second half and lands with milestone M5 — DEVELOPMENT_PLAN.md §8.
 
+pub mod context;
 pub mod error;
 pub mod prompt;
 pub mod session;
 pub mod state;
 
+pub use context::{
+    CARD_TOKEN_BUDGET, Capsule, CardDeck, CardKind, Compression, Compressor, Escalation, LoopGuard,
+    MAX_INJECTED_CARDS, SkillCard, SummaryPlan, Trip, capsule, regress_for_escalation,
+};
 pub use error::Error;
 pub use prompt::{CORE_PROMPT_TOKEN_BUDGET, core_prompt, core_prompt_tokens, observation};
 pub use session::{Event, Reconstructed, Session, Status};

@@ -41,7 +41,7 @@ const SHELL_FENCES: [&str; 12] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditBlock {
     /// Candidate filename lines gathered from up to three lines above the
-    /// HEAD marker, **nearest first**, after [`strip_filename`] cleanup.
+    /// HEAD marker, **nearest first**, after `strip_filename` cleanup.
     /// Empty when the block named no file (continuation applies at apply time).
     pub candidates: Vec<String>,
     /// SEARCH text, exactly as the model wrote it (line endings normalized

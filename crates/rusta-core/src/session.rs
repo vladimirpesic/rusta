@@ -13,7 +13,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use rusta_edit::{Ledger, UndoEntry, UndoStack};
-use rusta_llm::{Message, Role};
+use rusta_llm::Message;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
@@ -334,10 +334,10 @@ impl Session {
                     phase = *to;
                 }
                 Event::Summary { covers_turns, text } => {
-                    drop_oldest_turns(&mut messages, *covers_turns);
-                    messages.push(Message::assistant(format!(
-                        "Summary of earlier turns:\n{text}"
-                    )));
+                    // The same code path as live history compression (§6.6):
+                    // replay reproduces the model-visible context
+                    // byte-for-byte, keepers included.
+                    crate::context::Compressor::apply_summary(&mut messages, *covers_turns, text);
                 }
                 Event::Dispatch { label, report } => {
                     messages.push(Message::user(format!(
@@ -414,28 +414,6 @@ fn load_sidecar(path: &Path) -> Result<Vec<DiffRecord>, Error> {
     Ok(records)
 }
 
-/// Drops the oldest `turns` conversation turns (a turn = one user message
-/// plus everything up to the next user message) — replaying a `Summary`
-/// event reproduces the live context, where those turns were compressed
-/// away. Fewer turns than requested drops everything.
-fn drop_oldest_turns(messages: &mut Vec<Message>, turns: u32) {
-    if turns == 0 {
-        return;
-    }
-    let mut seen = 0usize;
-    let mut split = messages.len();
-    for (index, message) in messages.iter().enumerate() {
-        if message.role == Role::User {
-            seen += 1;
-            if seen > turns as usize {
-                split = index;
-                break;
-            }
-        }
-    }
-    messages.drain(..split);
-}
-
 /// Parses an existing JSONL log, rejecting corrupt lines with a line-numbered
 /// remedy (plan §6.11).
 fn replay(path: &Path) -> Result<Vec<Event>, Error> {
@@ -459,6 +437,7 @@ fn replay(path: &Path) -> Result<Vec<Event>, Error> {
 mod tests {
     use super::Event::*;
     use super::*;
+    use rusta_llm::Role;
 
     #[test]
     fn records_and_replays_round_trip() {
@@ -543,39 +522,50 @@ mod tests {
     }
 
     #[test]
-    fn drop_oldest_turns_drops_user_anchored_turns() {
-        let messages = |parts: &[(Role, &str)]| -> Vec<Message> {
-            parts
-                .iter()
-                .map(|&(role, content)| Message::new(role, content))
-                .collect()
-        };
-        let mut turns = messages(&[
-            (Role::User, "t1"),
-            (Role::Assistant, "a1"),
-            (Role::User, "t2"),
-            (Role::Assistant, "a2"),
-            (Role::User, "t3"),
-        ]);
-        drop_oldest_turns(&mut turns, 1);
+    fn summary_event_replays_through_the_live_compression_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("session.jsonl");
+        {
+            let mut session = Session::open(&path).expect("open");
+            session
+                .record(UserMessage {
+                    content: "fix the bug".into(),
+                })
+                .expect("record");
+            session
+                .record(AssistantMessage {
+                    content: "src/lib.rs\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"
+                        .into(),
+                })
+                .expect("record");
+            session
+                .record(AssistantMessage {
+                    content: "done thinking".into(),
+                })
+                .expect("record");
+            session
+                .record(Summary {
+                    covers_turns: 1,
+                    text: "1. user: fix the bug; edit src/lib.rs".into(),
+                })
+                .expect("record");
+        }
+        let session = Session::open(&path).expect("reopen");
+        let context = session.replay_context().expect("replay");
+        // The compressed turn's edit block survives verbatim, after the
+        // episodic summary; the kept turn follows untouched.
+        assert_eq!(context.messages.len(), 3);
         assert_eq!(
-            turns,
-            messages(&[
-                (Role::User, "t2"),
-                (Role::Assistant, "a2"),
-                (Role::User, "t3"),
-            ])
+            context.messages[0].content,
+            "Summary of earlier turns:\n1. user: fix the bug; edit src/lib.rs"
         );
-
-        // More turns than exist drops everything.
-        let mut turns = messages(&[(Role::User, "t1"), (Role::Assistant, "a1")]);
-        drop_oldest_turns(&mut turns, 5);
-        assert!(turns.is_empty());
-
-        // Zero is a no-op.
-        let mut turns = messages(&[(Role::User, "t1")]);
-        drop_oldest_turns(&mut turns, 0);
-        assert_eq!(turns.len(), 1);
+        assert_eq!(context.messages[0].role, Role::Assistant);
+        assert_eq!(
+            context.messages[1].content,
+            "src/lib.rs\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"
+        );
+        assert_eq!(context.messages[1].role, Role::Assistant);
+        assert_eq!(context.messages[2].content, "done thinking");
     }
 
     #[test]

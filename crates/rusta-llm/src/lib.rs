@@ -5,7 +5,7 @@
 //!
 //! * [`HttpBackend`] — an OpenAI-compatible streaming client (llama.cpp
 //!   `llama-server`, Ollama, LM Studio, vLLM). Always compiled; the default.
-//! * [`EmbeddedBackend`] — in-process llama.cpp via `llama-cpp-2`, behind the
+//! * `EmbeddedBackend` — in-process llama.cpp via `llama-cpp-2`, behind the
 //!   `embedded` cargo feature (milestone M1.5). Exact token counts; one
 //!   dedicated inference thread serializes completions.
 //!
