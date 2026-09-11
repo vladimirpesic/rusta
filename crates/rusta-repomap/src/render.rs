@@ -12,8 +12,10 @@
 use crate::graph::RankedFile;
 use std::collections::BTreeSet;
 
-/// Context lines around each definition (§6.5 step 5).
-const CONTEXT_LINES: usize = 8;
+/// Context lines around each definition (§6.5 step 5). Shared with `drill`'s
+/// definition padding — zooming into a def shows the same neighborhood the
+/// map overview did.
+pub(crate) const CONTEXT_LINES: usize = 8;
 /// Hard cap on rendered line length in chars (§6.5 step 5).
 const MAX_LINE_LEN: usize = 100;
 /// Lines sampled for token-cost estimation (§6.5 step 6).

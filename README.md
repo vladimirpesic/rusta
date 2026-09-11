@@ -22,7 +22,8 @@ hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 > seven languages over pinned grammars, def/ref graph with personalized PageRank
 > ranking, identifier word-scan backfill for def-only languages, middle-drop
 > token-budget-fitted rendering, mtime-keyed in-memory tag cache, and the
-> `map_drill` definition-span/line-window API), and
+> `map_drill` definition-span (±8-line context padding, shared with the map's
+> render constant) / exact line-window API), and
 > **M5 — `rusta-core` context manager** (JIT skill cards from `skills/*.md` with a
 > strict little-coder front-matter schema and ≤ 120-token bodies, ≤ 2 cards injected
 > per request as a trailing system note; episodic history compression past 60% of the

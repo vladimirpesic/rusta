@@ -138,10 +138,12 @@ fn bump_mtime(path: std::path::PathBuf) {
 }
 
 #[test]
-fn map_drill_returns_full_spans_windows_and_errors() {
+fn map_drill_returns_padded_spans_exact_windows_and_errors() {
     let repo = sample_repo("rust");
     let root = repo.path();
 
+    // Span 4-6 of a 6-line file, ±8 clamped at both edges → the whole file:
+    // the `use` anchors above the def ride along.
     let def = drill(
         root,
         DrillRequest::Definition {
@@ -150,9 +152,24 @@ fn map_drill_returns_full_spans_windows_and_errors() {
         },
     )
     .expect("drill def");
-    assert!(def.starts_with("src/b.rs:4-6"), "full span header: {def}");
+    assert!(def.starts_with("src/b.rs:1-6"), "padded span header: {def}");
     assert!(def.contains("pub fn render_invoice"));
+    assert!(def.contains("use crate::a::calculate_total;"));
 
+    // Span 1-3 of a 7-line file: bottom-clamped to EOF, boundary lines after
+    // the def (the struct below) included.
+    let top = drill(
+        root,
+        DrillRequest::Definition {
+            path: "src/a.rs",
+            name: "calculate_total",
+        },
+    )
+    .expect("drill top def");
+    assert!(top.starts_with("src/a.rs:1-7"), "bottom clamp: {top}");
+    assert!(top.contains("pub struct InvoiceRecord {"));
+
+    // Model-chosen windows are exact — never padded.
     let window = drill(
         root,
         DrillRequest::Window {
@@ -164,6 +181,7 @@ fn map_drill_returns_full_spans_windows_and_errors() {
     .expect("drill window");
     assert!(window.starts_with("src/a.rs:1-2"));
     assert!(window.contains("calculate_total"));
+    assert_eq!(window.lines().count(), 3, "header + exactly 2 lines");
 
     assert_eq!(
         drill(

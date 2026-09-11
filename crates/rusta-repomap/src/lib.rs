@@ -17,9 +17,10 @@
 //!    (`render`);
 //! 6. an in-memory `(path, mtime, size, query_version)` cache (`cache`).
 //!
-//! [`drill`] backs the `map_drill` tool (§6.4): a definition's full span or a
-//! line window of a file. The M7 tool registry wires it to the session and
-//! the read-before-edit ledger.
+//! [`drill`] backs the `map_drill` tool (§6.4): a definition's full span
+//! padded with the map's ±8 context lines, or an exact line window of a
+//! file. The M7 tool registry wires it to the session and the
+//! read-before-edit ledger.
 
 mod cache;
 mod discover;
