@@ -8,11 +8,15 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+rusta-edit = { path = "../rusta-edit" }
+rusta-llm = { path = "../rusta-llm" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+rusta-edit = { path = "../rusta-edit" }
+rusta-llm = { path = "../rusta-llm" }
 tempfile.workspace = true
 
 [lints]

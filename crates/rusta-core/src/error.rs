@@ -14,4 +14,14 @@ pub enum Error {
         /// What could not be parsed.
         cause: String,
     },
+    /// A scaffold event fired in a phase where it is not legal. The agent
+    /// loop only fires phase-legal events, so this is a loud programming
+    /// guard — never model-facing.
+    #[error("invalid state transition: {event} cannot fire in {from}")]
+    InvalidTransition {
+        /// The phase the machine was in.
+        from: String,
+        /// The illegal scaffold event.
+        event: String,
+    },
 }

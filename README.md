@@ -11,10 +11,14 @@ hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 > **M1.5 — `EmbeddedBackend`** (in-process llama.cpp via `llama-cpp-2` behind the opt-in
 > `embedded` cargo feature: exact token counts, model chat template with ChatML fallback,
 > one serialized inference thread streaming over tokio mpsc, cancellation flag; verified
-> end-to-end against a real GGUF), and **M2 — `rusta-edit`** (forgiving SEARCH/REPLACE
+> end-to-end against a real GGUF), **M2 — `rusta-edit`** (forgiving SEARCH/REPLACE
 > parser, Aider-proven apply chain with `...` elision and cross-file retry, failure
-> feedback contract, undo journal, read-before-edit ledger). The default artifact stays
-> cmake-free — no llama.cpp build unless you ask for it.
+> feedback contract, undo journal, read-before-edit ledger), and **M3 — `rusta-core`**
+> (phase-gated state machine `Exploring → Planning → Editing → Verifying` with an
+> exhaustively pinned transition table and phase-gated tool registry, sub-500-token
+> core prompt compiler, and `/resume` replay reconstructing messages, ledger, undo
+> journal, and phase from the JSONL log plus its hash-keyed diffs sidecar). The
+> default artifact stays cmake-free — no llama.cpp build unless you ask for it.
 
 ## Why
 

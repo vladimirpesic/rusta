@@ -90,6 +90,13 @@ impl UndoStack {
         }
         Ok(Some(entry))
     }
+
+    /// Rebuilds a journal from recorded entries, oldest first — the
+    /// `/resume` path (plan §6.10): session replay reconstructs the undo
+    /// stack from the event log and its diffs sidecar.
+    pub fn from_entries(entries: Vec<UndoEntry>) -> Self {
+        Self { entries }
+    }
 }
 
 /// Why a block failed to apply.
@@ -884,6 +891,25 @@ mod tests {
     /// A canonical one-block response naming `rel`.
     fn response(rel: &str, original: &str, updated: &str) -> String {
         format!("{rel}\n<<<<<<< SEARCH\n{original}=======\n{updated}>>>>>>> REPLACE\n")
+    }
+
+    #[test]
+    fn from_entries_rebuilds_a_working_journal() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        write_file(root, "src/lib.rs", "final\n");
+        let entries = vec![UndoEntry {
+            path: PathBuf::from("src/lib.rs"),
+            existed: true,
+            before: "initial\n".into(),
+            after: "final\n".into(),
+        }];
+        let mut journal = UndoStack::from_entries(entries);
+        assert_eq!(journal.pending().len(), 1);
+        let undone = journal.undo_last(root).expect("undo").expect("entry");
+        assert_eq!(undone.before, "initial\n");
+        assert_eq!(read_file(root, "src/lib.rs"), "initial\n");
+        assert!(journal.is_empty());
     }
 
     #[test]
