@@ -17,7 +17,12 @@ hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 > (phase-gated state machine `Exploring → Planning → Editing → Verifying` with an
 > exhaustively pinned transition table and phase-gated tool registry, sub-500-token
 > core prompt compiler, and `/resume` replay reconstructing messages, ledger, undo
-> journal, and phase from the JSONL log plus its hash-keyed diffs sidecar). The
+> journal, and phase from the JSONL log plus its hash-keyed diffs sidecar), and
+> **M4 — `rusta-repomap`** (tree-sitter repo map: Aider `.scm` tag queries for
+> seven languages over pinned grammars, def/ref graph with personalized PageRank
+> ranking, identifier word-scan backfill for def-only languages, middle-drop
+> token-budget-fitted rendering, mtime-keyed in-memory tag cache, and the
+> `map_drill` definition-span/line-window API). The
 > default artifact stays cmake-free — no llama.cpp build unless you ask for it.
 
 ## Why

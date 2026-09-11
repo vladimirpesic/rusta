@@ -1,0 +1,32 @@
+---
+source: crates/rusta-repomap/tests/repomap.rs
+expression: map
+---
+
+src/b.rs:
+use crate::a::calculate_total;
+use crate::a::InvoiceRecord;
+
+pub fn render_invoice(rec: &InvoiceRecord) -> String {
+    format!("{} {}", rec.id, calculate_total(&[rec.id]))
+}
+
+src/a.rs:
+pub fn calculate_total(items: &[u32]) -> u32 {
+    items.iter().sum()
+}
+
+pub struct InvoiceRecord {
+    pub id: u32,
+}
+
+src/main.rs:
+mod a;
+mod b;
+
+fn main() {
+    let rec = a::InvoiceRecord { id: 7 };
+    let text = b::render_invoice(&rec);
+    let total = a::calculate_total(&[1, 2]);
+    println!("{text} {total}");
+}
