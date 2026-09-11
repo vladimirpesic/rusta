@@ -5,7 +5,9 @@ hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 
 > **Status: pre-alpha.** Development is driven milestone-by-milestone by
 > [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) (v1.1) — the single source of truth.
-> Shipped so far: **M0 — workspace skeleton** (8 crates, CI, LoC-budget gate), **M1 —
+> **v1 is milestone-complete: M0–M8 all green** (210 tests, clippy `-D warnings`
+> clean, `cargo doc` 0 warnings, 14,305/16,433 LoC against the 15k/20k R1 budget).
+> The subsystem trail: **M0 — workspace skeleton** (8 crates, CI, LoC-budget gate), **M1 —
 > `HttpBackend`** (SSE streaming, 3-attempt retry/backoff, 404 `base_url` hints, native
 > `tool_calls` passthrough, mock-server e2e) plus **JSONL session persistence** (§6.10),
 > **M1.5 — `EmbeddedBackend`** (in-process llama.cpp via `llama-cpp-2` behind the opt-in
@@ -48,8 +50,37 @@ hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 > isolated read-only sub-coders — up to four parallel research tasks in fresh
 > contexts with a 6-turn budget, only their labeled ≤ 400-token reports
 > re-entering the main context, and requests serialized on the embedded
-> backend's single inference thread). The default artifact stays cmake-free —
-> no llama.cpp build unless you ask for it.
+> backend's single inference thread), and **M8 — `rusta-cli`** (the Aider-style
+> host: the §6.1 turn lifecycle with document-order tool/edit execution, native
+> `tool_calls` passthrough, turn cap with wrap-up, Ctrl-C abort; the §6.4 plan
+> gate (y/n; `/auto` approves); §6.7 Reflexion repair rounds; §6.9 git
+> auto-commit per applied batch (`rusta: <summary>`) and `/undo` that restores
+> files via the journal and reverts the commit — never an unrelated one;
+> `rusta.toml` discovery (cwd → parents → `~/.rusta/`) with flag-over-file
+> precedence; append-only sessions at `~/.rusta/sessions/`; a reedline REPL
+> with all 13 slash commands incl. `/resume` full-state replay; and the
+> non-interactive `-c` mode where shell is denied by default). The default
+> artifact stays cmake-free — no llama.cpp build unless you ask for it.
+
+## Quickstart
+
+```sh
+cargo build --release
+
+# point at any OpenAI-compatible server (llama-server :8080/v1, Ollama :11434/v1, LM Studio :1234/v1)
+cp rusta.toml.example rusta.toml   # edit [backend] base_url + [validate] commands
+
+./target/release/rusta            # interactive REPL — /help lists commands
+./target/release/rusta -c "fix the failing test in src/lib.rs"   # one shot, then exit
+cargo build --release --features embedded   # rusta-full: in-process llama.cpp
+```
+
+The REPL runs the full loop: model turns stream live, tool calls and
+SEARCH/REPLACE edits execute through the phase-gated registry, each applied
+batch auto-commits and runs the configured validators, red rounds feed the
+model a capped repair report before you see anything, and `/undo` reverts the
+last batch (file + commit). Sessions are append-only JSONL under
+`~/.rusta/sessions/` — `/resume <file>` continues where you left off.
 
 ## Why
 

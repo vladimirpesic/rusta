@@ -52,6 +52,13 @@ impl Ledger {
         self.entries.get(&canonical(path))
     }
 
+    /// Removes `path` from the session read-set — `/drop` (plan §6.9). True
+    /// when the file was present. Auto-inject re-protects a later edit of the
+    /// dropped file, so dropping is always safe.
+    pub fn drop_read(&mut self, path: &Path) -> bool {
+        self.entries.remove(&canonical(path)).is_some()
+    }
+
     /// All read files in deterministic (sorted) order — the session read-set
     /// used by filename resolution and cross-file retry.
     pub fn read_set(&self) -> impl Iterator<Item = &PathBuf> {
@@ -107,6 +114,18 @@ mod tests {
         ledger.record_read(Path::new("./src/lib.rs"));
         assert!(ledger.has_read(Path::new("src/lib.rs")));
         assert!(ledger.has_read(Path::new("./src/lib.rs")));
+    }
+
+    #[test]
+    fn drop_read_removes_only_the_named_file() {
+        let mut ledger = Ledger::new();
+        ledger.record_read(Path::new("src/lib.rs"));
+        ledger.record_read(Path::new("src/main.rs"));
+
+        assert!(ledger.drop_read(Path::new("./src/lib.rs"))); // canonical spelling
+        assert!(!ledger.has_read(Path::new("src/lib.rs")));
+        assert!(ledger.has_read(Path::new("src/main.rs")));
+        assert!(!ledger.drop_read(Path::new("src/lib.rs"))); // already gone
     }
 
     #[test]

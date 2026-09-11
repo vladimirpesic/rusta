@@ -7,12 +7,39 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "rusta_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rusta"
 path = "src/main.rs"
 
+[features]
+# The `rusta-full` artifact (plan §13): compiles the in-process llama.cpp
+# backend so `[backend] kind = "embedded"` is selectable at runtime. The
+# dispatch feature forwards the same flag (its `BackendKind::Embedded`
+# scheduling arm is feature-gated to keep the default graph lean).
+embedded = ["rusta-llm/embedded", "rusta-dispatch/embedded"]
+
 [dependencies]
+rusta-core = { path = "../rusta-core" }
+rusta-dispatch = { path = "../rusta-dispatch" }
+rusta-edit = { path = "../rusta-edit" }
+rusta-llm = { path = "../rusta-llm" }
+rusta-repomap = { path = "../rusta-repomap" }
+rusta-tools = { path = "../rusta-tools" }
+rusta-validate = { path = "../rusta-validate" }
+anyhow.workspace = true
 clap.workspace = true
+reedline.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

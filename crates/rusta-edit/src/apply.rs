@@ -195,9 +195,23 @@ impl Editor {
         self.ledger.record_read(Path::new(rel));
     }
 
+    /// Remove `rel` from the session read-set — the CLI's `/drop` (plan
+    /// §6.9). True when it was present; auto-inject re-protects later edits.
+    pub fn drop_read(&mut self, rel: &str) -> bool {
+        self.ledger.drop_read(Path::new(rel))
+    }
+
     /// Undo the most recent applied edit; see [`UndoStack::undo_last`].
     pub fn undo_last(&mut self) -> io::Result<Option<UndoEntry>> {
         self.undo.undo_last(&self.root)
+    }
+
+    /// Replaces the undo journal wholesale — the `/resume` path (plan §6.10):
+    /// session replay rebuilds the journal from the `.diffs.jsonl` sidecar and
+    /// installs it so `/undo` works on a continued session. Replacing (never
+    /// appending) keeps the stack consistent with the replayed events.
+    pub fn install_undo(&mut self, entries: Vec<UndoEntry>) {
+        self.undo = UndoStack::from_entries(entries);
     }
 
     /// Full-file write (§6.4 `write` tool): journal first, then write — the
@@ -1460,5 +1474,31 @@ mod tests {
             "feedback_missing_filename",
             report.feedback.as_deref().unwrap_or("<none>")
         );
+    }
+
+    #[test]
+    fn install_undo_restores_a_journal_and_replaces_the_old_one() {
+        // The `/resume` path: a journal rebuilt from the session sidecar is
+        // installed wholesale, and undoing works against the live root.
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        write_file(root, "src/lib.rs", "fn after() {}\n");
+        std::fs::create_dir_all(root.join("src")).expect("mkdir");
+
+        let mut editor = Editor::new(root);
+        editor.install_undo(vec![UndoEntry {
+            path: PathBuf::from("src/lib.rs"),
+            existed: true,
+            before: "fn before() {}\n".to_owned(),
+            after: "fn after() {}\n".to_owned(),
+        }]);
+
+        let entry = editor.undo_last().expect("io").expect("entry");
+        assert_eq!(entry.before, "fn before() {}\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/lib.rs")).expect("read"),
+            "fn before() {}\n"
+        );
+        assert!(editor.undo_stack().is_empty());
     }
 }

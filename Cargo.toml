@@ -22,14 +22,21 @@ repository = "https://github.com/vladimirpesic/rusta"
 # Shared dependency versions; member crates inherit with `dep.workspace = true`.
 # The allowed dependency set is contractual: DEVELOPMENT_PLAN.md §10. Every entry
 # must earn its place — minimal feature sets, no OpenSSL, no async-trait.
+anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
+# Aider-style REPL line editing (plan §6.9, §10). Default features off: the
+# `helix` editing mode is optional sugar; core line editing, history, and
+# signals are feature-independent.
+reedline = { version = "0.51", default-features = false }
+# Config file parsing (plan §7, §10 — "config & tool-call args only").
+toml = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "signal"] }
 # Snapshot testing (DEVELOPMENT_PLAN.md §10, dev-only) — failure-feedback
 # contract of rusta-edit and later validator/repomap golden files.
 insta = "1"

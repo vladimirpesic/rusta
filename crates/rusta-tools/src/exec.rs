@@ -236,6 +236,14 @@ impl Tools {
         &self.backend
     }
 
+    /// Replace the repo map (§6.5) — e.g. with a `[repomap] max_tokens`
+    /// budget from `rusta.toml` (0 disables map rendering).
+    #[must_use]
+    pub fn with_repomap(self, map: RepoMap) -> Self {
+        *lock(&self.repomap) = map;
+        self
+    }
+
     /// The session editor: ledger, apply chain, undo journal (§6.3).
     pub fn editor(&self) -> MutexGuard<'_, Editor> {
         lock(&self.editor)
