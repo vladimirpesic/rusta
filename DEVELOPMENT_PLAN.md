@@ -64,8 +64,8 @@ Rusta combines the five proven scaffold pillars into one fast Rust/Tokio binary:
 | R7 | < 500-token core prompt; JIT skill cards; history compression; loop mitigation capsules | Spec §6.6. |
 | R8 | Instant auto-validation: compiler/linter feedback loop, errors fed back to the model before the user sees results | Spec §6.7. |
 | R9 | Sub-coder dispatch over Tokio (isolated contexts, summarized returns) | Spec §6.8. |
-| R10 | `#![forbid(unsafe_code)]` in all core crates; the only permitted `unsafe` lives behind `llama-cpp-2` in the embedded backend module. |
-| R11 | Works offline, no telemetry, no accounts, no cloud calls unless the user explicitly configures an HTTP endpoint. |
+| R10 | `#![forbid(unsafe_code)]` in all core crates; the only permitted `unsafe` lives behind `llama-cpp-2` in the embedded backend module. | Safety stance (§1); enforced workspace-wide, audited at M8 (§15). |
+| R11 | Works offline, no telemetry, no accounts, no cloud calls unless the user explicitly configures an HTTP endpoint. | Core design goal (§1); the only network path is the user-configured backend (§7). |
 
 ## 3. Reference Repositories (cloned locally — study, port the essence, not the bulk)
 
@@ -118,7 +118,7 @@ on this list that later proves essential goes into a *separate* opt-in crate —
 
 ## 5. Workspace Layout
 
-```
+```text
 rusta/
 ├── DEVELOPMENT_PLAN.md      ← this document
 ├── Cargo.toml               ← workspace; features: embedded, embedded-cuda (opt-in)
@@ -147,11 +147,11 @@ fenced tool calls and/or SEARCH/REPLACE edit blocks; Rusta parses, executes, and
 **Canonical tool-call format** (little-coder/`pi`-harness lineage — proven with 9B models; JSON is
 allowed *only* here, as trivial two-key objects — **never for edits**):
 
-~~~
+````text
 ```tool
 {"name": "read", "input": {"path": "src/main.rs"}}
 ```
-~~~
+````
 
 Accepted forms, in priority order: (1) canonical fenced ` ```tool ` blocks, one call per block;
 (2) fenced blocks containing a JSON **array** of calls; (3) native OpenAI `tool_calls` array
@@ -175,8 +175,10 @@ prompt (context purity).
 
 **Observation contract** — tool results are appended as `user`-role observation blocks:
 
-    TOOL RESULT read (ok)
-    <content, truncated>
+```text
+TOOL RESULT read (ok)
+<content, truncated>
+```
 
 Hard truncation caps: read 2,000 lines / 64 KiB; grep 200 matches; glob 1,000 entries; shell
 16 KiB combined stdout+stderr; dispatch 400 tokens (§6.8); repo-map as rendered (§6.5). On
@@ -225,12 +227,14 @@ and are selected by config or `--backend`; the choice is invisible to every laye
 
 Canonical block (Aider format — small models know it from training corpora):
 
-    path/to/file.rs
-    <<<<<<< SEARCH
-    exact existing lines
-    =======
-    replacement lines
-    >>>>>>> REPLACE
+```text
+path/to/file.rs
+<<<<<<< SEARCH
+exact existing lines
+=======
+replacement lines
+>>>>>>> REPLACE
+```
 
 **Parser** (single pass over `splitlines(keepends)`; HEAD/DIVIDER/UPDATED markers matched on
 `.trim()`ed lines):
@@ -262,23 +266,25 @@ path; for small models a clear retry request beats a wrong-guess apply):
    piece counts must pair and all `...` lines must be identical on both sides; then apply each
    piece pair by exact match. Any mismatch → fall through to 5.
 5. **Cross-file retry:** if the named file fails, try the block against every file in the
-   session read-set; a match applies there and is reported ("applied in <path> instead").
+   session read-set; a match applies there and is reported ("applied in `<path>` instead").
 6. All strategies fail → structured failure feedback returned to the model as the next
    observation — this *is* the repair loop. Format (Aider's, verbatim semantics):
 
-       # N SEARCH/REPLACE block(s) failed to match!
-       ## SearchReplaceNoExactMatch: This SEARCH block failed to exactly match lines in {path}
-       <<<<<<< SEARCH
-       {original}=======
-       {updated}>>>>>>> REPLACE
-       Did you mean to match some of these actual lines from {path}?
-       {best window with similarity ≥ 0.6, padded ± 5 lines}
-       [if REPLACE text already present in file: "Are you sure you need this block? The
-        REPLACE lines are already in {path}!"]
-       The SEARCH section must exactly match an existing block of lines including all white
-       space, comments, indentation, docstrings, etc
-       [if other blocks applied: "The other N blocks were applied successfully. Don't re-send
-        them. Just reply with fixed versions of the block(s) above that failed to match."]
+   ```text
+   # N SEARCH/REPLACE block(s) failed to match!
+   ## SearchReplaceNoExactMatch: This SEARCH block failed to exactly match lines in {path}
+   <<<<<<< SEARCH
+   {original}=======
+   {updated}>>>>>>> REPLACE
+   Did you mean to match some of these actual lines from {path}?
+   {best window with similarity ≥ 0.6, padded ± 5 lines}
+   [if REPLACE text already present in file: "Are you sure you need this block? The
+    REPLACE lines are already in {path}!"]
+   The SEARCH section must exactly match an existing block of lines including all white
+   space, comments, indentation, docstrings, etc
+   [if other blocks applied: "The other N blocks were applied successfully. Don't re-send
+    them. Just reply with fixed versions of the block(s) above that failed to match."]
+   ```
 
 - Applied blocks are journaled (path, before, after) to the undo stack **before** the file write.
 - **Read-before-edit ledger:** a mutation requires its file to have been read this session
@@ -509,8 +515,8 @@ Legend: ✅ — completed; all acceptance criteria verified locally (fmt, clippy
 | M1.5 ✅ | `EmbeddedBackend` (feature `embedded`): GGUF load, chat template, inference thread → mpsc, exact token counting, cancellation flag | `#[ignore]` GGUF e2e (env `RUSTA_TEST_GGUF`) — run live against a real GGUF (3/3: load+exact counts, `complete`, streamed deltas+finish); template fallback/conversion unit tests + stop-emitter corpus; default build compiles without cmake (llama.cpp never enters the default graph) — **verified 2026-09-10** (clippy `-D warnings` clean with *and* without the feature; `llama-cpp-2 =0.1.156` pinned; single serialized inference thread; temp→top_p→greedy chain; ChatML fallback; batch-position-aware sampling fix) |
 | M2 ✅ | `rusta-edit`: parser + apply chain + failure feedback + ledger | Aider fixture corpus + malformed-input corpus green; `...`-elision tests; cross-file retry tests; failure-feedback snapshot tests; ledger auto-inject test; property test: parser never panics on arbitrary input — **verified 2026-09-10** (47 tests: 44 unit incl. 5 insta failure-feedback snapshots + 15-fixture corpus at `tests/edit_corpus/` + 2 deterministic fuzz tests, 5,000 parser / 500 engine iterations, zero panics; Aider apply chain ported with edit-distance tail removed per §6.3 DECIDED; undo journal written before every write; marker lines never hijack filename resolution — improvement over Aider) |
 | M3 ✅ | `rusta-core`: state machine + session persistence + prompt compiler | state-transition table exhaustively tested; core prompt < 500 tokens invariant; `/resume` reconstructs ledger + state from a recorded session — **verified 2026-09-11** (17 unit tests: all 24 `(State × PhaseEvent)` cells pinned — 7 legal edges, the Exploring interrupt no-op, 16 illegal; 6 scaffold events with `PlanDrafted` ≠ `PlanApproved` per the §6.4 exit-gate table; data-driven tool registry — read-only in Exploring/Planning, no dispatch in Verifying; corrective notes BFS-derived from the table so they can't go stale; core prompt ≤ 500 tokens in all four phases; `/resume` e2e replays messages + ledger + undo journal + final phase — before/after text in a FNV-1a-keyed `.diffs.jsonl` sidecar, two records per edit, torn-write tolerant, hash mismatch ⇒ corrupt-with-remedy; `StateChange` events typed as `State` and replay-validated against the machine's own table; `Summary` events replay as turn compression) |
-| M4 ✅ | `rusta-repomap`: extraction, ranking, budget-fitted rendering, cache, `map_drill` | golden snapshot maps on 3 sample repos; token-fitting never exceeds budget; cache hit path tested with mtime bumps — **verified 2026-09-11** (12 tests: 6 unit + 6 integration incl. 4 insta golden snapshots — rust/python/mixed-go-c repos plus a chat-steered map; every embedded `.scm` query compile-tested against its pinned grammar, the §13 grammar-drift guard; def-only languages (c/cpp) connected via the word-scan ref backfill; edge weights `mul/( | D | ·n_r)` with mention/multi-case boosts, self-edges for referenced-nowhere idents, PageRank d=0.85 Δ<1e-6/100 iters; renders fit budgets 50/200/1024 exactly; `map_drill` returns full definition spans (outer `@definition.*` node) and windows with `NotFound`/`BadWindow` errors — spans padded ±8 lines post-review (§6.5 step 8 DECIDED, constant shared with the renderer; windows exact); tree-sitter `=0.25.9` + grammar crates pinned `=0.23`–`=0.25` per the verified devscriptor matrix, queries verbatim from Aider with attribution in `queries/README.md`) |
-| M5 ✅ | `rusta-core/context.rs`: JIT cards, compression, FAMA-lite | trigger-matrix test; card ≤ 120 tokens invariant; summarization keeps edit blocks verbatim; each loop detector trips + correct capsule — **verified 2026-09-11** (rusta-core 17→34 tests: trigger matrix pins cue→card sets, ≤ 2 cards per note, priority order, word-boundary matching — "spread" never fires `read`; card budget enforced at parse time (declared *and* estimated ≤ 120) and tested against the shipped 4-card starter deck in `skills/` (data per §5/§12, LoC-exempt); compression trips past 60% of the window (integer `3/5`, no float drift), turns = model completions per §6.1, keeps the last 3 turns + every `<<<<<<< SEARCH` block + every `(error)` observation verbatim, deterministic extractive summary with prior-summary carry-over, and `Compressor::apply_summary` is the single code path shared with `Summary`-event replay — `/resume` reproduces live compression byte-for-byte; FAMA-lite: stagnation ≥ 3 per `tool | args` fingerprint, ≥ 3 consecutive identical calls, ≥ 2 identical validator outputs, REPLACE == SEARCH — each trips its capsule (SmallCTL's three seed texts + a no-op adaptation), ≤ 180 tokens / ≤ 5 active / deduplicated / 3-turn TTL, escalation at 2× threshold latches a user notification and regresses Editing → Planning by machine re-seed (§6.4's closed table has no single-event edge); fingerprints use canonical JSON — key order never forges a "new" call; session `Summary` replay moved onto the shared path, dropping M3's user-anchored approximation) |
+| M4 ✅ | `rusta-repomap`: extraction, ranking, budget-fitted rendering, cache, `map_drill` | golden snapshot maps on 3 sample repos; token-fitting never exceeds budget; cache hit path tested with mtime bumps — **verified 2026-09-11** (12 tests: 6 unit + 6 integration incl. 4 insta golden snapshots — rust/python/mixed-go-c repos plus a chat-steered map; every embedded `.scm` query compile-tested against its pinned grammar, the §13 grammar-drift guard; def-only languages (c/cpp) connected via the word-scan ref backfill; edge weights `mul/( \| D \| ·n_r)` with mention/multi-case boosts, self-edges for referenced-nowhere idents, PageRank d=0.85 Δ<1e-6/100 iters; renders fit budgets 50/200/1024 exactly; `map_drill` returns full definition spans (outer `@definition.*` node) and windows with `NotFound`/`BadWindow` errors — spans padded ±8 lines post-review (§6.5 step 8 DECIDED, constant shared with the renderer; windows exact); tree-sitter `=0.25.9` + grammar crates pinned `=0.23`–`=0.25` per the verified devscriptor matrix, queries verbatim from Aider with attribution in `queries/README.md`) |
+| M5 ✅ | `rusta-core/context.rs`: JIT cards, compression, FAMA-lite | trigger-matrix test; card ≤ 120 tokens invariant; summarization keeps edit blocks verbatim; each loop detector trips + correct capsule — **verified 2026-09-11** (rusta-core 17→34 tests: trigger matrix pins cue→card sets, ≤ 2 cards per note, priority order, word-boundary matching — "spread" never fires `read`; card budget enforced at parse time (declared *and* estimated ≤ 120) and tested against the shipped 4-card starter deck in `skills/` (data per §5/§12, LoC-exempt); compression trips past 60% of the window (integer `3/5`, no float drift), turns = model completions per §6.1, keeps the last 3 turns + every `<<<<<<< SEARCH` block + every `(error)` observation verbatim, deterministic extractive summary with prior-summary carry-over, and `Compressor::apply_summary` is the single code path shared with `Summary`-event replay — `/resume` reproduces live compression byte-for-byte; FAMA-lite: stagnation ≥ 3 per `tool \| args` fingerprint, ≥ 3 consecutive identical calls, ≥ 2 identical validator outputs, REPLACE == SEARCH — each trips its capsule (SmallCTL's three seed texts + a no-op adaptation), ≤ 180 tokens / ≤ 5 active / deduplicated / 3-turn TTL, escalation at 2× threshold latches a user notification and regresses Editing → Planning by machine re-seed (§6.4's closed table has no single-event edge); fingerprints use canonical JSON — key order never forges a "new" call; session `Summary` replay moved onto the shared path, dropping M3's user-anchored approximation) |
 | M6 ✅ | `rusta-validate` + wiring into the Verifying exit gate | feedback format ≤ 30 lines; 3-repair-bound then surface; zero-test capsule — **verified 2026-09-11** (17 tests: serde round-trip + `check()` misuse rejection; real `sh -c` subprocesses covering pass/fail exit codes, stderr capture, a 1 s timeout that kills (`exit −9`), an unstartable cwd degrading to `exit 127` with a remedy, and 200 KB of output capped at 64 KiB with a truncation marker; feedback is deduplicated, windowed first→last diagnostic with elision count, and hard-pinned at ≤ 30 lines against a 1000-error input — `--> path:line:col` rewritten to clickable `path:line:col`; zero-test detector sums the libtest `test result:` tally (passed+failed+ignored+measured — deliberately excluding `filtered out`, which verifies nothing) with `0 tests`/`no tests ran`/`no test files` fallbacks and a `10 tests` non-trip boundary; `Gate` routes Repair × 3 (`attempts_left` 2/1/0) then Surface, `reset` restores the budget, and green passes with the zero-test capsule riding along; `Verdict::event` drives the real machine — `ValidationPassed` exits Verifying → Exploring, `ValidationFailed` regresses → Editing; each command records `Event::ValidationRun { command, exit, summary }`; validator failures are never `Err` — unstartable/timeout/garbage become failing reports with actionable remedies, the only `Error` being config misuse caught at load) |
 | M7 ✅ | `rusta-dispatch` + `rusta-tools` registry | 4 parallel sub-coders on mock backend, labeled reports ≤ 400 tokens; embedded serialization test (mock); tool-state matrix test — **verified 2026-09-11** (workspace 131 → 186 tests: rusta-dispatch 16 unit + 4 mock-server e2e — 4 parallel sub-coders with per-task isolated transcripts (no cross-task brief leakage) and `SUB-CODER "label" REPORT:` output in input order, 8 requests for 4 tasks with asserted overlap; `ExecMode::Serialized` proven max-in-flight = 1 on a delayed mock (the §6.8 embedded constraint), `Parallel` ≥ 2; 6-turn cap → forced wrap-up (7th completion), oversized reports hard-clipped at 400 estimated tokens with marker, backend failure ⇒ labeled `RESEARCH FAILED` report, panicked actors keep their label; fenced `tool`-block JSON parser with array form + malformed-input notes. rusta-tools 24 unit + 7 integration: the 4-state × 10-tool matrix pins both directions — allowed cells execute, blocked cells return the §6.4 corrective note AND leave file bytes untouched with no process spawned; dispatch e2e through the registry on a mock backend (sub-coder reads deliberately do not credit the main ledger — isolation; auto-inject still protects); `read`/`grep`/`glob` §6.1 caps with markers (2,000 lines/64 KiB, 200 matches, 1,000 paths), `map_drill` ±8-padded spans credited via `read_credit`, `edit`/`write` through the same rusta-edit apply chain + journaled `write_file` (existing unread files refused — the one place the §6.3 rule denies rather than auto-injects), §6.12 shell policy: 9 default deny regexes + interactive-command detection with the pass-flags remedy, `sh -c` with env_clear + PATH/HOME/LANG only, 60 s timeout with kill-on-drop, 16 KiB output cap, `Approver`/`Responder` host hooks (`AutoApprove`/`DenyAll`/`Headless`; CLI installs interactive ones in M8); `regex` added to §10 (mandated by §6.4 grep + §6.12 deny-list); `rusta-llm` gains `Backend::kind()`/`BackendKind` so dispatch schedules by backend kind without matching internals. fmt, clippy `-D warnings`, `cargo doc` 0 warnings, LoC 11,679/13,410 vs 15k/20k all green) |
 | M8 ✅ | `rusta-cli`: REPL, `/commands`, git auto-commit/undo, config | e2e scripted sessions on the mock server: edit loop → validate → repair → commit; `/undo` restores file + reverts commit — **verified 2026-09-11** (workspace 186 → 210 tests: rusta-cli 18 unit + 4 mock-SSE e2e, all gates green — fmt, clippy `-D warnings`, `cargo doc` 0 warnings, LoC 14,305/16,433 vs 15k/20k, `embedded` feature compiles). The acceptance arc runs on the real HTTP streaming client against a scripted mock server: plan (`Plan:` + numbered list — conservative §6.4 detection, plain answers never trip it) → `PlanDrafted` → y-n gate (`/auto` and `-c` imply approval; `n` returns the decline as an observation and the model redrafts) → `PlanApproved` → read → SEARCH/REPLACE batch → `EditsApplied` → `rusta: <one-line request summary>` commit → validator red → `ValidationFailed` feedback as a model-facing observation (§6.7 repair before the user sees it) → repair batch → second commit → green → `ValidationPassed` → back to `Exploring`; then `/undo` restores the file bytes from the journal AND reverts the commit — `git reset --mixed HEAD~1` fires only when HEAD *is* the recorded rusta sha, never on unrelated commits (unit-pinned both directions). The §6.1 lifecycle in `agent.rs`: tool fences and edit blocks execute in **document order** (interleaved parse unit-tested), native `tool_calls` passthrough runs after text items, malformed fences/blocks degrade to corrective-note observations, 16-turn cap injects the wrap-up capsule (e2e: max_turns=2 → 3rd completion is the wrap-up), Ctrl-C aborts via `tokio::select!` on the stream and fires `UserInterrupt`, LoopGuard detectors observe every call/edit/validation with capsule notes + unjournaled `Editing → Planning` escalation regression (no scaffold edge exists; documented). History compression + JIT skill cards + `/skills` injection wired into assembly with reserved-token accounting. All 13 §6.9 commands shipped: `/add`/`/drop` (`*`,`**`,`?` segment glob, ledger-backed chat-set — `Ledger::drop_read` added), `/undo` (batch stack), `/diff` (last rusta commit else working tree, capped), `/map` (chat-set-steered render), `/state` (phase + tool matrix + repair budget + undo depth), `/auto` (shared flag covering plan gate + shell y/n/a), `/model`, `/backend` (view — selection is start-time per §6.2), `/skills`, `/resume` (replay → history/ledger/undo-journal/phase adopted into the live editor via `Editor::install_undo`; batch stack rebuilt from `EditApplied`+`Commit` events — e2e proves `/undo` still works after resume), `/save`, `/exit`, plus `/help`. §7 config: `rusta.toml` discovery cwd → parents → `~/.rusta/`, §7 schema verbatim with `deny_unknown_fields`, flag-over-file-over-default precedence, §11-style actionable errors; sessions at `~/.rusta/sessions/<slug>-<UTC date>.jsonl` (std-only civil-date algorithm, epoch-verified). Non-interactive `-c`: plan auto-approved, `ask` headless, shell **denied by default** (§6.12; e2e pins the denial-with-remedy observation — after the §6.4 state gate note when read-only). `rusta` binary: clap (`-c/--config/--session/--backend/--model/--base-url/--auto`), `embedded` feature forwarded through `rusta-dispatch` (the `BackendKind::Embedded` scheduling arm), graceful no-git degradation to journal-only undo, dead-backend error carries the remedy and still writes a valid session. Black-box smoke: real binary + python SSE mock + real git repo — plan → apply → `Editing → Verifying` → commit landed with the `rusta:` message. `tokio` gains the `signal` feature (§6.1 step 5 mandates Ctrl-C abort; reedline 0.51 default-features-off, `toml`, `anyhow` were already §10-listed) |
