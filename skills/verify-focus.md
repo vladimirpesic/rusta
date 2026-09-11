@@ -6,7 +6,7 @@ priority: 7
 token_cost: 95
 user-invocable: false
 ---
-# VALIDATOR RED — work the first error, not all of them:
+# VALIDATOR RED — work the first error, not all of them
 
 - read the first failing line; map_drill the failing symbol;
 - fix ONE narrow cause, then re-run only the failing validator;
