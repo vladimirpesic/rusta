@@ -9,3 +9,18 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+# Forwarded to rusta-llm: builds the `BackendKind::Embedded` arm of
+# `ExecMode::for_backend` when the in-process backend is compiled in.
+embedded = ["rusta-llm/embedded"]
+
+[dependencies]
+rusta-core = { path = "../rusta-core" }
+rusta-llm = { path = "../rusta-llm" }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

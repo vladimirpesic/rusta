@@ -9,3 +9,17 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+rusta-core = { path = "../rusta-core" }
+rusta-dispatch = { path = "../rusta-dispatch" }
+rusta-edit = { path = "../rusta-edit" }
+rusta-llm = { path = "../rusta-llm" }
+rusta-repomap = { path = "../rusta-repomap" }
+regex.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

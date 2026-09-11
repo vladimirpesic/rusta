@@ -1098,6 +1098,14 @@ dependencies = [
 [[package]]
 name = "rusta-dispatch"
 version = "0.1.0"
+dependencies = [
+ "rusta-core",
+ "rusta-llm",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "rusta-edit"
@@ -1141,6 +1149,18 @@ dependencies = [
 [[package]]
 name = "rusta-tools"
 version = "0.1.0"
+dependencies = [
+ "regex",
+ "rusta-core",
+ "rusta-dispatch",
+ "rusta-edit",
+ "rusta-llm",
+ "rusta-repomap",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "rusta-validate"

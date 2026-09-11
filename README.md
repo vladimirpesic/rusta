@@ -38,8 +38,18 @@ hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 > `file:line:col` locations; a three-repair bound before surfacing to the user,
 > wired to the phase machine — green exits `Verifying → Exploring`, red regresses
 > `→ Editing`; zero-test detection attaches a write-real-tests capsule even on
-> green). The default artifact stays cmake-free — no llama.cpp build unless you
-> ask for it.
+> green), and **M7 — `rusta-dispatch` + `rusta-tools`** (the ten-tool phase-gated
+> registry: every state × tool cell pinned by a matrix test — mutation is
+> physically unreachable in read-only states, blocked calls answer with the
+> 1–2-line corrective note; §6.1 result caps everywhere; `edit`/`write` funnel
+> into the same apply chain, undo journal, and read-before-edit ledger as
+> SEARCH/REPLACE blocks; §6.12 shell policy with a deny regex table, minimal
+> `PATH/HOME/LANG` environment, timeout kill, and injected approval; plus
+> isolated read-only sub-coders — up to four parallel research tasks in fresh
+> contexts with a 6-turn budget, only their labeled ≤ 400-token reports
+> re-entering the main context, and requests serialized on the embedded
+> backend's single inference thread). The default artifact stays cmake-free —
+> no llama.cpp build unless you ask for it.
 
 ## Why
 

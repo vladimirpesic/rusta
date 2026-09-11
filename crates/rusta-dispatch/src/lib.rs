@@ -8,5 +8,17 @@
 //! loaded model, one inference thread) requests serialize for correctness;
 //! true parallelism exists only on the HTTP backend.
 //!
-//! Build status: milestone M0 (workspace skeleton). Actors land in M7 —
-//! DEVELOPMENT_PLAN.md §8.
+//! Dependency direction is deliberate: this crate knows nothing about the
+//! tool registry. It executes sub-coder tool calls through the [`RunTool`]
+//! trait, which the host (`rusta-tools`) implements — so the registry wraps
+//! dispatch, never the other way around.
+
+mod actor;
+mod dag;
+mod toolcall;
+
+pub use actor::{
+    REPORT_TOKEN_CAP, Report, RunTool, SUB_CODER_TOOLS, SUB_CODER_TURN_CAP, run_actor,
+};
+pub use dag::{ExecMode, MAX_TASKS, SINGLE_TASK_LABEL, Task, TaskSet, TaskSetError, labeled, run};
+pub use toolcall::{ToolCall, ToolCalls, parse_tool_calls};

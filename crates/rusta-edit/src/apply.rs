@@ -200,6 +200,49 @@ impl Editor {
         self.undo.undo_last(&self.root)
     }
 
+    /// Full-file write (§6.4 `write` tool): journal first, then write — the
+    /// same undo mechanism as SEARCH/REPLACE applies. There is no content
+    /// matching here; the read-before-edit rule for *existing* files is
+    /// enforced by the caller (the tool registry) because a blind overwrite
+    /// is destructive. Returns whether the file already existed.
+    ///
+    /// Like [`Editor::apply_parsed`], a successful write credits the ledger:
+    /// the written content is exactly what the model had in context.
+    pub fn write_file(&mut self, rel: &str, content: &str) -> io::Result<bool> {
+        let rel = crate::ledger::canonical(Path::new(rel));
+        let abs = self.root.join(&rel);
+        let existed = abs.try_exists().map_err(io::Error::other)?;
+        let before = if existed {
+            let bytes = fs::read(&abs)?;
+            String::from_utf8(bytes).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{} is not valid UTF-8", abs.display()),
+                )
+            })?
+        } else {
+            String::new()
+        };
+        self.undo.push(UndoEntry {
+            path: rel.clone(),
+            existed,
+            before,
+            after: content.to_owned(),
+        });
+        let write = || -> io::Result<()> {
+            if let Some(parent) = abs.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&abs, content)
+        };
+        if let Err(err) = write() {
+            self.undo.pop();
+            return Err(err);
+        }
+        self.ledger.record_read(&rel);
+        Ok(existed)
+    }
+
     /// Parse a full model response and apply everything actionable in
     /// document order (§6.1 turn lifecycle step 2).
     pub fn apply_response(&mut self, text: &str) -> ApplyReport {
@@ -910,6 +953,63 @@ mod tests {
         assert_eq!(undone.before, "initial\n");
         assert_eq!(read_file(root, "src/lib.rs"), "initial\n");
         assert!(journal.is_empty());
+    }
+
+    #[test]
+    fn write_file_creates_journals_and_undo_removes() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        let mut editor = Editor::new(root);
+
+        let existed = editor
+            .write_file("docs/new/notes.md", "hello\n")
+            .expect("write");
+        assert!(!existed);
+        assert_eq!(read_file(root, "docs/new/notes.md"), "hello\n");
+        assert_eq!(editor.undo_stack().len(), 1);
+        // The write credits the ledger: the content is in the model's context.
+        assert!(editor.ledger().has_read(Path::new("docs/new/notes.md")));
+
+        let undone = editor.undo_last().expect("undo").expect("entry");
+        assert!(!undone.existed);
+        assert!(!root.join("docs/new/notes.md").exists());
+    }
+
+    #[test]
+    fn write_file_overwrite_journals_previous_content() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        write_file(root, "src/lib.rs", "original\n");
+        let mut editor = Editor::new(root);
+
+        let existed = editor
+            .write_file("src/lib.rs", "replaced\n")
+            .expect("write");
+        assert!(existed);
+        assert_eq!(read_file(root, "src/lib.rs"), "replaced\n");
+
+        editor.undo_last().expect("undo");
+        assert_eq!(read_file(root, "src/lib.rs"), "original\n");
+    }
+
+    #[test]
+    fn write_file_rejects_non_utf8_target() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        write_file(root, "blob.bin", "");
+        fs::write(root.join("blob.bin"), [0xff, 0xfe, 0x00]).expect("binary fixture");
+        let mut editor = Editor::new(root);
+
+        let err = editor
+            .write_file("blob.bin", "text")
+            .expect_err("must refuse");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        // The refused write must not leave a journal entry behind.
+        assert!(editor.undo_stack().is_empty());
+        assert_eq!(
+            fs::read(root.join("blob.bin")).expect("untouched"),
+            vec![0xff, 0xfe, 0x00]
+        );
     }
 
     #[test]

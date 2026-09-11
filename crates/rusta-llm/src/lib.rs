@@ -43,10 +43,32 @@ pub enum Backend {
     Embedded(EmbeddedBackend),
 }
 
+/// Which backend is loaded — a discriminator for layers that must adapt to
+/// backend capabilities without matching internals. Used by dispatch (§6.8):
+/// the embedded backend runs one model on one inference thread, so sub-coder
+/// requests serialize; the HTTP backend serves them in parallel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendKind {
+    /// OpenAI-compatible HTTP backend.
+    Http,
+    /// In-process llama.cpp; feature `embedded`.
+    #[cfg(feature = "embedded")]
+    Embedded,
+}
+
 impl Backend {
     /// Builds the HTTP backend from `config`.
     pub fn http(config: HttpConfig) -> Result<Self, Error> {
         Ok(Self::Http(HttpBackend::new(config)?))
+    }
+
+    /// Which backend this is.
+    pub fn kind(&self) -> BackendKind {
+        match self {
+            Backend::Http(_) => BackendKind::Http,
+            #[cfg(feature = "embedded")]
+            Backend::Embedded(_) => BackendKind::Embedded,
+        }
     }
 
     /// Loads the embedded GGUF backend (feature `embedded`).
@@ -90,5 +112,20 @@ impl Backend {
             #[cfg(feature = "embedded")]
             Backend::Embedded(backend) => backend.context_window(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_backend_kind_is_http() {
+        let backend = Backend::http(HttpConfig {
+            base_url: "http://127.0.0.1:9/v1".to_owned(),
+            ..HttpConfig::default()
+        })
+        .expect("offline construct");
+        assert_eq!(backend.kind(), BackendKind::Http);
     }
 }

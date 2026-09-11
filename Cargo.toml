@@ -43,6 +43,11 @@ llama-cpp-2 = { version = "=0.1.156", default-features = false }
 # `encoding_rs::Decoder` by type, so incremental UTF-8-safe token decoding
 # requires depending on it directly behind the same `embedded` feature.
 encoding_rs = "0.8"
+# Case-sensitive regexes for the grep tool (§6.4) and the shell deny-list
+# (§6.12) — mandated twice by the plan, so it earns its §10 place. Default
+# feature set so user-supplied deny patterns (\b, \w, unicode classes) behave
+# as documented.
+regex = "1"
 # Repo-map parsing (DEVELOPMENT_PLAN.md §6.5, §10): tree-sitter core + the
 # per-language grammar crates, all pinned EXACT. The core/grammar split is the
 # tree-sitter-language 0.1 compatibility layer (`LanguageFn`), so grammar crates
