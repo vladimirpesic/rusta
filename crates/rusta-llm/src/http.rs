@@ -25,6 +25,13 @@ const DEFAULT_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_BACKOFF: Duration = Duration::from_secs(2);
 /// Lines of server text kept in [`Error::Http`] messages (plan §6.11).
 const SERVER_MESSAGE_LINES: usize = 10;
+/// Cap on establishing a connection.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Cap on *starting* to receive a response. Deliberately not a whole-request
+/// timeout: a long generation is normal and streams for as long as it needs,
+/// but a server that accepts the connection and then says nothing would
+/// otherwise hang the turn with no way out but Ctrl-C.
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 
 // ---------------------------------------------------------------- wire types
 
@@ -135,14 +142,6 @@ impl Default for HttpConfig {
     }
 }
 
-impl HttpConfig {
-    /// Resolves configuration precedence (plan §8, M1): explicit value (CLI
-    /// flag) over config-file value over built-in defaults.
-    pub fn resolve(explicit: Option<HttpConfig>, file: Option<HttpConfig>) -> HttpConfig {
-        explicit.or(file).unwrap_or_default()
-    }
-}
-
 // ------------------------------------------------------------------- backend
 
 /// The OpenAI-compatible streaming client (plan §6.2).
@@ -182,7 +181,8 @@ impl HttpBackend {
             .and_then(|var| std::env::var(var).ok())
             .filter(|key| !key.is_empty());
         let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(RESPONSE_TIMEOUT)
             .build()
             .map_err(|e| Error::Config {
                 cause: e.to_string(),
@@ -448,28 +448,6 @@ fn sse_data(event: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn config_precedence_is_explicit_over_file_over_default() {
-        let explicit = HttpConfig {
-            base_url: "http://explicit/v1".to_owned(),
-            ..HttpConfig::default()
-        };
-        let file = HttpConfig {
-            base_url: "http://file/v1".to_owned(),
-            ..HttpConfig::default()
-        };
-        let expected_file = file.clone();
-        assert_eq!(
-            HttpConfig::resolve(Some(explicit.clone()), Some(file)),
-            explicit
-        );
-        assert_eq!(
-            HttpConfig::resolve(None, Some(expected_file.clone())),
-            expected_file
-        );
-        assert_eq!(HttpConfig::resolve(None, None), HttpConfig::default());
-    }
 
     #[test]
     fn rejects_non_http_base_url_with_remedy() {

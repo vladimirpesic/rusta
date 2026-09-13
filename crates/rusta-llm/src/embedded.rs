@@ -100,8 +100,9 @@ fn global_backend() -> Result<Arc<LlamaBackend>, Error> {
 
 /// In-process llama.cpp backend — development plan §6.2, milestone M1.5.
 ///
-/// Cheap to clone by handle semantics via `Arc`; all heavy state lives on the
-/// inference thread. Dropping the last handle ends that thread.
+/// All heavy state lives on the inference thread; this type is just a handle
+/// to it, shared behind an `Arc` by the layers above. Dropping it closes the
+/// job channel, which ends the inference thread.
 #[derive(Debug)]
 pub struct EmbeddedBackend {
     shared: Arc<Shared>,
