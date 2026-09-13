@@ -3,8 +3,8 @@
 //! Discovery: `rusta.toml` in the cwd, then every parent, then `~/.rusta/`.
 //! The first file found wins; every section has a built-in default, so an
 //! absent file is a valid configuration (the §7 defaults). CLI flags
-//! (`--backend`, `--model`, `--base-url`) override file values, mirroring
-//! `HttpConfig::resolve` precedence (§6.2).
+//! (`--backend`, `--model`, `--base-url`) override file values field by
+//! field in [`Config::http`] — flag over file over default (§6.2).
 
 use std::path::{Path, PathBuf};
 
@@ -66,8 +66,6 @@ pub struct EmbeddedSection {
     pub ctx_size: u32,
     /// GPU layers (0 = CPU, 999 = all).
     pub gpu_layers: u32,
-    /// Opt-in strict GBNF grammar (§6.2).
-    pub strict_grammar: bool,
 }
 
 impl Default for EmbeddedSection {
@@ -76,7 +74,6 @@ impl Default for EmbeddedSection {
             model_path: None,
             ctx_size: 0,
             gpu_layers: 999,
-            strict_grammar: false,
         }
     }
 }

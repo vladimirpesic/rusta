@@ -69,7 +69,8 @@ pub struct App {
     pub gate: Gate,
     /// History compression (§6.6).
     pub compressor: Compressor,
-    /// JIT skill cards (§6.6), from `<root>/skills/*.md`.
+    /// JIT skill cards (§6.6): the embedded starter deck plus any
+    /// project cards under `<root>/.rusta/skills/`.
     pub deck: CardDeck,
     /// Applied edit batches, oldest first — the `/undo` stack.
     pub batches: Vec<Batch>,
@@ -189,7 +190,9 @@ impl App {
 
         let session = rusta_core::Session::open(&session_path).map_err(|e| e.to_string())?;
         let fresh = session.events().is_empty();
-        let deck = CardDeck::load(&root.join("skills")).map_err(|e| e.to_string())?;
+        // The starter deck ships with the binary; `<root>/.rusta/skills/*.md`
+        // extends it per project (§6.6).
+        let deck = CardDeck::load_for_repo(&root).map_err(|e| e.to_string())?;
         let window = tools.backend().context_window();
         let git = Git::open(root.clone());
 

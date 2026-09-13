@@ -32,6 +32,17 @@ pub const REPORT_TOKEN_CAP: u64 = 400;
 /// mutation, no dispatch (sub-coders never spawn sub-coders).
 pub const SUB_CODER_TOOLS: [&str; 5] = ["read", "grep", "glob", "map_refresh", "map_drill"];
 
+/// Per-observation cap for a sub-coder, in estimated tokens.
+///
+/// The main loop has a compressor; a sub-coder is a fresh short-lived
+/// context and deliberately has none (§6.8). Without a cap, six turns of
+/// `read` observations at the §6.1 limit (64 KiB each) is far more than any
+/// 32k window holds, and the request fails wholesale — losing the research
+/// rather than trimming it. Clipping each observation keeps every turn's
+/// findings and bounds the transcript to roughly
+/// `SUB_CODER_TURN_CAP × OBSERVATION_TOKEN_CAP`.
+pub const OBSERVATION_TOKEN_CAP: u64 = 1_500;
+
 /// Executes one sub-coder tool call. Implemented by the host tool registry
 /// against the same handlers as the main loop — one implementation, two
 /// entry points. The returned string is the observation text (§6.1 format,
@@ -124,7 +135,7 @@ pub async fn run_actor<R: RunTool>(
                     SUB_CODER_TOOLS.join(", ")
                 )
             };
-            transcript.push(Message::user(observation));
+            transcript.push(Message::user(clip_observation(&observation)));
         }
     }
 
@@ -149,6 +160,20 @@ pub async fn run_actor<R: RunTool>(
             &format!("backend error during wrap-up: {err}"),
         ),
     }
+}
+
+/// Clips one sub-coder observation to [`OBSERVATION_TOKEN_CAP`] estimated
+/// tokens, char-boundary safe, with an explicit marker so the sub-coder
+/// knows to narrow its next read rather than assume it saw everything.
+fn clip_observation(text: &str) -> String {
+    if estimate_tokens(text) <= OBSERVATION_TOKEN_CAP {
+        return text.to_owned();
+    }
+    let budget = OBSERVATION_TOKEN_CAP as usize * 3; // chars, per the §6.2 heuristic
+    let head: String = text.chars().take(budget).collect();
+    format!(
+        "{head}\n[… clipped at {OBSERVATION_TOKEN_CAP} tokens — narrow the range and read again]"
+    )
 }
 
 /// A failed report that keeps the transcript for the session log.

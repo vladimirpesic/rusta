@@ -18,7 +18,8 @@ mod dag;
 mod toolcall;
 
 pub use actor::{
-    REPORT_TOKEN_CAP, Report, RunTool, SUB_CODER_TOOLS, SUB_CODER_TURN_CAP, run_actor,
+    OBSERVATION_TOKEN_CAP, REPORT_TOKEN_CAP, Report, RunTool, SUB_CODER_TOOLS, SUB_CODER_TURN_CAP,
+    run_actor,
 };
 pub use dag::{ExecMode, MAX_TASKS, SINGLE_TASK_LABEL, Task, TaskSet, TaskSetError, labeled, run};
 pub use toolcall::{ToolCall, ToolCalls, parse_tool_calls};

@@ -8,14 +8,16 @@
 //! rusta-llm's conservative `ceil(chars / 3)` estimator, so the measured
 //! invariant is stricter than any real tokenizer.
 //!
-//! Tool one-liners come from `Tool::one_liner` — the registry and the
-//! prompt are the same list and cannot drift apart.
+//! Tool one-liners come from `Tool::one_liner`, listed for exactly the
+//! tools `State::tools()` registers in the current phase — the registry and
+//! the prompt are the same list and cannot drift apart, and the model is
+//! never offered a tool the §6.4 gate will refuse.
 
 use rusta_llm::Message;
 use rusta_llm::tokens::estimate_tokens;
 
 use crate::session::Status;
-use crate::state::{State, TOOLS};
+use crate::state::State;
 
 /// Hard cap for the compiled core prompt, in estimated tokens (§6.6).
 pub const CORE_PROMPT_TOKEN_BUDGET: u64 = 500;
@@ -70,7 +72,9 @@ fn render(state: State) -> String {
     )
     .expect("infallible");
     writeln!(out, "```").expect("infallible");
-    for tool in TOOLS {
+    // Only the phase's registered tools (§6.4): naming `edit`/`write`/
+    // `shell` while they are gated invites blocked calls and wastes turns.
+    for tool in state.tools() {
         writeln!(out, "- {}", tool.one_liner()).expect("infallible");
     }
     write!(

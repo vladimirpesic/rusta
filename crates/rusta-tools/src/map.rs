@@ -10,14 +10,17 @@ use serde_json::Value;
 
 use crate::exec::{ToolOutcome, opt_usize, req_nonempty, safe_rel};
 
+/// Shown when the map renders nothing. The old wording blamed the language
+/// filter or a zero budget, which was wrong whenever fitting was the cause —
+/// it told the model a repo full of source had none.
+pub const EMPTY_MAP: &str = "(repo map is empty: no source files in the configured languages, or [repomap] max_tokens is 0)";
+
 /// Execute `map_refresh()` — re-render the repo map. Session chat-files
 /// (the ledger read-set) steer ranking but never render (§6.5 step 5).
 pub(crate) fn refresh(map: &mut RepoMap, chat_files: &[String]) -> ToolOutcome {
     let rendered = map.render_map(chat_files, None, &[], &[]);
     if rendered.is_empty() {
-        return ToolOutcome::ok(
-            "(repo map is empty — no source files matched the configured languages, or [repomap] max_tokens is 0)",
-        );
+        return ToolOutcome::ok(EMPTY_MAP);
     }
     ToolOutcome::ok(rendered)
 }

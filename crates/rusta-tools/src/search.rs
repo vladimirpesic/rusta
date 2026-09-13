@@ -16,8 +16,13 @@ pub(crate) const SKIP_DIRS: [&str; 4] = [".git", "target", "node_modules", "dist
 /// Files above this size are skipped (generated blobs, vendored dumps).
 pub(crate) const MAX_FILE_BYTES: u64 = 1024 * 1024;
 
-/// Sorted, repo-relative file paths under `root`.
-pub(crate) fn walk(root: &Path) -> Vec<PathBuf> {
+/// Sorted, repo-relative file paths under `root`, skipping `.git`,
+/// `target`, `node_modules` and `dist`.
+///
+/// Shared with the CLI's `/add` and `/drop` (§6.9): one walker, one ignore
+/// set, so the model's `glob` and the user's `/add` can never disagree
+/// about what is in the repo.
+pub fn walk(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     walk_dir(root, root, &mut out);
     out
@@ -54,7 +59,7 @@ pub(crate) fn effective_pattern(filter: &str) -> String {
 }
 
 /// Repo-relative display form (forward slashes).
-pub(crate) fn display(path: &std::path::Path) -> String {
+pub fn display(path: &std::path::Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 

@@ -15,7 +15,11 @@ use crate::exec::{ToolOutcome, caps, req_nonempty};
 use crate::search::{display, effective_pattern, walk};
 
 /// Match `path` (forward slashes, repo-relative) against `pattern`.
-pub(crate) fn glob_match(pattern: &str, path: &str) -> bool {
+///
+/// Shared with the CLI's `/add` and `/drop` (§6.9) so the two never drift —
+/// and so both inherit the memoized matcher rather than a second copy of
+/// the exponential one.
+pub fn glob_match(pattern: &str, path: &str) -> bool {
     let pattern: Vec<&str> = pattern.split('/').collect();
     let path: Vec<&str> = path.split('/').collect();
     match_segments(&pattern, &path)
@@ -66,7 +70,9 @@ fn match_segments(pattern: &[&str], path: &[&str]) -> bool {
         return path.is_empty();
     }
     if pattern[0] == "**" {
-        // `**` swallows zero or more whole segments.
+        // `**` swallows zero or more whole segments. Memoized by the caller
+        // below, so stacked `**`s cost O(pattern × path) rather than
+        // exponential time.
         return (0..=path.len()).any(|skip| match_segments(&pattern[1..], &path[skip..]));
     }
     if path.is_empty() {
@@ -78,27 +84,58 @@ fn match_segments(pattern: &[&str], path: &[&str]) -> bool {
 fn match_segment(pattern: &str, text: &str) -> bool {
     let pattern: Vec<char> = pattern.chars().collect();
     let text: Vec<char> = text.chars().collect();
-    segment(&pattern, &text)
+    // `seen[p * (text.len() + 1) + t]` — states already proven unmatchable.
+    // Patterns come from the model, and naive `*` backtracking is
+    // exponential: `*a*a*a*a*a*a*a*b` against a 44-character name took ~5 s,
+    // and two more groups did not finish. Memoization makes the worst case
+    // O(pattern × text) with no change in accepted language.
+    let mut seen = vec![false; (pattern.len() + 1) * (text.len() + 1)];
+    segment(&pattern, &text, 0, 0, &mut seen)
 }
 
-fn segment(pattern: &[char], text: &[char]) -> bool {
-    if pattern.is_empty() {
-        return text.is_empty();
+/// True when `pattern[p..]` matches `text[t..]`. `seen` marks `(p, t)` pairs
+/// already shown not to match.
+fn segment(pattern: &[char], text: &[char], p: usize, t: usize, seen: &mut [bool]) -> bool {
+    let stride = text.len() + 1;
+    let key = p * stride + t;
+    if seen[key] {
+        return false;
     }
-    match pattern[0] {
-        '*' => segment(&pattern[1..], text) || (!text.is_empty() && segment(pattern, &text[1..])),
-        '?' => !text.is_empty() && segment(&pattern[1..], &text[1..]),
-        '[' => match class_end(pattern) {
-            None => !text.is_empty() && text[0] == '[' && segment(&pattern[1..], &text[1..]),
+    let matched = segment_uncached(pattern, text, p, t, seen);
+    if !matched {
+        seen[key] = true;
+    }
+    matched
+}
+
+fn segment_uncached(
+    pattern: &[char],
+    text: &[char],
+    p: usize,
+    t: usize,
+    seen: &mut [bool],
+) -> bool {
+    if p == pattern.len() {
+        return t == text.len();
+    }
+    let at_end = t == text.len();
+    match pattern[p] {
+        '*' => {
+            segment(pattern, text, p + 1, t, seen)
+                || (!at_end && segment(pattern, text, p, t + 1, seen))
+        }
+        '?' => !at_end && segment(pattern, text, p + 1, t + 1, seen),
+        '[' => match class_end(&pattern[p..]) {
+            None => !at_end && text[t] == '[' && segment(pattern, text, p + 1, t + 1, seen),
             Some((negated, end)) => {
-                if text.is_empty() {
+                if at_end {
                     return false;
                 }
-                let inside = class_match(&pattern[1..end], text[0]);
-                (inside != negated) && segment(&pattern[end + 1..], &text[1..])
+                let inside = class_match(&pattern[p + 1..p + end], text[t]);
+                (inside != negated) && segment(pattern, text, p + end + 1, t + 1, seen)
             }
         },
-        literal => !text.is_empty() && text[0] == literal && segment(&pattern[1..], &text[1..]),
+        literal => !at_end && text[t] == literal && segment(pattern, text, p + 1, t + 1, seen),
     }
 }
 

@@ -33,7 +33,6 @@ use rusta_llm::{Message, Role};
 use serde_json::Value;
 
 use crate::error::Error;
-use crate::state::State;
 
 /// Hard cap for one skill card's body, in estimated tokens (§6.6).
 pub const CARD_TOKEN_BUDGET: u64 = 120;
@@ -119,6 +118,15 @@ impl SkillCard {
     /// typo in a card fails at load time with the remedy in the message,
     /// never silently at injection time.
     pub fn parse(text: &str) -> Result<Self, String> {
+        // CRLF cards are ordinary on Windows checkouts; normalize once so
+        // the delimiter scan and the body both see LF.
+        let normalized;
+        let text = if text.contains('\r') {
+            normalized = text.replace("\r\n", "\n");
+            normalized.as_str()
+        } else {
+            text
+        };
         let rest = text
             .strip_prefix("---\n")
             .ok_or_else(|| "missing opening '---' front-matter delimiter".to_owned())?;
@@ -330,6 +338,14 @@ fn trigger_matches(trigger: &str, cue: &str) -> bool {
         .any(|word| word == trigger)
 }
 
+/// The starter deck (plan §6.6), embedded so it ships with the binary.
+static SHIPPED_CARDS: [&str; 4] = [
+    include_str!("../../../skills/edit-recovery.md"),
+    include_str!("../../../skills/read-large-files.md"),
+    include_str!("../../../skills/verify-focus.md"),
+    include_str!("../../../skills/write-vs-edit.md"),
+];
+
 /// A loaded, trigger-matched deck of skill cards.
 ///
 /// Cards are kept sorted by priority (desc) then name, so selection order is
@@ -340,6 +356,39 @@ pub struct CardDeck {
 }
 
 impl CardDeck {
+    /// The starter deck, compiled into the binary.
+    ///
+    /// Cards are Rusta's own data (plan §5 ships them beside the crates), so
+    /// they must travel with the binary. Reading them from the *target*
+    /// repository instead meant the shipped deck only ever loaded when Rusta
+    /// was run on Rusta, and that a user repo with an unrelated `skills/`
+    /// directory failed to start at all.
+    pub fn shipped() -> Self {
+        let cards = SHIPPED_CARDS
+            .iter()
+            .map(|text| SkillCard::parse(text).expect("shipped cards are tested at build time"))
+            .collect();
+        Self::from_cards(cards)
+    }
+
+    /// The shipped deck plus any project cards under `<root>/.rusta/skills/`.
+    ///
+    /// The path is Rusta-owned and unambiguous, so a malformed card there is
+    /// still a loud error — unlike the old generic `skills/`, which collides
+    /// with several other tools' conventions. A project card with the same
+    /// `name` as a shipped one replaces it.
+    pub fn load_for_repo(root: &Path) -> Result<Self, Error> {
+        let mut cards: Vec<SkillCard> = Self::shipped().cards;
+        let project = Self::load(&root.join(".rusta").join("skills"))?;
+        for card in project.cards {
+            match cards.iter().position(|c| c.name == card.name) {
+                Some(index) => cards[index] = card,
+                None => cards.push(card),
+            }
+        }
+        Ok(Self::from_cards(cards))
+    }
+
     /// Loads every `*.md` card in `dir` (non-recursive), sorted by file name.
     /// A missing directory is an empty deck — no cards, no injection; a
     /// malformed card is a loud load error with the file named.
@@ -773,14 +822,6 @@ impl Trip {
     fn none() -> Self {
         Self::default()
     }
-
-    /// The representative capsule (highest priority) for this trip.
-    pub fn capsule(&self) -> Option<&'static Capsule> {
-        self.capsules
-            .iter()
-            .map(|name| capsule(name).expect("registered capsule"))
-            .max_by_key(|capsule| capsule.priority)
-    }
 }
 
 /// An active mitigation and when it was activated (for TTL expiry).
@@ -811,8 +852,12 @@ pub struct LoopGuard {
     stagnation: HashMap<String, u32>,
     /// Rolling window of recent fingerprints, feeding detector (b).
     recent: VecDeque<String>,
-    /// Detector (c): last validator fingerprint and its consecutive count.
-    last_validator: Option<(String, u32)>,
+    /// Detector (c): consecutive-identical-output count per validator
+    /// command. Keyed by command because the §7 default configures three of
+    /// them: with a single slot, running `check`, `clippy`, `test` in
+    /// sequence resets the counter on every call and the detector could
+    /// never trip.
+    last_validator: HashMap<String, (String, u32)>,
     /// Detector (d): no-op edits seen.
     noop_edits: u32,
     /// Active capsules with activation turns.
@@ -838,7 +883,7 @@ impl LoopGuard {
         Self {
             stagnation: HashMap::new(),
             recent: VecDeque::new(),
-            last_validator: None,
+            last_validator: HashMap::new(),
             noop_edits: 0,
             active: Vec::new(),
             turn: 0,
@@ -882,12 +927,17 @@ impl LoopGuard {
     /// `command|output` runs in a row mean the model is re-verifying
     /// without changing anything.
     pub fn observe_validation(&mut self, command: &str, output: &str) -> Trip {
-        let fingerprint = format!("{command}|{}", output.trim());
-        let count = match &self.last_validator {
-            Some((seen, count)) if *seen == fingerprint => count + 1,
-            _ => 1,
+        let fingerprint = output.trim().to_owned();
+        let entry = self
+            .last_validator
+            .entry(command.to_owned())
+            .or_insert_with(|| (String::new(), 0));
+        let count = if entry.0 == fingerprint {
+            entry.1 + 1
+        } else {
+            1
         };
-        self.last_validator = Some((fingerprint, count));
+        *entry = (fingerprint, count);
         let mut trip = Trip::none();
         if count >= VALIDATOR_REPEAT_TRIP {
             trip.capsules.push("mutation_required");
@@ -1027,25 +1077,41 @@ impl LoopGuard {
         self.acknowledge_escalation();
         self.stagnation.clear();
         self.recent.clear();
-        self.last_validator = None;
+        self.last_validator.clear();
         self.noop_edits = 0;
         self.active.clear();
     }
 }
 
-/// Applies the §6.6 escalation regression. The §6.4 transition table is
-/// normative and has no single-event `Editing → Planning` edge, so the
-/// regression re-seeds the machine at `Planning` (the `/resume` mechanism)
-/// rather than inventing an illegal scaffold event; any other phase is a
-/// loud programming error.
-pub fn regress_for_escalation(state: State) -> Result<State, Error> {
-    match state {
-        State::Editing => Ok(State::Planning),
-        other => Err(Error::InvalidTransition {
-            from: other.to_string(),
-            event: "FAMA escalation regression".to_owned(),
-        }),
+/// Canonical error-kind cues (§6.6: "triggers: [tool names, **error kinds**,
+/// keywords]"). Recovery cards trigger on these, so the names must be
+/// derived from observation text by one shared function rather than
+/// hand-written at each call site — otherwise a card declares a trigger no
+/// code path ever emits.
+pub fn error_cues(tool: &str, content: &str) -> Vec<String> {
+    let mut cues = vec!["error".to_owned()];
+    let lower = content.to_lowercase();
+    let has = |needle: &str| lower.contains(needle);
+
+    if tool == "edit" || tool == "write" {
+        cues.push("edit_failed".to_owned());
+        if has("failed to exactly match") || has("no such file") {
+            cues.push("not_found".to_owned());
+        }
+        if has("did you mean") || has("already in") {
+            cues.push("duplicate_match".to_owned());
+        }
     }
+    if tool == "validation" {
+        cues.push("validation_failed".to_owned());
+        if has("test result:") || has("test failed") || has("panicked") || has("0 tests") {
+            cues.push("test_failure".to_owned());
+        }
+    }
+    if tool == "read" && has("no such file") {
+        cues.push("not_found".to_owned());
+    }
+    cues
 }
 
 /// Deterministic serialization of a tool-call JSON value: object keys are
@@ -1074,6 +1140,7 @@ fn canonical_json(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::State;
     use rusta_llm::Role;
     use serde_json::json;
 
@@ -1519,11 +1586,15 @@ mod tests {
             "{}",
             escalation.notify
         );
-        assert_eq!(
-            regress_for_escalation(State::Editing).expect("regress"),
-            State::Planning
-        );
-        assert!(regress_for_escalation(State::Exploring).is_err());
+        // The regression itself is the machine's `LoopEscalated` edge
+        // (§6.4 table) so that it journals; the guard only latches the
+        // reason and the user notification.
+        let mut machine = crate::state::Machine::resume_at(State::Editing);
+        let transition = machine
+            .fire(crate::state::PhaseEvent::LoopEscalated)
+            .expect("legal in Editing")
+            .expect("state change");
+        assert_eq!(transition.to, State::Planning);
         guard.acknowledge_escalation();
         assert!(guard.escalation().is_none());
 

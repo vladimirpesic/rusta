@@ -135,6 +135,22 @@ struct DiffRecord {
     created: bool,
 }
 
+/// Restricts a newly created log to its owner (`0600`).
+///
+/// The log and its sidecar carry whole file contents, tool observations and
+/// validator output — anything the agent read, including a `.env` it was
+/// asked to look at. At the default umask those files land group- and
+/// world-readable; smallcode sets `0600` on its session files for exactly
+/// this data. A no-op on non-Unix, where the mode bit does not apply.
+fn owner_only(options: &mut OpenOptions) -> &mut OpenOptions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options
+}
+
 /// FNV-1a 64-bit. Small, forever-stable content hashing for the session
 /// journal: logs must replay identically across Rusta versions, so std's
 /// `DefaultHasher` (stability not guaranteed across releases) is
@@ -163,11 +179,8 @@ impl Session {
     /// existing events — the basis of `/resume` (plan §6.10).
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, Error> {
         let path = path.into();
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .read(true)
-            .open(&path)?;
+        let file =
+            owner_only(OpenOptions::new().create(true).append(true).read(true)).open(&path)?;
         let events = replay(&path)?;
         Ok(Self {
             path,
@@ -202,12 +215,8 @@ impl Session {
     ) -> Result<(), Error> {
         let sidecar_path = self.sidecar_path();
         if self.sidecar.is_none() {
-            self.sidecar = Some(
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&sidecar_path)?,
-            );
+            self.sidecar =
+                Some(owner_only(OpenOptions::new().create(true).append(true)).open(&sidecar_path)?);
         }
         let sidecar = self.sidecar.as_mut().expect("sidecar just opened");
         for record in [
@@ -262,7 +271,7 @@ impl Session {
         let mut ledger = Ledger::new();
         let mut undo_entries: Vec<UndoEntry> = Vec::new();
         let mut phase = State::Exploring;
-        let mut pending_call: Option<String> = None;
+        let mut pending_call: Option<(String, Option<String>)> = None;
 
         for event in &self.events {
             match event {
@@ -275,12 +284,15 @@ impl Session {
                     messages.push(Message::assistant(content.clone()));
                 }
                 Event::ToolCall { name, input } => {
-                    if matches!(name.as_str(), "read" | "map_drill") {
-                        if let Some(path) = input.get("path").and_then(|value| value.as_str()) {
-                            ledger.record_read(Path::new(path));
-                        }
-                    }
-                    pending_call = Some(name.clone());
+                    // The credit is deferred to the paired result: a read
+                    // that *failed* never put the file in the model's
+                    // context, so crediting it here would let a resumed
+                    // session edit a file it has not actually seen.
+                    let path = input
+                        .get("path")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_owned);
+                    pending_call = Some((name.clone(), path));
                 }
                 Event::ToolResult {
                     status,
@@ -290,7 +302,12 @@ impl Session {
                     // An orphan result (torn log) is skipped; a dangling
                     // call without a result never entered the live context
                     // as an observation either.
-                    if let Some(name) = pending_call.take() {
+                    if let Some((name, path)) = pending_call.take() {
+                        if *status == Status::Ok && matches!(name.as_str(), "read" | "map_drill") {
+                            if let Some(path) = &path {
+                                ledger.record_read(Path::new(path));
+                            }
+                        }
                         let mut content = summary.clone();
                         if *truncated {
                             content.push_str("\n… [truncated]");

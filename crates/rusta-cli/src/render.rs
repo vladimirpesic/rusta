@@ -34,9 +34,4 @@ impl Reporter {
         let _ = self.out.write_all(text.as_bytes());
         let _ = self.out.flush();
     }
-
-    /// A blank line.
-    pub fn blank(&mut self) {
-        self.line("");
-    }
 }

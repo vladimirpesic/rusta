@@ -168,11 +168,6 @@ impl Git {
             Err(_) => "git diff failed — check the repository state".to_owned(),
         }
     }
-
-    /// True when `HEAD` is exactly `sha` (used by `/undo` reporting).
-    pub fn head_is(&self, sha: &str) -> bool {
-        self.head().as_deref() == Some(sha)
-    }
 }
 
 /// Runs a sync git subcommand, capturing stdout as lossy UTF-8.
@@ -254,7 +249,7 @@ mod tests {
         let sha = git
             .commit(&["a.txt".to_owned()], "rusta: first batch")
             .expect("commit");
-        assert!(git.head_is(&sha));
+        assert_eq!(git.head().as_deref(), Some(sha.as_str()));
         assert_eq!(
             git.head_message().as_deref(),
             Some("rusta: first batch"),
@@ -350,7 +345,7 @@ mod tests {
         let sha = commit_batch(&git, &["c.txt".to_owned()], "async batch")
             .await
             .expect("commit");
-        assert!(git.head_is(&sha));
+        assert_eq!(git.head().as_deref(), Some(sha.as_str()));
         assert_eq!(git.head_message().as_deref(), Some("rusta: async batch"));
         assert!(git.diff().lines().count() > 0);
     }

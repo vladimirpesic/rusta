@@ -22,7 +22,7 @@ pub mod state;
 
 pub use context::{
     CARD_TOKEN_BUDGET, Capsule, CardDeck, CardKind, Compression, Compressor, Escalation, LoopGuard,
-    MAX_INJECTED_CARDS, SkillCard, SummaryPlan, Trip, capsule, regress_for_escalation,
+    MAX_INJECTED_CARDS, SkillCard, SummaryPlan, Trip, capsule, error_cues,
 };
 pub use error::Error;
 pub use prompt::{CORE_PROMPT_TOKEN_BUDGET, core_prompt, core_prompt_tokens, observation};

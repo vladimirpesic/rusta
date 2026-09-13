@@ -8,8 +8,11 @@
 //! capped per §6.1.
 //!
 //! Static command analysis is best-effort by nature — the deny-list covers
-//! the §6.12 table and obvious absolute-path writes; it is a guard rail,
-//! not a sandbox. Interactive *processes* cannot be detected at runtime
+//! the §6.12 table, absolute- and parent-relative writes, system-directory
+//! copies, and `cd` out of the repo. It is a guard rail, not a sandbox: a
+//! determined command can still reach outside (an interpreter one-liner,
+//! for instance), which is why `shell` stays approval-gated and is denied
+//! outright in non-interactive `-c` runs. Interactive *processes* cannot be detected at runtime
 //! without a PTY, so known-interactive commands are denied up front with
 //! the plan's remedy: pass flags for non-interactive mode.
 
@@ -58,9 +61,12 @@ impl Approver for DenyAll {
 
 /// The §6.12 default deny table: (regex, why, remedy). Config entries in
 /// `[shell].deny` extend it; `[shell].allow` prefixes bypass approval.
-pub const DEFAULT_DENY: [(&str, &str, &str); 9] = [
+pub const DEFAULT_DENY: [(&str, &str, &str); 12] = [
     (
-        r"\brm\s+[^|;&]*\s+/(\s|$)",
+        // `rm -rf /`, `rm -rf /*`, `rm -rf "/"` and friends. The glob form
+        // is the one that actually destroys a machine, and the original
+        // pattern (bare `/` only) let it straight through.
+        r#"\brm\s+[^|;&]*\s+["']?/["']?(\*|\s|$)"#,
         "rm targets the filesystem root",
         "delete specific paths inside the repo instead",
     ),
@@ -100,9 +106,30 @@ pub const DEFAULT_DENY: [(&str, &str, &str); 9] = [
         "download to a file, inspect it, then run it",
     ),
     (
-        r"(>>?\s*/|tee\s+(-a\s+)?/)",
+        // Redirection or `tee` to an absolute path, with or without quotes.
+        r#"(>>?\s*["']?/|tee\s+(-a\s+)?["']?/)"#,
         "writes outside the repo root",
         "write inside the repo root only",
+    ),
+    (
+        // Redirection or `tee` to a parent-relative path.
+        r#"(>>?\s*["']?\.\./|tee\s+(-a\s+)?["']?\.\./)"#,
+        "writes above the repo root",
+        "write inside the repo root only",
+    ),
+    (
+        // Copy/move/link/install with an absolute destination. `cwd` is the
+        // repo root, so an absolute target is by definition outside it.
+        r#"\b(cp|mv|ln|install|rsync)\b[^|;&]*\s["']?/(?:etc|usr|bin|sbin|boot|lib|opt|var|root|sys|proc|dev)\b"#,
+        "writes to a system directory outside the repo",
+        "write inside the repo root only",
+    ),
+    (
+        // `cd` out of the repo defeats every cwd-relative check that
+        // follows it in the same command line.
+        r#"\bcd\s+["']?(/|\.\./|~)"#,
+        "changes directory outside the repo root",
+        "stay inside the repo; use repo-relative paths",
     ),
 ];
 

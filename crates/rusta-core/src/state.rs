@@ -216,17 +216,27 @@ pub enum PhaseEvent {
     ValidationFailed,
     /// Ctrl-C / user abort: abandon the task, return to `Exploring`.
     UserInterrupt,
+    /// A FAMA-lite detector reached 2× its trip threshold (§6.6): the edit
+    /// loop is not converging, so drop back to `Planning` for a fresh plan.
+    ///
+    /// This is a first-class scaffold event rather than an out-of-band
+    /// re-seed of the machine. The §6.10 replay validator checks every
+    /// journaled `StateChange` against this table, so a regression that the
+    /// table does not know about makes the session log unreplayable — and
+    /// therefore unresumable.
+    LoopEscalated,
 }
 
 /// All scaffold events, in declaration order. The order is the deterministic
 /// tie-break for [`corrective_note`]'s path search.
-pub static PHASE_EVENTS: [PhaseEvent; 6] = [
+pub static PHASE_EVENTS: [PhaseEvent; 7] = [
     PhaseEvent::PlanDrafted,
     PhaseEvent::PlanApproved,
     PhaseEvent::EditsApplied,
     PhaseEvent::ValidationPassed,
     PhaseEvent::ValidationFailed,
     PhaseEvent::UserInterrupt,
+    PhaseEvent::LoopEscalated,
 ];
 
 impl PhaseEvent {
@@ -239,6 +249,7 @@ impl PhaseEvent {
             PhaseEvent::ValidationPassed => "ValidationPassed",
             PhaseEvent::ValidationFailed => "ValidationFailed",
             PhaseEvent::UserInterrupt => "UserInterrupt",
+            PhaseEvent::LoopEscalated => "LoopEscalated",
         }
     }
 }
@@ -275,6 +286,8 @@ pub(crate) fn pure_transition(from: State, event: PhaseEvent) -> Result<Option<T
         (S::Planning | S::Editing | S::Verifying, E::UserInterrupt) => {
             (Some(S::Exploring), "user interrupt")
         }
+        // §6.6 escalation: the edit loop is not converging.
+        (S::Editing, E::LoopEscalated) => (Some(S::Planning), "loop escalation"),
         // Interrupting while already at rest has nothing to abandon.
         (S::Exploring, E::UserInterrupt) => (None, "already exploring"),
         // Every remaining combination is illegal in its phase — impossible
@@ -282,17 +295,25 @@ pub(crate) fn pure_transition(from: State, event: PhaseEvent) -> Result<Option<T
         // (never silently ignored).
         (
             S::Exploring,
-            E::PlanApproved | E::EditsApplied | E::ValidationPassed | E::ValidationFailed,
+            E::PlanApproved
+            | E::EditsApplied
+            | E::ValidationPassed
+            | E::ValidationFailed
+            | E::LoopEscalated,
         )
         | (
             S::Planning,
-            E::PlanDrafted | E::EditsApplied | E::ValidationPassed | E::ValidationFailed,
+            E::PlanDrafted
+            | E::EditsApplied
+            | E::ValidationPassed
+            | E::ValidationFailed
+            | E::LoopEscalated,
         )
         | (
             S::Editing,
             E::PlanDrafted | E::PlanApproved | E::ValidationPassed | E::ValidationFailed,
         )
-        | (S::Verifying, E::PlanDrafted | E::PlanApproved | E::EditsApplied) => {
+        | (S::Verifying, E::PlanDrafted | E::PlanApproved | E::EditsApplied | E::LoopEscalated) => {
             return Err(Error::InvalidTransition {
                 from: from.to_string(),
                 event: event.name().to_owned(),
@@ -391,6 +412,7 @@ fn event_phrase(event: PhaseEvent) -> &'static str {
             "validation failure returns you to Editing to fix the errors"
         }
         PhaseEvent::UserInterrupt => "interrupt the task to return to Exploring",
+        PhaseEvent::LoopEscalated => "a detected edit loop returns you to Planning",
     }
 }
 
@@ -512,7 +534,7 @@ mod tests {
             Moves(State),
             Illegal,
         }
-        let table: [(State, PhaseEvent, Outcome); 24] = [
+        let table: [(State, PhaseEvent, Outcome); 28] = [
             // Exploring: only drafting a plan moves; interrupting at rest is a no-op.
             (
                 State::Exploring,
@@ -597,6 +619,23 @@ mod tests {
                 PhaseEvent::UserInterrupt,
                 Outcome::Moves(State::Exploring),
             ),
+            // §6.6 escalation: legal only out of Editing.
+            (
+                State::Exploring,
+                PhaseEvent::LoopEscalated,
+                Outcome::Illegal,
+            ),
+            (State::Planning, PhaseEvent::LoopEscalated, Outcome::Illegal),
+            (
+                State::Editing,
+                PhaseEvent::LoopEscalated,
+                Outcome::Moves(State::Planning),
+            ),
+            (
+                State::Verifying,
+                PhaseEvent::LoopEscalated,
+                Outcome::Illegal,
+            ),
         ];
         for (from, event, expected) in &table {
             let result = pure_transition(*from, *event);
@@ -615,7 +654,7 @@ mod tests {
                 }
             }
         }
-        // And the flip side: every combination has a pinned cell — 4 × 6.
+        // And the flip side: every combination has a pinned cell — 4 × 7.
         assert_eq!(table.len(), STATES.len() * PHASE_EVENTS.len());
         for from in STATES {
             for event in PHASE_EVENTS {

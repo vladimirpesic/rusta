@@ -5,6 +5,7 @@
 use std::path::Path;
 
 use rusta_core::Status;
+use rusta_tools::glob_match;
 
 use crate::repl::{App, Control};
 
@@ -220,12 +221,11 @@ fn map(app: &mut App) -> Control {
             .collect()
     };
     let rendered = app.tools.repomap().render_map(&chat, None, &[], &[]);
-    if rendered.is_empty() {
-        app.reporter
-            .line("(repo map is empty — no sources matched, or [repomap] max_tokens is 0)");
+    app.reporter.line(if rendered.is_empty() {
+        rusta_tools::EMPTY_MAP
     } else {
-        app.reporter.line(&rendered);
-    }
+        &rendered
+    });
     Control::Continue
 }
 
@@ -361,83 +361,23 @@ fn resume(app: &mut App, arg: &str) -> Control {
 
 // -------------------------------------------------------------- glob support
 
-/// Walks `root` (skipping `.git`, `target`, `node_modules`, `dist`, and
-/// hidden entries — the same ignore set as the repo map) collecting
-/// `/`-separated relative paths matching `pattern`, capped at 1,000
-/// entries (the §6.1 glob cap).
+/// Repo-relative paths under `root` matching `pattern`, capped at the §6.1
+/// glob limit. Uses the same walker and matcher as the model's `glob` tool,
+/// so `/add` and `glob` agree about what the repo contains — except that
+/// `/add` also skips dot-entries: the model may legitimately want
+/// `.github/workflows`, but sweeping hidden files into the chat-set by
+/// glob is almost never what a user means.
 fn walk_matching(root: &Path, pattern: &str) -> Vec<String> {
     const CAP: usize = 1_000;
-    let mut out = Vec::new();
-    let mut queue = vec![root.to_path_buf()];
-    while let Some(dir) = queue.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with('.') || name == "target" || name == "node_modules" || name == "dist"
-            {
-                continue;
-            }
-            let path = entry.path();
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace(std::path::MAIN_SEPARATOR, "/");
-            if path.is_dir() {
-                queue.push(path);
-            } else if glob_match(pattern, &rel) {
-                out.push(rel);
-                if out.len() >= CAP {
-                    return out;
-                }
-            }
-        }
-    }
+    let mut out: Vec<String> = rusta_tools::walk(root)
+        .iter()
+        .map(|rel| rusta_tools::display(rel))
+        .filter(|rel| !rel.split('/').any(|part| part.starts_with('.')))
+        .filter(|rel| glob_match(pattern, rel))
+        .take(CAP)
+        .collect();
     out.sort();
     out
-}
-
-/// Minimal glob matcher for `/add` and `/drop`: `*` matches within one path
-/// segment, `**` across segments, `?` one character. No character classes —
-/// deliberately small (§4 fences; full globs live behind the model's `glob`
-/// tool, which has its own matcher).
-pub(crate) fn glob_match(pattern: &str, path: &str) -> bool {
-    let pattern: Vec<&str> = pattern.split('/').collect();
-    let path: Vec<&str> = path.split('/').collect();
-    segments_match(&pattern, &path)
-}
-
-fn segments_match(pattern: &[&str], path: &[&str]) -> bool {
-    match pattern.first() {
-        None => path.is_empty(),
-        Some(&"**") => (0..=path.len()).any(|skip| segments_match(&pattern[1..], &path[skip..])),
-        Some(segment) => {
-            !path.is_empty()
-                && segment_match(segment, path[0])
-                && segments_match(&pattern[1..], &path[1..])
-        }
-    }
-}
-
-fn segment_match(pattern: &str, text: &str) -> bool {
-    fn walk(pattern: &[char], text: &[char]) -> bool {
-        match (pattern.first(), text.first()) {
-            (None, None) => true,
-            (None, Some(_)) => false,
-            (Some('*'), _) => {
-                walk(&pattern[1..], text) || (!text.is_empty() && walk(pattern, &text[1..]))
-            }
-            (Some('?'), Some(_)) => walk(&pattern[1..], &text[1..]),
-            (Some(want), Some(got)) => want == got && walk(&pattern[1..], &text[1..]),
-            (Some(_), None) => false,
-        }
-    }
-    let pattern: Vec<char> = pattern.chars().collect();
-    let text: Vec<char> = text.chars().collect();
-    walk(&pattern, &text)
 }
 
 #[cfg(test)]

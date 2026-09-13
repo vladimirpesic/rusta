@@ -573,14 +573,6 @@ impl Gate {
         Self::default()
     }
 
-    /// A fresh gate with a custom bound (tests; config extension).
-    pub fn with_bound(repair_bound: u32) -> Self {
-        Self {
-            repairs_used: 0,
-            repair_bound,
-        }
-    }
-
     /// Repair rounds consumed so far in this task.
     pub fn repairs_used(&self) -> u32 {
         self.repairs_used

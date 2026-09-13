@@ -48,11 +48,12 @@ fn run(root: &Path, input: &Value) -> Result<ToolOutcome, ToolOutcome> {
     }
 
     let from = from.min(lines.len());
-    let to = to.unwrap_or(from + caps::READ_LINES - 1).min(lines.len());
+    // The requested window, before caps: `to` omitted means "to EOF".
+    let requested_to = to.unwrap_or(lines.len()).min(lines.len());
     let mut shown: Vec<String> = Vec::new();
     let mut bytes_used = 0usize;
     let mut last_line = from.saturating_sub(1); // 1-based last included line
-    for (index, line) in lines.iter().enumerate().take(to).skip(from - 1) {
+    for (index, line) in lines.iter().enumerate().take(requested_to).skip(from - 1) {
         let numbered = format!("{:>4}| {line}", index + 1);
         bytes_used += numbered.len() + 1;
         if shown.len() >= caps::READ_LINES || bytes_used > caps::READ_BYTES {
@@ -62,11 +63,14 @@ fn run(root: &Path, input: &Value) -> Result<ToolOutcome, ToolOutcome> {
         last_line = index + 1;
     }
 
-    let truncated = last_line < lines.len();
+    // Truncated means *a §6.1 cap cut the slice short* — not that the caller
+    // asked for a window. Reporting a deliberate window as cap-truncated
+    // invites pointless re-reads and mislabels the §6.10 ToolResult event.
+    let truncated = last_line < requested_to;
     let mut content = format!("{}:{}-{last_line}\n", rel.display(), from);
     content.push_str(&shown.join("\n"));
     if truncated {
-        let remaining = lines.len() - last_line;
+        let remaining = requested_to - last_line;
         content.push_str(&format!(
             "\n[... {remaining} more lines truncated (caps: {} lines / {} KiB)]",
             caps::READ_LINES,

@@ -23,8 +23,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rusta_core::{
-    Escalation, Event, Machine, PhaseEvent, State, Status, Tool, Trip, core_prompt,
-    core_prompt_tokens, corrective_note, prompt, regress_for_escalation,
+    Event, PhaseEvent, State, Status, Tool, Trip, core_prompt, core_prompt_tokens, corrective_note,
+    prompt,
 };
 use rusta_dispatch::parse_tool_calls;
 use rusta_edit::{AppliedBlock, EditBlock, ParsedResponse, UndoEntry};
@@ -131,6 +131,16 @@ impl Responder for TerminalResponder {
     }
 }
 
+/// Everything one completion asked for: actionable items in document order,
+/// corrective notes, and suggested shell commands (§6.3 rule 5 — surfaced
+/// for confirmation, never auto-executed).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Parsed {
+    pub items: Vec<Item>,
+    pub notes: Vec<String>,
+    pub commands: Vec<String>,
+}
+
 /// One actionable thing a completion asked for, in document order (§6.1).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Item {
@@ -162,18 +172,21 @@ pub(crate) struct NativeCall {
 /// through `rusta_dispatch::parse_tool_calls` — both syntaxes keep their
 /// proven parsers and still execute in the order the model wrote them.
 /// Native `tool_calls` execute after the text items, in server order.
-pub(crate) fn parse_items(text: &str, native: &[NativeCall]) -> (Vec<Item>, Vec<String>) {
-    let mut items: Vec<Item> = Vec::new();
-    let mut notes: Vec<String> = Vec::new();
+pub(crate) fn parse_items(text: &str, native: &[NativeCall]) -> Parsed {
+    let mut out = Parsed::default();
     let mut prose = String::new();
 
-    fn flush(items: &mut Vec<Item>, notes: &mut Vec<String>, prose: &mut String) {
+    fn flush(out: &mut Parsed, prose: &mut String) {
         if !prose.trim().is_empty() {
             let parsed = rusta_edit::parse_response(prose);
             if !parsed.blocks.is_empty() {
-                items.push(Item::Blocks(parsed.blocks));
+                out.items.push(Item::Blocks(parsed.blocks));
             }
-            notes.extend(parsed.notes);
+            out.notes.extend(parsed.notes);
+            // §6.3 rule 5: a fenced shell block that is not part of an edit
+            // is a *suggestion*. It must reach the user — dropping it here
+            // made the whole rule dead code.
+            out.commands.extend(parsed.commands);
         }
         prose.clear();
     }
@@ -183,7 +196,7 @@ pub(crate) fn parse_items(text: &str, native: &[NativeCall]) -> (Vec<Item>, Vec<
     for line in text.split_inclusive('\n') {
         let trimmed = line.trim_start();
         if !in_fence && trimmed.starts_with("```tool") {
-            flush(&mut items, &mut notes, &mut prose);
+            flush(&mut out, &mut prose);
             in_fence = true;
             fence_body.clear();
         } else if in_fence && trimmed.starts_with("```") {
@@ -191,12 +204,12 @@ pub(crate) fn parse_items(text: &str, native: &[NativeCall]) -> (Vec<Item>, Vec<
             // interleave with prose edit blocks in true document order.
             let calls = parse_tool_calls(&format!("```tool\n{fence_body}\n```"));
             for call in calls.calls {
-                items.push(Item::Call {
+                out.items.push(Item::Call {
                     name: call.name,
                     input: call.input,
                 });
             }
-            notes.extend(calls.notes);
+            out.notes.extend(calls.notes);
             in_fence = false;
         } else if in_fence {
             fence_body.push_str(line);
@@ -208,22 +221,22 @@ pub(crate) fn parse_items(text: &str, native: &[NativeCall]) -> (Vec<Item>, Vec<
     if in_fence {
         let calls = parse_tool_calls(&format!("```tool\n{fence_body}\n```"));
         for call in calls.calls {
-            items.push(Item::Call {
+            out.items.push(Item::Call {
                 name: call.name,
                 input: call.input,
             });
         }
-        notes.extend(calls.notes);
+        out.notes.extend(calls.notes);
     }
-    flush(&mut items, &mut notes, &mut prose);
+    flush(&mut out, &mut prose);
 
     for native_call in native {
-        items.push(Item::Call {
+        out.items.push(Item::Call {
             name: native_call.name.clone(),
             input: native_call.input.clone(),
         });
     }
-    (items, notes)
+    out
 }
 
 /// §6.4 plan detection: a completion with no actionable items counts as a
@@ -231,13 +244,27 @@ pub(crate) fn parse_items(text: &str, native: &[NativeCall]) -> (Vec<Item>, Vec<
 /// (the core prompt's format). Conservative by construction — plain answers
 /// end the turn with the state unchanged (§6.4 "Read-only Q&A").
 pub(crate) fn is_plan(text: &str) -> bool {
-    let mentions_plan = text.to_lowercase().contains("plan");
+    // An intent cue plus a numbered list. Requiring the literal word "plan"
+    // was too brittle for small models, which routinely write "Steps:" or
+    // "Here's what I'll do:" and then loop forever against the §6.4 gate.
+    const CUES: [&str; 8] = [
+        "plan",
+        "step",
+        "steps",
+        "i will",
+        "i'll",
+        "here's what",
+        "approach",
+        "first,",
+    ];
+    let lower = text.to_lowercase();
+    let signals_intent = CUES.iter().any(|cue| lower.contains(cue));
     let numbered = text.lines().any(|line| {
         let trimmed = line.trim_start();
         let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
         digits > 0 && matches!(trimmed.chars().nth(digits), Some('.' | ')'))
     });
-    mentions_plan && numbered
+    signals_intent && numbered
 }
 
 /// The one-line summary of a user request for commit messages (§6.9):
@@ -304,8 +331,9 @@ impl App {
                 return;
             }
 
-            let (items, notes) = parse_items(&text, &native);
-            if items.is_empty() && notes.is_empty() {
+            let parsed = parse_items(&text, &native);
+            self.surface_commands(&parsed.commands);
+            if parsed.items.is_empty() && parsed.notes.is_empty() {
                 if self.handle_prose_turn(&text) {
                     continue; // plan drafted/approved — the loop continues
                 }
@@ -313,14 +341,14 @@ impl App {
             }
 
             let undo_before = self.tools.editor().undo_stack().len();
-            for item in items {
+            for item in parsed.items {
                 match item {
                     Item::Blocks(blocks) => self.apply_blocks(blocks),
                     Item::Call { name, input } => self.exec_call(&name, &input).await,
                 }
             }
-            if !notes.is_empty() {
-                self.push_observation("notes", &notes.join("\n"), Status::Error);
+            if !parsed.notes.is_empty() {
+                self.push_observation("notes", &parsed.notes.join("\n"), Status::Error);
             }
 
             let new_entries = self.tools.editor().undo_stack().len() - undo_before;
@@ -524,7 +552,11 @@ impl App {
         self.history.push(outcome.observation(name));
         self.card_cues.push(name.to_owned());
         if outcome.status == Status::Error {
-            self.card_cues.push("error".to_owned());
+            // §6.6 recovery cards trigger on error *kinds*, not on the bare
+            // word "error"; `error_cues` is the single place observation
+            // text becomes that vocabulary.
+            self.card_cues
+                .extend(rusta_core::error_cues(name, &outcome.content));
         }
     }
 
@@ -598,7 +630,19 @@ impl App {
     /// [`Gate`](rusta_validate::Gate) verdict. Returns `false` when the
     /// request must stop (green, or red with the repair budget exhausted).
     async fn validate_round(&mut self) -> bool {
-        let outcome = match self.config.validate.run(&self.root).await {
+        // §6.1 step 5 covers the stream; a validation round can run for
+        // `[validate] timeout_secs` *per command* (default 600 s), so it
+        // needs the same escape hatch or the user cannot take control back.
+        let outcome = tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                self.reporter.line("\n^C aborted — validation interrupted");
+                self.fire(PhaseEvent::UserInterrupt);
+                self.gate.reset();
+                return false;
+            }
+            outcome = self.config.validate.run(&self.root) => outcome,
+        };
+        let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(err) => {
                 // Config misuse is pre-checked at load; treat the impossible
@@ -638,9 +682,44 @@ impl App {
                 self.reporter
                     .line("validation failed (repair budget exhausted):");
                 self.reporter.line(&feedback);
+                // The edits are still applied and committed (§6.9 commits
+                // the batch before validating), so say plainly how to get
+                // back to green rather than leaving a red tree unexplained.
+                if let Some(batch) = self.batches.last() {
+                    self.reporter.line(&format!(
+                        "the last batch ({} file(s)) is still applied{} — /undo reverts it",
+                        batch.paths.len(),
+                        match &batch.sha {
+                            Some(sha) => format!(" and committed as {}", &sha[..7.min(sha.len())]),
+                            None => String::new(),
+                        }
+                    ));
+                }
                 false
             }
         }
+    }
+
+    /// Surfaces §6.3 rule 5 suggested commands to the user and tells the
+    /// model they were *not* run, so it does not assume their effects.
+    /// Running one is the user's decision: they can paste it, or ask for it
+    /// through the approval-gated `shell` tool.
+    fn surface_commands(&mut self, commands: &[String]) {
+        if commands.is_empty() {
+            return;
+        }
+        for command in commands {
+            self.reporter
+                .line(&format!("! suggested (not run): {command}"));
+        }
+        self.push_observation(
+            "shell suggestion",
+            &format!(
+                "These commands were shown to the user but NOT run:\n{}\nRun one with the shell                  tool if you need its output.",
+                commands.join("\n")
+            ),
+            Status::Ok,
+        );
     }
 
     /// Pushes a synthetic observation into history + session (recorded as a
@@ -657,6 +736,10 @@ impl App {
         });
         self.history
             .push(prompt::observation(name, status, content));
+        self.card_cues.push(name.to_owned());
+        if status == Status::Error {
+            self.card_cues.extend(rusta_core::error_cues(name, content));
+        }
     }
 
     /// Fires a scaffold event on the §6.4 machine, journaling the
@@ -686,16 +769,18 @@ impl App {
         if !trip.escalate {
             return;
         }
-        if let Ok(target) = regress_for_escalation(self.machine.state()) {
-            self.machine = Machine::resume_at(target);
-            let escalation = Escalation {
-                reason: trip.capsules.first().copied().unwrap_or("repeat_breaker"),
-                notify: format!(
-                    "loop detected ({}) — regressed to Planning for a fresh plan",
-                    trip.capsules.join(", ")
-                ),
-            };
-            self.reporter.line(&format!("! {}", escalation.notify));
+        if self.machine.state() == State::Editing {
+            // `PhaseEvent::LoopEscalated` is a first-class scaffold event, so
+            // `fire` journals the regression like any other transition. The
+            // §6.10 replay validator checks every `StateChange` against the
+            // table; an out-of-band re-seed made the log unreplayable and
+            // therefore the session unresumable.
+            let notice = self.guard.escalation().map(|e| e.notify);
+            self.fire(PhaseEvent::LoopEscalated);
+            self.guard.acknowledge_escalation();
+            if let Some(notice) = notice {
+                self.reporter.line(&format!("! {notice}"));
+            }
         }
         // Not in Editing: the capsule note still rides the next prompt
         // (§6.6 mitigation without the regression).
@@ -749,7 +834,7 @@ mod tests {
              middle\n\
              src/b.rs\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n\
              ```tool\n{\"name\": \"glob\", \"input\": {}}\n```\n";
-        let (items, notes) = parse_items(text, &[]);
+        let Parsed { items, notes, .. } = parse_items(text, &[]);
         assert!(notes.is_empty(), "{notes:?}");
         let shape: Vec<&str> = items
             .iter()
@@ -771,7 +856,7 @@ mod tests {
             name: "shell".to_owned(),
             input: Value::Null,
         }];
-        let (items, _) = parse_items(text, &native);
+        let Parsed { items, .. } = parse_items(text, &native);
         let names: Vec<&str> = items
             .iter()
             .map(|i| match i {
@@ -785,7 +870,7 @@ mod tests {
     #[test]
     fn malformed_fences_become_notes() {
         let text = "```tool\n{name: bogus}\n```";
-        let (items, notes) = parse_items(text, &[]);
+        let Parsed { items, notes, .. } = parse_items(text, &[]);
         assert!(items.is_empty());
         assert_eq!(notes.len(), 1);
         assert!(notes[0].contains("malformed tool block"), "{}", notes[0]);
