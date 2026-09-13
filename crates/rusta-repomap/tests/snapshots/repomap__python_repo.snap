@@ -1,20 +1,21 @@
 ---
 source: crates/rusta-repomap/tests/repomap.rs
+assertion_line: 74
 expression: map
 ---
 
-store.py:
-class InventoryManager:
-    def __init__(self):
-        self.stock = {}
-
-    def restock(self, sku, count):
-        self.stock[sku] = count
-
 api.py:
-from store import InventoryManager
+⋮
+│
+│def handle_restock(payload):
+│    mgr = InventoryManager()
+│    mgr.restock(payload["sku"], payload["count"])
+⋮
 
-def handle_restock(payload):
-    mgr = InventoryManager()
-    mgr.restock(payload["sku"], payload["count"])
-    return mgr.stock
+store.py:
+│class InventoryManager:
+│    def __init__(self):
+│        self.stock = {}
+│
+│    def restock(self, sku, count):
+│        self.stock[sku] = count

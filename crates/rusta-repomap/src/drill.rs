@@ -2,19 +2,26 @@
 //!
 //! Returns one definition's full span (`path` + `name`) or a line window
 //! (`path` + `from`/`to`, 1-based inclusive) as a compact text block.
-//! Definition spans are padded with the map's context constant (§6.5 step 5:
-//! ±8 lines, clamped at file edges) so the model sees doc comments,
-//! attributes, and item boundaries — the anchors a SEARCH block needs; the
+//! Definition spans are padded with ±8 context lines (§6.5 step 8, clamped
+//! at file edges) so the model sees doc comments, attributes, and item
+//! boundaries — the anchors a SEARCH block needs; the
 //! ledger credit means this window may be the model's whole view of the
 //! region before an edit. Explicit `Window` requests are the model's own
 //! choice and are never padded. The M7 tool handler wraps this and credits
 //! the read-before-edit ledger (§6.3); this module stays free of session
 //! state.
 
-use crate::lang::Lang;
-use crate::render::CONTEXT_LINES;
-use crate::tags::{TagKind, extract_tags};
 use std::path::Path;
+
+use crate::lang::Lang;
+use crate::tags::{TagKind, extract_tags};
+
+/// Context lines padded around a drilled definition span (§6.5 step 8
+/// DECIDED). Wider than the map renderer's overview window on purpose: the
+/// drill credits the read-before-edit ledger, so this may be the model's
+/// whole view of the region, and the lines just outside a span — doc
+/// comments, attributes, `impl` headers — are what a SEARCH block anchors on.
+const CONTEXT_LINES: usize = 8;
 
 /// What to drill: a definition by name, or a raw line window.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,9 +62,6 @@ pub fn drill(root: &Path, request: DrillRequest<'_>) -> Result<String, DrillErro
         }
         DrillRequest::Definition { path, name } => {
             let (from, to) = definition_span(root, path, name)?;
-            // Pad with the map's context constant (§6.5 step 5): the lines
-            // just outside a span — doc comments, attributes, the enclosing
-            // `impl`, item boundaries — are what a SEARCH block anchors on.
             // Clamped at the top here; the shared EOF clamp below handles
             // the bottom. `Window` requests are never padded.
             let from = from.saturating_sub(CONTEXT_LINES).max(1);

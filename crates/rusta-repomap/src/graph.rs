@@ -19,6 +19,8 @@ const TOLERANCE: f64 = 1e-6;
 const MAX_ITERATIONS: usize = 100;
 /// Self-edge weight for defined-but-never-referenced identifiers.
 const SELF_EDGE_WEIGHT: f64 = 0.1;
+/// Aider's edge multiplier when the *referencing* file is in the chat set.
+const CHAT_REFERENCER_BOOST: f64 = 50.0;
 
 /// User mentions steering personalization (§6.5 step 4).
 #[derive(Debug, Default, Clone)]
@@ -29,12 +31,18 @@ pub(crate) struct Mentions {
     pub(crate) idents: BTreeSet<String>,
 }
 
-/// A file's rank result: repo-relative path plus the 0-based definition lines
-/// to show, in rank order (§6.5 step 5 renders these).
+/// One ranked line of interest: a definition line in a file, positioned by
+/// the ranking pass. `line: None` marks a file that produced no tags at all
+/// (Aider's `rel_other_fnames_without_tags`) — rendered as a bare path.
+///
+/// The list is flat and rank-ordered on purpose: §6.5 step 6 fitting drops
+/// the lowest-ranked *definitions*, not whole files, so a tight budget
+/// degrades to fewer definitions rather than to nothing (Aider fits over
+/// `ranked_tags[:middle]` the same way).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RankedFile {
+pub(crate) struct RankedLoi {
     pub(crate) rel: String,
-    pub(crate) lois: Vec<usize>,
+    pub(crate) line: Option<usize>,
 }
 
 type EdgeList<'a> = BTreeMap<&'a str, Vec<(&'a str, f64, &'a str)>>;
@@ -46,7 +54,7 @@ pub(crate) fn rank_files(
     file_tags: &BTreeMap<String, Vec<Tag>>,
     chat_files: &BTreeSet<String>,
     mentions: &Mentions,
-) -> Vec<RankedFile> {
+) -> Vec<RankedLoi> {
     if file_tags.is_empty() {
         return Vec::new();
     }
@@ -108,12 +116,19 @@ pub(crate) fn rank_files(
         }
     }
 
-    // Referenced identifiers: referencer → every definer, mul / (|D| · n_r).
+    // Referenced identifiers: referencer → every definer.
+    //
+    // Weight is Aider's `use_mul * sqrt(n_r)` (repomap.py): more references
+    // pull rank *toward* the definer, damped by the square root so that
+    // high-frequency (low-value) identifiers cannot dominate. The plan's
+    // original `mul / (|D| · n_r)` inverted that signal — see the §6.5
+    // step 3 erratum note. Chat files get Aider's ×50 referencer boost: what
+    // the session is already working on is the strongest steering signal
+    // there is.
     for (ident, referencers) in &references {
         let Some(definers) = defines.get(ident) else {
             continue;
         };
-        let d_count = definers.len() as f64;
         let mut mul = boost_multiplier(ident, mentions);
         if definers.len() > 5 {
             mul *= 0.1;
@@ -123,7 +138,12 @@ pub(crate) fn rank_files(
             *per_file.entry(r).or_insert(0) += 1;
         }
         for (referencer, n_r) in per_file {
-            let weight = mul / (d_count * n_r as f64);
+            let use_mul = if chat_files.contains(referencer) {
+                mul * CHAT_REFERENCER_BOOST
+            } else {
+                mul
+            };
+            let weight = use_mul * (n_r as f64).sqrt();
             for definer in definers {
                 edges
                     .entry(referencer)
@@ -221,13 +241,14 @@ fn pagerank<'a>(
 }
 
 /// Aider's `ranked_definitions`: distribute each source's rank across its
-/// out-edges by weight share, accumulate per (file, identifier), sort by
-/// accumulated rank, and expand to per-file lines-of-interest in rank order.
+/// out-edges by weight share, accumulate per (file, identifier), and sort by
+/// accumulated rank. The result is a flat, rank-ordered list of definition
+/// lines — the unit §6.5 step 6 fitting works in.
 fn distribute_rank<'a>(
     ranked: &[(&'a str, f64)],
     edges: &EdgeList<'a>,
     def_lines: &BTreeMap<(&'a str, &'a str), BTreeSet<usize>>,
-) -> Vec<RankedFile> {
+) -> Vec<RankedLoi> {
     let mut scores: BTreeMap<(&str, &str), f64> = BTreeMap::new();
     for &(src, src_rank) in ranked {
         let Some(outs) = edges.get(src) else {
@@ -248,32 +269,22 @@ fn distribute_rank<'a>(
             .then_with(|| a.0.cmp(&b.0))
     });
 
-    let mut files: Vec<RankedFile> = Vec::new();
-    let mut index: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut out: Vec<RankedLoi> = Vec::new();
+    let mut seen: BTreeSet<(&str, usize)> = BTreeSet::new();
     for ((file, ident), _) in order {
-        let lines = def_lines.get(&(file, ident));
-        match index.get(file) {
-            Some(&i) => {
-                if let Some(lines) = lines {
-                    files[i].lois.extend(lines.iter().copied());
-                }
-            }
-            None => {
-                index.insert(file, files.len());
-                files.push(RankedFile {
+        let Some(lines) = def_lines.get(&(file, ident)) else {
+            continue;
+        };
+        for &line in lines {
+            if seen.insert((file, line)) {
+                out.push(RankedLoi {
                     rel: file.to_string(),
-                    lois: lines
-                        .map(|l| l.iter().copied().collect())
-                        .unwrap_or_default(),
+                    line: Some(line),
                 });
             }
         }
     }
-    for file in &mut files {
-        file.lois.sort_unstable();
-        file.lois.dedup();
-    }
-    files
+    out
 }
 
 #[cfg(test)]

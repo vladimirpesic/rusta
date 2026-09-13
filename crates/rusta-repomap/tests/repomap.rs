@@ -89,6 +89,68 @@ fn token_fitting_never_exceeds_budget() {
     }
 }
 
+/// The C1 regression: golden fixtures are tiny, so per-file rendering used
+/// to fit them by accident. A repo of ordinary-sized files must still render
+/// at the §7 default budget — fitting drops definitions, never everything.
+#[test]
+fn ordinary_sized_files_render_at_the_default_budget() {
+    let repo = tempfile::TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(repo.path().join("src")).expect("dirs");
+    for name in ["alpha", "beta", "gamma"] {
+        let mut body = String::new();
+        for i in 0..25 {
+            body.push_str(&format!(
+                "/// Doc for {name} {i}.\npub fn {name}_item_{i}(x: u32) -> u32 {{\n"
+            ));
+            for j in 0..8 {
+                body.push_str(&format!("    let v{j} = x + {j};\n"));
+            }
+            body.push_str("    x\n}\n\n");
+        }
+        std::fs::write(repo.path().join(format!("src/{name}.rs")), body).expect("write");
+    }
+
+    // 1024 is the §7 default. It must produce a usable map, not "".
+    let map = RepoMap::new(repo.path())
+        .with_budget(1024)
+        .render_map(&[], None, &[], &[]);
+    assert!(!map.is_empty(), "default-budget map was empty");
+    assert!(estimate_tokens(&map) <= 1024, "over budget");
+    assert!(map.contains("src/"), "no file headers: {map}");
+
+    // And it must scale: a bigger budget shows strictly more.
+    let bigger = RepoMap::new(repo.path())
+        .with_budget(8192)
+        .render_map(&[], None, &[], &[]);
+    assert!(bigger.len() > map.len(), "budget increase showed no more");
+    assert!(estimate_tokens(&bigger) <= 8192);
+}
+
+/// Elided regions must always be marked, so the model can never read two
+/// non-adjacent regions as contiguous code (H1).
+#[test]
+fn elided_regions_are_marked_in_rendered_maps() {
+    let repo = tempfile::TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(repo.path().join("src")).expect("dirs");
+    let mut body = String::from("pub fn first() -> u32 { 1 }\n");
+    for i in 0..40 {
+        body.push_str(&format!("// filler line {i}\n"));
+    }
+    body.push_str("pub fn second() -> u32 { first() }\n");
+    std::fs::write(repo.path().join("src/a.rs"), body).expect("write");
+    std::fs::write(
+        repo.path().join("src/b.rs"),
+        "fn main() { let _ = (first(), second()); }\n",
+    )
+    .expect("write");
+
+    let map = RepoMap::new(repo.path())
+        .with_budget(4096)
+        .render_map(&[], None, &[], &[]);
+    assert!(map.contains('\u{22EE}'), "no elision marker: {map}");
+    assert!(map.contains('\u{2502}'), "no gutter: {map}");
+}
+
 #[test]
 fn chat_files_steer_ranking_but_never_render() {
     let repo = sample_repo("rust");

@@ -1,98 +1,144 @@
 //! Budget-fitted rendering — DEVELOPMENT_PLAN.md §6.5 steps 5–6.
 //!
-//! Files render in rank order, chat files excluded (their content is already
-//! in context). Each file shows its definition lines as lines-of-interest
-//! padded by up to 8 surrounding context lines, headed by `path/to/file.rs:`;
-//! tag-less files appear as bare paths. Every rendered line is truncated to
-//! 100 chars. Token cost is estimated from ≤ 100 evenly-spaced lines scaled by
-//! the character ratio (Aider's sampling trick); while over budget the
-//! middle-ranked files are dropped — top and bottom of the ranking are the
-//! most informative — and the largest fitting keep-set wins.
+//! Definitions render in rank order, grouped by file, chat files excluded
+//! (their content is already in context). Each shown region is the
+//! definition line plus a small window of surrounding context, headed by
+//! `path/to/file.rs:`; tag-less files appear as bare paths. Every rendered
+//! line is truncated to 100 chars and carries a `│` gutter, and every gap
+//! between shown regions is marked `⋮` so the model can never mistake
+//! elided code for contiguous code (Aider's `TreeContext` convention).
+//!
+//! Token cost is estimated from ≤ 100 evenly-spaced lines scaled by the
+//! character ratio (Aider's sampling trick). Fitting drops the
+//! lowest-ranked **definitions**, not whole files: the budget therefore
+//! binds smoothly, and a tight budget yields fewer definitions rather than
+//! an empty map.
 
-use crate::graph::RankedFile;
-use std::collections::BTreeSet;
+use crate::graph::RankedLoi;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// Context lines around each definition (§6.5 step 5). Shared with `drill`'s
-/// definition padding — zooming into a def shows the same neighborhood the
-/// map overview did.
-pub(crate) const CONTEXT_LINES: usize = 8;
+/// Context lines kept *above* a definition line — enough for an attribute,
+/// decorator, or one-line doc comment, which is what a SEARCH block anchors
+/// on. Deliberately small: the map is an overview, not a reading view.
+const PAD_BEFORE: usize = 1;
+/// Context lines kept *below* a definition line (signature plus a little
+/// body — the shape Aider's parent-scope rendering produces in practice).
+const PAD_AFTER: usize = 2;
 /// Hard cap on rendered line length in chars (§6.5 step 5).
 const MAX_LINE_LEN: usize = 100;
 /// Lines sampled for token-cost estimation (§6.5 step 6).
 const SAMPLE_LINES: usize = 100;
+/// Marks elided lines between two shown regions.
+const ELISION: &str = "⋮";
+/// Prefixes every shown source line, so structure and code never blur.
+const GUTTER: char = '│';
 
-/// Render the budget-fitted map for rank-ordered `files`, reading each source
-/// via `read` (repo-relative path → file text). Never exceeds `budget_tokens`
-/// as estimated by [`estimate_tokens`]; an un-fittable map renders empty.
+/// Render the budget-fitted map for rank-ordered `lois`, reading each source
+/// via `read` (repo-relative path → file text). Never exceeds
+/// `budget_tokens` as estimated by [`estimate_tokens`].
 pub(crate) fn fit_map(
-    files: &[RankedFile],
+    lois: &[RankedLoi],
     chat_files: &BTreeSet<String>,
     read: &dyn Fn(&str) -> Option<String>,
     budget_tokens: usize,
 ) -> String {
-    let visible: Vec<&RankedFile> = files
+    let visible: Vec<&RankedLoi> = lois
         .iter()
-        .filter(|f| !chat_files.contains(&f.rel))
+        .filter(|l| !chat_files.contains(&l.rel))
         .collect();
     if visible.is_empty() {
         return String::new();
     }
 
-    // Binary-search the largest keep-count whose render fits. Kept files are
-    // the head and tail of the ranking; the middle is dropped first.
-    let mut best: Option<String> = None;
+    // Largest rank-ordered prefix of the definition list whose render fits.
+    // Monotone by construction: keeping one more definition can only add
+    // lines, so binary search is sound.
+    let mut best = String::new();
     let (mut lo, mut hi) = (1usize, visible.len());
     while lo <= hi {
-        let keep = (lo + hi) / 2;
-        let text = render_subset(&visible, keep, read);
+        let keep = lo + (hi - lo) / 2;
+        let text = render_subset(&visible[..keep], read);
         if estimate_tokens(&text) <= budget_tokens {
-            best = Some(text);
+            best = text;
             lo = keep + 1;
         } else {
             hi = keep - 1;
         }
     }
-    best.unwrap_or_default()
+    best
 }
 
-/// Render the first `head` and last `keep - head` files of `visible`.
-fn render_subset(
-    visible: &[&RankedFile],
-    keep: usize,
-    read: &dyn Fn(&str) -> Option<String>,
-) -> String {
-    let head = keep.div_ceil(2);
-    let tail = keep - head;
+/// Render `kept` definitions, grouped by file (Aider sorts tags before
+/// building the tree, so output order is by path, not by rank).
+fn render_subset(kept: &[&RankedLoi], read: &dyn Fn(&str) -> Option<String>) -> String {
+    let mut by_file: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
+    let mut bare: BTreeSet<&str> = BTreeSet::new();
+    for loi in kept {
+        match loi.line {
+            Some(line) => {
+                by_file.entry(&loi.rel).or_default().insert(line);
+            }
+            None => {
+                bare.insert(&loi.rel);
+            }
+        }
+    }
     let mut out = String::new();
-    for file in visible
-        .iter()
-        .take(head)
-        .chain(visible.iter().skip(head).rev().take(tail).rev())
-    {
-        if let Some(source) = read(&file.rel) {
-            out.push_str(&render_file(file, &source));
+    for (rel, lines) in &by_file {
+        if let Some(source) = read(rel) {
+            out.push_str(&render_file(rel, lines, &source));
+        }
+    }
+    for rel in bare {
+        if !by_file.contains_key(rel) {
+            out.push_str(&format!("\n{rel}\n"));
         }
     }
     out
 }
 
-/// One file block: header plus context-padded definition lines, or a bare
-/// path when there is nothing to show.
-fn render_file(file: &RankedFile, source: &str) -> String {
-    if file.lois.is_empty() {
-        return format!("\n{}\n", file.rel);
-    }
+/// One file block: header, then each shown region gutter-prefixed, with `⋮`
+/// wherever lines were elided — including before the first region and after
+/// the last, when those do not reach the file's edges.
+fn render_file(rel: &str, lois: &BTreeSet<usize>, source: &str) -> String {
     let lines: Vec<&str> = source.lines().collect();
-    let last = lines.len().saturating_sub(1);
+    if lines.is_empty() {
+        return format!("\n{rel}\n");
+    }
+    let last = lines.len() - 1;
     let mut show: BTreeSet<usize> = BTreeSet::new();
-    for &loi in &file.lois {
-        for l in loi.saturating_sub(CONTEXT_LINES)..=loi.saturating_add(CONTEXT_LINES).min(last) {
-            show.insert(l);
+    for &loi in lois {
+        if loi > last {
+            continue; // stale cache entry; never index past the file
+        }
+        let from = loi.saturating_sub(PAD_BEFORE);
+        let to = loi.saturating_add(PAD_AFTER).min(last);
+        for line in from..=to {
+            show.insert(line);
         }
     }
-    let mut out = format!("\n{}:\n", file.rel);
-    for l in show {
-        out.push_str(&truncate(lines.get(l).copied().unwrap_or(""), MAX_LINE_LEN));
+    if show.is_empty() {
+        return format!("\n{rel}\n");
+    }
+
+    let mut out = format!("\n{rel}:\n");
+    let mut previous: Option<usize> = None;
+    for line in &show {
+        let gap = match previous {
+            None => *line > 0,              // lines elided above the first region
+            Some(prev) => *line > prev + 1, // lines elided between regions
+        };
+        if gap {
+            out.push_str(ELISION);
+            out.push('\n');
+        }
+        out.push(GUTTER);
+        out.push_str(&truncate(lines[*line], MAX_LINE_LEN));
+        out.push('\n');
+        previous = Some(*line);
+    }
+    if previous.is_some_and(|prev| prev < last) {
+        out.push_str(ELISION);
         out.push('\n');
     }
     out
@@ -153,4 +199,77 @@ fn count_tokens(s: &str) -> usize {
     }
     flush(run, &mut tokens);
     tokens
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loi(rel: &str, line: usize) -> RankedLoi {
+        RankedLoi {
+            rel: rel.to_owned(),
+            line: Some(line),
+        }
+    }
+
+    #[test]
+    fn gaps_between_shown_regions_are_marked() {
+        let mut body = String::from("pub fn first() {}\n");
+        for i in 0..40 {
+            body.push_str(&format!("// filler {i}\n"));
+        }
+        body.push_str("pub fn second() {}\n");
+        let read = |_: &str| Some(body.clone());
+        let text = render_file(
+            "a.rs",
+            &[0usize, 41].into_iter().collect(),
+            &read("a.rs").unwrap(),
+        );
+        assert!(text.contains(ELISION), "{text}");
+        // The elided middle must never be presented as contiguous: every
+        // boundary between non-adjacent shown lines carries the marker.
+        let elisions = text.matches(ELISION).count();
+        assert_eq!(elisions, 1, "{text}");
+        assert!(text.lines().any(|l| l.starts_with(GUTTER)), "{text}");
+    }
+
+    #[test]
+    fn a_tight_budget_yields_fewer_definitions_not_nothing() {
+        // The C1 regression: fitting drops definitions, so a small budget
+        // still renders something useful.
+        let mut body = String::new();
+        for i in 0..60 {
+            body.push_str(&format!("pub fn item_{i}() {{\n    work();\n}}\n\n"));
+        }
+        let read = move |_: &str| Some(body.clone());
+        let lois: Vec<RankedLoi> = (0..60).map(|i| loi("big.rs", i * 4)).collect();
+        let chat = BTreeSet::new();
+
+        let small = fit_map(&lois, &chat, &read, 120);
+        assert!(!small.is_empty(), "a tight budget must still render");
+        assert!(estimate_tokens(&small) <= 120);
+
+        let large = fit_map(&lois, &chat, &read, 4096);
+        assert!(large.len() > small.len(), "a larger budget shows more");
+        assert!(estimate_tokens(&large) <= 4096);
+    }
+
+    #[test]
+    fn chat_files_never_render() {
+        let read = |_: &str| Some("pub fn a() {}\n".to_owned());
+        let lois = vec![loi("a.rs", 0), loi("b.rs", 0)];
+        let chat: BTreeSet<String> = ["a.rs".to_owned()].into_iter().collect();
+        let text = fit_map(&lois, &chat, &read, 4096);
+        assert!(!text.contains("a.rs"), "{text}");
+        assert!(text.contains("b.rs"), "{text}");
+    }
+
+    #[test]
+    fn stale_line_numbers_never_panic() {
+        let read = |_: &str| Some("one\ntwo\n".to_owned());
+        let lois = vec![loi("a.rs", 999)];
+        let chat = BTreeSet::new();
+        let text = fit_map(&lois, &chat, &read, 4096);
+        assert!(text.contains("a.rs"), "{text}");
+    }
 }

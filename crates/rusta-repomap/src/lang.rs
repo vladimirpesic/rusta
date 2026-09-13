@@ -18,6 +18,7 @@ pub(crate) enum Lang {
     Python,
     Javascript,
     Typescript,
+    Tsx,
     Go,
     C,
     Cpp,
@@ -36,6 +37,7 @@ impl Lang {
             "py" => Some(Self::Python),
             "js" | "mjs" | "cjs" | "jsx" => Some(Self::Javascript),
             "ts" | "mts" | "cts" => Some(Self::Typescript),
+            "tsx" => Some(Self::Tsx),
             "go" => Some(Self::Go),
             "c" | "h" => Some(Self::C),
             "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => Some(Self::Cpp),
@@ -51,6 +53,7 @@ impl Lang {
             Self::Python => tree_sitter_python::LANGUAGE.into(),
             Self::Javascript => tree_sitter_javascript::LANGUAGE.into(),
             Self::Typescript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Self::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Self::Go => tree_sitter_go::LANGUAGE.into(),
             Self::C => tree_sitter_c::LANGUAGE.into(),
             Self::Cpp => tree_sitter_cpp::LANGUAGE.into(),
@@ -64,7 +67,8 @@ impl Lang {
             Self::Rust => include_str!("../queries/rust-tags.scm"),
             Self::Python => include_str!("../queries/python-tags.scm"),
             Self::Javascript => include_str!("../queries/javascript-tags.scm"),
-            Self::Typescript => include_str!("../queries/typescript-tags.scm"),
+            // TSX shares TypeScript's tags query (Aider does the same).
+            Self::Typescript | Self::Tsx => include_str!("../queries/typescript-tags.scm"),
             Self::Go => include_str!("../queries/go-tags.scm"),
             Self::C => include_str!("../queries/c-tags.scm"),
             Self::Cpp => include_str!("../queries/cpp-tags.scm"),
@@ -90,6 +94,7 @@ mod tests {
         assert_eq!(file("py"), Some(Lang::Python));
         assert_eq!(file("js"), Some(Lang::Javascript));
         assert_eq!(file("ts"), Some(Lang::Typescript));
+        assert_eq!(file("tsx"), Some(Lang::Tsx));
         assert_eq!(file("go"), Some(Lang::Go));
         assert_eq!(file("c"), Some(Lang::C));
         assert_eq!(file("h"), Some(Lang::C));
@@ -108,6 +113,7 @@ mod tests {
             Lang::Python,
             Lang::Javascript,
             Lang::Typescript,
+            Lang::Tsx,
             Lang::Go,
             Lang::C,
             Lang::Cpp,

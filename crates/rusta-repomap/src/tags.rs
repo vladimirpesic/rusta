@@ -10,8 +10,11 @@
 //! patterns) get refs backfilled by an identifier word scan so they still
 //! connect to the reference graph (§6.5 step 2).
 
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
+
 use crate::lang::Lang;
-use tree_sitter::{Node, Parser, QueryCursor, StreamingIterator};
+use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
 /// Bumped when an embedded query changes what tags mean — part of the cache
 /// key (§6.5 step 7) so stale entries can never serve old tag shapes.
@@ -21,87 +24,12 @@ pub(crate) const QUERY_VERSION: u32 = 1;
 /// because a keyword that leaks in from another language can never match a
 /// definition (it is reserved there too) and is dropped by the
 /// defines ∩ references intersection.
-const KEYWORDS: &[&str] = &[
-    "as",
-    "async",
-    "await",
-    "break",
-    "case",
-    "catch",
-    "class",
-    "const",
-    "continue",
-    "def",
-    "default",
-    "defer",
-    "del",
-    "do",
-    "else",
-    "enum",
-    "except",
-    "export",
-    "extends",
-    "extern",
-    "false",
-    "finally",
-    "fn",
-    "for",
-    "from",
-    "func",
-    "go",
-    "goto",
-    "if",
-    "impl",
-    "import",
-    "in",
-    "interface",
-    "is",
-    "let",
-    "loop",
-    "match",
-    "mod",
-    "module",
-    "mut",
-    "namespace",
-    "new",
-    "None",
-    "not",
-    "null",
-    "nullptr",
-    "or",
-    "package",
-    "pass",
-    "print",
-    "pub",
-    "raise",
-    "return",
-    "self",
-    "static",
-    "struct",
-    "super",
-    "switch",
-    "template",
-    "this",
-    "throw",
-    "trait",
-    "true",
-    "True",
-    "False",
-    "try",
-    "type",
-    "typedef",
-    "union",
-    "unsafe",
-    "use",
-    "using",
-    "var",
-    "virtual",
-    "void",
-    "where",
-    "while",
-    "with",
-    "yield",
-];
+const KEYWORDS: &str = "as async await break case catch class const continue def default defer del do else enum except export extends extern false finally fn for from func go goto if impl import in interface is let loop match mod module mut namespace new None not null nullptr or package pass print pub raise return self static struct super switch template this throw trait true True False try type typedef union unsafe use using var virtual void where while with yield";
+
+/// Whether `word` is a reserved word in any supported language.
+fn is_keyword(word: &str) -> bool {
+    KEYWORDS.split(' ').any(|kw| kw == word)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TagKind {
@@ -121,10 +49,29 @@ pub(crate) struct Tag {
     pub(crate) line_end: usize,
 }
 
+/// Compiled tags queries, one per language, built on first use.
+///
+/// `Query::new` re-parses the `.scm` text every call, which on a large repo
+/// meant recompiling seven queries once per *file*. The compiled query is
+/// immutable and `Send + Sync`, so it is cached for the process (the same
+/// reasoning as devscriptor's `ParserCache`, which caches the `Language`
+/// rather than the non-`Send` `Parser`).
+fn cached_query(lang: Lang) -> Option<&'static Query> {
+    static CACHE: OnceLock<RwLock<HashMap<Lang, &'static Query>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+    if let Some(query) = cache.read().ok()?.get(&lang) {
+        return Some(*query);
+    }
+    // Compiling twice on a race is harmless; the loser's copy is dropped.
+    let compiled: &'static Query = Box::leak(Box::new(lang.compile_query().ok()?));
+    cache.write().ok()?.insert(lang, compiled);
+    Some(compiled)
+}
+
 /// Extract def/ref tags from `source`. `None` means "not a map candidate"
 /// (parse failure or query/grammar mismatch) — callers skip the file.
 pub(crate) fn extract_tags(source: &str, lang: Lang) -> Option<Vec<Tag>> {
-    let query = lang.compile_query().ok()?;
+    let query = cached_query(lang)?;
     let mut parser = Parser::new();
     parser.set_language(&lang.grammar()).ok()?;
     let tree = parser.parse(source, None)?;
@@ -134,7 +81,7 @@ pub(crate) fn extract_tags(source: &str, lang: Lang) -> Option<Vec<Tag>> {
     let text = |node: Node| source.get(node.start_byte()..node.end_byte()).unwrap_or("");
     // `&[u8]` implements `TextProvider` via byte-range lookup; the cursor
     // evaluates `#eq?`/`#match?` predicates with it during iteration.
-    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
     let mut tags = Vec::new();
     while let Some(m) = matches.next() {
         // Outer `definition.*` / `reference.*` nodes of this match, by capture
@@ -227,7 +174,7 @@ fn scan_identifiers(source: &str) -> Vec<(usize, String)> {
 }
 
 fn push_ident(out: &mut Vec<(usize, String)>, line: usize, ident: &str) {
-    if !ident.is_empty() && !KEYWORDS.contains(&ident) {
+    if !ident.is_empty() && !is_keyword(ident) {
         out.push((line, ident.to_string()));
     }
 }

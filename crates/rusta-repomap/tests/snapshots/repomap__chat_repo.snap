@@ -1,21 +1,21 @@
 ---
 source: crates/rusta-repomap/tests/repomap.rs
+assertion_line: 99
 expression: with_chat
 ---
 
-src/b.rs:
-use crate::a::calculate_total;
-use crate::a::InvoiceRecord;
-
-pub fn render_invoice(rec: &InvoiceRecord) -> String {
-    format!("{} {}", rec.id, calculate_total(&[rec.id]))
-}
-
 src/a.rs:
-pub fn calculate_total(items: &[u32]) -> u32 {
-    items.iter().sum()
-}
+│pub fn calculate_total(items: &[u32]) -> u32 {
+│    items.iter().sum()
+│}
+│
+│pub struct InvoiceRecord {
+│    pub id: u32,
+│}
 
-pub struct InvoiceRecord {
-    pub id: u32,
-}
+src/b.rs:
+⋮
+│
+│pub fn render_invoice(rec: &InvoiceRecord) -> String {
+│    format!("{} {}", rec.id, calculate_total(&[rec.id]))
+│}

@@ -1,31 +1,32 @@
 ---
 source: crates/rusta-repomap/tests/repomap.rs
+assertion_line: 74
 expression: map
 ---
 
-util.go:
-package main
-
-func calculate_total(items []int) int {
-    sum := 0
-    return sum
-}
-
-func describe(n int) string {
-    return "total"
-}
-
 driver.c:
-int compute(void) {
-    return helper_value(41) + 1;
-}
+│int compute(void) {
+│    return helper_value(41) + 1;
+│}
 
 main.go:
-package main
+│package main
+│
+│import "fmt"
+│
+│func main() {
+│    total := calculate_total([]int{1, 2})
+│    fmt.Println(describe(total))
+⋮
 
-import "fmt"
-
-func main() {
-    total := calculate_total([]int{1, 2})
-    fmt.Println(describe(total))
-}
+util.go:
+│package main
+│
+│func calculate_total(items []int) int {
+│    sum := 0
+│    return sum
+⋮
+│
+│func describe(n int) string {
+│    return "total"
+│}

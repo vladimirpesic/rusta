@@ -12,14 +12,14 @@
 //!    multi-case boosts (`graph`);
 //! 4. personalized PageRank ranking (damping 0.85, personalization `100/N`
 //!    plus chat/mention boosts);
-//! 5. budget-fitted rendering — 8 context lines per definition, 100-char line
-//!    truncation, 100-line sampling cost estimation, middle-drop fitting
-//!    (`render`);
+//! 5. budget-fitted rendering — a small context window per definition,
+//!    100-char line truncation with `⋮` elision markers, 100-line sampling
+//!    cost estimation, lowest-ranked-definition-drop fitting (`render`);
 //! 6. an in-memory `(path, mtime, size, query_version)` cache (`cache`).
 //!
 //! [`drill`] backs the `map_drill` tool (§6.4): a definition's full span
-//! padded with the map's ±8 context lines, or an exact line window of a
-//! file. The M7 tool registry wires it to the session and the
+//! padded with ±8 context lines (a zoom, deliberately wider than the map's
+//! overview window), or an exact line window of a file. The M7 tool registry wires it to the session and the
 //! read-before-edit ledger.
 
 mod cache;
@@ -34,7 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 pub use drill::{DrillError, DrillRequest, drill};
-use graph::{Mentions, RankedFile, rank_files};
+use graph::{Mentions, RankedLoi, rank_files};
 
 /// Default map budget in estimated tokens (Aider's default).
 const DEFAULT_MAP_TOKENS: usize = 1024;
@@ -116,14 +116,11 @@ impl RepoMap {
         };
         let mut ranked = rank_files(&file_tags, &chat, &mentions);
         // Tag-less other files still appear as bare paths (Aider's
-        // `rel_other_fnames_without_tags`), after every ranked file.
+        // `rel_other_fnames_without_tags`), ranked below every definition.
         ranked.extend(
             bare.into_iter()
                 .filter(|rel| !chat.contains(rel))
-                .map(|rel| RankedFile {
-                    rel,
-                    lois: Vec::new(),
-                }),
+                .map(|rel| RankedLoi { rel, line: None }),
         );
 
         let root = self.root.clone();
