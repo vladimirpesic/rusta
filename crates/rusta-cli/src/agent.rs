@@ -332,8 +332,12 @@ impl App {
             }
 
             let parsed = parse_items(&text, &native);
-            self.surface_commands(&parsed.commands);
-            if parsed.items.is_empty() && parsed.notes.is_empty() {
+            let ends_turn = parsed.items.is_empty() && parsed.notes.is_empty();
+            // The user always sees a suggested command; the model is only
+            // told when the turn continues, so a prose-only answer does not
+            // leave an observation with nothing to answer it.
+            self.surface_commands(&parsed.commands, !ends_turn);
+            if ends_turn {
                 if self.handle_prose_turn(&text) {
                     continue; // plan drafted/approved — the loop continues
                 }
@@ -704,13 +708,16 @@ impl App {
     /// model they were *not* run, so it does not assume their effects.
     /// Running one is the user's decision: they can paste it, or ask for it
     /// through the approval-gated `shell` tool.
-    fn surface_commands(&mut self, commands: &[String]) {
+    fn surface_commands(&mut self, commands: &[String], tell_model: bool) {
         if commands.is_empty() {
             return;
         }
         for command in commands {
             self.reporter
                 .line(&format!("! suggested (not run): {command}"));
+        }
+        if !tell_model {
+            return;
         }
         self.push_observation(
             "shell suggestion",

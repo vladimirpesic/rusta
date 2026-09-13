@@ -63,9 +63,8 @@ impl Approver for DenyAll {
 /// `[shell].deny` extend it; `[shell].allow` prefixes bypass approval.
 pub const DEFAULT_DENY: [(&str, &str, &str); 12] = [
     (
-        // `rm -rf /`, `rm -rf /*`, `rm -rf "/"` and friends. The glob form
-        // is the one that actually destroys a machine, and the original
-        // pattern (bare `/` only) let it straight through.
+        // Includes the `/*` glob form, which is the one that actually
+        // destroys a machine.
         r#"\brm\s+[^|;&]*\s+["']?/["']?(\*|\s|$)"#,
         "rm targets the filesystem root",
         "delete specific paths inside the repo instead",
@@ -106,27 +105,23 @@ pub const DEFAULT_DENY: [(&str, &str, &str); 12] = [
         "download to a file, inspect it, then run it",
     ),
     (
-        // Redirection or `tee` to an absolute path, with or without quotes.
         r#"(>>?\s*["']?/|tee\s+(-a\s+)?["']?/)"#,
         "writes outside the repo root",
         "write inside the repo root only",
     ),
     (
-        // Redirection or `tee` to a parent-relative path.
         r#"(>>?\s*["']?\.\./|tee\s+(-a\s+)?["']?\.\./)"#,
         "writes above the repo root",
         "write inside the repo root only",
     ),
     (
-        // Copy/move/link/install with an absolute destination. `cwd` is the
-        // repo root, so an absolute target is by definition outside it.
+        // Absolute destination: cwd is the repo root, so it is outside.
         r#"\b(cp|mv|ln|install|rsync)\b[^|;&]*\s["']?/(?:etc|usr|bin|sbin|boot|lib|opt|var|root|sys|proc|dev)\b"#,
         "writes to a system directory outside the repo",
         "write inside the repo root only",
     ),
     (
-        // `cd` out of the repo defeats every cwd-relative check that
-        // follows it in the same command line.
+        // `cd` out defeats every cwd-relative check after it.
         r#"\bcd\s+["']?(/|\.\./|~)"#,
         "changes directory outside the repo root",
         "stay inside the repo; use repo-relative paths",

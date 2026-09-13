@@ -49,6 +49,13 @@ const PIECES: &[&str] = &[
     ">>>>>>>",
     "src/main.rs",
     "main.rs",
+    "/etc/passwd",
+    "/tmp/escape.txt",
+    "../escape.rs",
+    "../../escape.rs",
+    "src/../../escape.rs",
+    "~/escape.rs",
+    "./src/main.rs",
     "```",
     "```rust",
     "```bash",
@@ -73,7 +80,12 @@ fn random_response(rng: &mut Rng) -> String {
     let mut out = String::new();
     for _ in 0..lines {
         out.push_str(rng.pick(PIECES));
-        out.push('\n');
+        // Sometimes omit the newline, so a marker can end up glued to the
+        // end of a content line. That is an ordinary small-model slip and
+        // the old alphabet could not express it.
+        if rng.below(8) > 0 {
+            out.push('\n');
+        }
     }
     out
 }
@@ -95,8 +107,17 @@ fn parser_never_panics_on_arbitrary_input() {
 
 #[test]
 fn engine_never_panics_on_arbitrary_blocks() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path();
+    let base = tempfile::tempdir().expect("tempdir");
+    // The repo is a *subdirectory*, so "outside the repo but inside the
+    // fixture" is expressible — the containment invariant below needs
+    // somewhere for an escape to land.
+    let root = &base.path().join("repo");
+    fs::create_dir_all(root).expect("repo dir");
+    let outside = base.path().join("outside.txt");
+    // Deliberately a line the alphabet emits: cross-file retry can only
+    // select this file if some generated SEARCH body matches it, so the
+    // invariant below is reachable rather than decorative.
+    fs::write(&outside, "old line\n").expect("fixture");
     fs::write(root.join("a.rs"), "fn a() {}\nfn shared() { 1 }\n").expect("fixture");
     fs::write(root.join("b.rs"), "struct B;\nfn shared() { 1 }\n").expect("fixture");
     fs::write(root.join("z.txt"), "line\nline\nline\n").expect("fixture");
@@ -104,6 +125,10 @@ fn engine_never_panics_on_arbitrary_blocks() {
     for path in ["a.rs", "b.rs", "z.txt"] {
         editor.record_read(path);
     }
+    // A resumed session can carry an out-of-repo path into the ledger (old
+    // logs recorded absolute paths). The ledger must refuse it, because
+    // cross-file retry writes to whatever the read-set holds.
+    editor.record_read(&outside.display().to_string());
 
     let mut rng = Rng(0xfeed_beef_cafe_0001);
     for _ in 0..500 {
@@ -120,6 +145,28 @@ fn engine_never_panics_on_arbitrary_blocks() {
                 fs::read_to_string(root.join(path)).expect("valid utf-8");
             }
         }
+        // §6.12: no mutation may land outside the repo root. This is the
+        // invariant the suite never asserted, which is how an unconfined
+        // edit pathway shipped in the first place.
+        for applied in &report.applied {
+            assert!(
+                rusta_edit::Editor::new(root)
+                    .root()
+                    .join(&applied.path)
+                    .starts_with(root),
+                "edit escaped the repo root: {}",
+                applied.path.display()
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside file"),
+            "old line\n",
+            "a file outside the repo root was modified"
+        );
+        assert!(
+            !base.path().join("escape.rs").exists() && !base.path().join("escape.txt").exists(),
+            "a file was created outside the repo root"
+        );
         // Undo everything so each iteration starts from the same tree.
         while editor.undo_last().expect("undo").is_some() {}
     }

@@ -661,6 +661,18 @@ echo "production=${PROD} tests=${TESTS} total=${TOTAL}"
 Canonical counting is this script (`wc -l`); `tokei` is an optional cross-check. Data files
 (`.scm` queries, `skills/*.md`, prompt fragments) are reported separately, never counted.
 
+> **Erratum (2026-09-13, second audit).** The sketch above charges unit tests to the *production*
+> budget. Its `-not -name 'tests.rs'` clause shows the intent to exclude them, but this workspace
+> puts unit tests in a trailing `#[cfg(test)] mod tests` inside each source file, which that
+> clause does not match — so ~4,000 lines of tests were counted as production, inflating the
+> figure by about a third. The gate had therefore been reporting ~15,000/15,000 (and was briefly
+> made to fail by a remediation pass) when real production code is ~11,100 — almost exactly the
+> §4 target of 11,000. Worse than the wrong number is the incentive: under the old count, adding
+> a unit test consumed production budget, so the cheapest way to stay green was to delete tests.
+> In a project whose defects have all been test-coverage defects, that is the wrong pressure.
+> `scripts/loc_budget.sh` now splits each source file at its `#[cfg(test)]` marker and reports
+> `production`, `tests` (inline + suites) and `total` separately.
+
 ## 13. Definition of Done — v1
 
 - All milestones merged; CI green including the LoC budget gate and `clippy -D warnings`.

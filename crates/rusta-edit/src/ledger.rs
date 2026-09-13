@@ -8,8 +8,10 @@
 //! retries the block once. This replaces smallcode's compound
 //! `read_and_patch` tool with identical effect and less surface (DECIDED).
 //!
-//! Paths are stored workspace-relative, canonically without a leading
-//! `./` so that `read src/a.rs` and a model's `./src/a.rs` agree.
+//! Paths are stored workspace-relative and *only* workspace-relative:
+//! [`confine`] normalizes `./` away and refuses absolute paths and `..`.
+//! That matters because the read-set is not just bookkeeping — cross-file
+//! retry (§6.3 step 5) writes to the files in it.
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
@@ -26,21 +28,25 @@ impl Ledger {
         Self::default()
     }
 
-    /// Record that `path` was read. Idempotent.
+    /// Record that `path` was read. Idempotent. A path outside the
+    /// workspace is not recorded: it could never be legally edited, and
+    /// admitting one would hand cross-file retry a target outside the repo.
     pub fn record_read(&mut self, path: &Path) {
-        self.entries.insert(canonical(path));
+        if let Some(rel) = confine(path) {
+            self.entries.insert(rel);
+        }
     }
 
     /// True when `path` has been read this session (auto-inject satisfies this).
     pub fn has_read(&self, path: &Path) -> bool {
-        self.entries.contains(&canonical(path))
+        confine(path).is_some_and(|rel| self.entries.contains(&rel))
     }
 
     /// Removes `path` from the session read-set — `/drop` (plan §6.9). True
     /// when the file was present. Auto-inject re-protects a later edit of the
     /// dropped file, so dropping is always safe.
     pub fn drop_read(&mut self, path: &Path) -> bool {
-        self.entries.remove(&canonical(path))
+        confine(path).is_some_and(|rel| self.entries.remove(&rel))
     }
 
     /// All read files in deterministic (sorted) order — the session read-set
@@ -58,13 +64,20 @@ impl Ledger {
     }
 }
 
-/// Canonicalize a workspace-relative path: drop `.` components so `./a/b.rs`
-/// and `a/b.rs` are the same ledger key. Absolute paths and `..` are kept
-/// verbatim — the ledger never second-guesses, it only normalizes spelling.
-pub(crate) fn canonical(path: &Path) -> PathBuf {
-    path.components()
-        .filter(|c| !matches!(c, Component::CurDir))
-        .collect()
+/// Canonicalize a workspace-relative path, or refuse it: `.` components are
+/// dropped, absolute paths and any `..` yield `None`. Every mutation in this
+/// crate resolves through here, so the §6.12 fence sits at the boundary
+/// rather than in each caller (`rusta-tools`' `safe_rel` guards tool-call
+/// *inputs*, which is a different thing).
+pub(crate) fn confine(path: &Path) -> Option<PathBuf> {
+    if path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return None;
+    }
+    Some(
+        path.components()
+            .filter(|c| !matches!(c, Component::CurDir))
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -84,6 +97,24 @@ mod tests {
         // Recording the same file again is idempotent.
         ledger.record_read(Path::new("src/main.rs"));
         assert_eq!(ledger.len(), 1);
+    }
+
+    #[test]
+    fn paths_outside_the_workspace_are_never_recorded() {
+        // The read-set feeds cross-file retry, which writes to it.
+        let mut ledger = Ledger::new();
+        for outside in ["/etc/passwd", "../escape.rs", "a/../../escape.rs"] {
+            ledger.record_read(Path::new(outside));
+            assert!(
+                !ledger.has_read(Path::new(outside)),
+                "{outside} was admitted"
+            );
+        }
+        assert!(
+            ledger.is_empty(),
+            "{:?}",
+            ledger.read_set().collect::<Vec<_>>()
+        );
     }
 
     #[test]

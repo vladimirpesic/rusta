@@ -115,27 +115,6 @@ pub enum FailureReason {
     Io(String),
 }
 
-/// Repo-relative path fence for the text edit pathway: no absolute paths, no
-/// `..` components, `.` dropped. Mirrors `rusta-tools`' `safe_rel`, which
-/// guards the `edit`/`write` *tool* forms — §6.4 promises both syntaxes
-/// behave identically, and confinement is part of behaving identically.
-fn confine(rel: &Path) -> Option<PathBuf> {
-    if rel.is_absolute() {
-        return None;
-    }
-    if rel
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return None;
-    }
-    Some(
-        rel.components()
-            .filter(|c| !matches!(c, std::path::Component::CurDir))
-            .collect(),
-    )
-}
-
 /// One successfully applied block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppliedBlock {
@@ -249,7 +228,12 @@ impl Editor {
     /// Like [`Editor::apply_parsed`], a successful write credits the ledger:
     /// the written content is exactly what the model had in context.
     pub fn write_file(&mut self, rel: &str, content: &str) -> io::Result<bool> {
-        let rel = crate::ledger::canonical(Path::new(rel));
+        let rel = crate::ledger::confine(Path::new(rel)).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{rel} is outside the repository; use a repo-relative path"),
+            )
+        })?;
         let abs = self.root.join(&rel);
         let existed = abs.try_exists().map_err(io::Error::other)?;
         let before = if existed {
@@ -477,7 +461,7 @@ impl Editor {
         let Some(chosen) = self.resolve_raw(block, continuation) else {
             return Resolved::Missing;
         };
-        match confine(&chosen) {
+        match crate::ledger::confine(&chosen) {
             Some(rel) => Resolved::Path(rel),
             None => Resolved::Outside(chosen.display().to_string()),
         }
@@ -487,7 +471,12 @@ impl Editor {
     fn resolve_raw(&self, block: &EditBlock, continuation: Option<&Path>) -> Option<PathBuf> {
         let set: Vec<PathBuf> = self.ledger.read_set().cloned().collect();
         for cand in &block.candidates {
-            let path = crate::ledger::canonical(Path::new(cand));
+            // An unconfined candidate is skipped, not fatal: a later
+            // candidate (or a later strategy) may still resolve legally.
+            // The chosen path is fenced again on `resolve`'s single exit.
+            let Some(path) = crate::ledger::confine(Path::new(cand)) else {
+                continue;
+            };
             if set.contains(&path) {
                 return Some(path);
             }
@@ -1639,6 +1628,57 @@ mod tests {
             assert!(!outside.exists(), "{name} escaped the root");
             assert!(!base.path().join("repo/../outside.txt").exists());
         }
+    }
+
+    #[test]
+    fn cross_file_retry_cannot_escape_the_root() {
+        // §6.3 step 5 writes to whatever the read-set holds, so the fence
+        // has to sit on the ledger, not only on filename resolution. A
+        // resumed session can carry an absolute path into the ledger — logs
+        // written before the fence existed contain them.
+        let base = TempDir::new().expect("tempdir");
+        let root = base.path().join("repo");
+        std::fs::create_dir_all(&root).expect("repo dir");
+        let outside = base.path().join("outside.txt");
+        std::fs::write(&outside, "SECRET = 1\n").expect("fixture");
+        write_file(&root, "in.rs", "fn a() {}\n");
+
+        let mut editor = Editor::new(&root);
+        editor.record_read("in.rs");
+        editor.record_read(&outside.display().to_string());
+
+        // SEARCH matches the outside file, not the named one: without the
+        // fence, cross-file retry applied it there.
+        let report = editor.apply_response(&response("in.rs", "SECRET = 1\n", "SECRET = 666\n"));
+        assert!(report.applied.is_empty(), "{:?}", report.applied);
+        assert_eq!(
+            std::fs::read_to_string(&outside).expect("outside"),
+            "SECRET = 1\n",
+            "cross-file retry wrote outside the repo root"
+        );
+    }
+
+    #[test]
+    fn write_file_is_confined_too() {
+        // `write_file` is `pub`; a caller's `safe_rel` is not this crate's
+        // guarantee, so the fence belongs here as well.
+        let base = TempDir::new().expect("tempdir");
+        let root = base.path().join("repo");
+        std::fs::create_dir_all(&root).expect("repo dir");
+        let mut editor = Editor::new(&root);
+
+        for outside in [
+            base.path().join("via_write.txt").display().to_string(),
+            "../via_parent.txt".to_owned(),
+        ] {
+            let err = editor
+                .write_file(&outside, "PWNED\n")
+                .expect_err("must refuse a path outside the repo");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
+        }
+        assert!(!base.path().join("via_write.txt").exists());
+        assert!(!base.path().join("via_parent.txt").exists());
+        assert!(editor.undo_stack().is_empty(), "a refusal must not journal");
     }
 
     #[test]

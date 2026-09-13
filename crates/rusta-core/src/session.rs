@@ -151,6 +151,30 @@ fn owner_only(options: &mut OpenOptions) -> &mut OpenOptions {
     options
 }
 
+/// Tightens an *existing* log to `0600`.
+///
+/// `OpenOptions::mode` applies only when the file is created, so a session
+/// written before that guard existed — or under a looser umask — keeps its
+/// permissions for the life of the file. Sessions are auto-resumed per repo
+/// per day, so those are exactly the logs still in use. Best-effort: a log
+/// whose mode cannot be read or set is left alone rather than failing the
+/// session.
+fn restrict_existing(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mut perms = meta.permissions();
+            if perms.mode() & 0o177 != 0 {
+                perms.set_mode(0o600);
+                let _ = std::fs::set_permissions(path, perms);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// FNV-1a 64-bit. Small, forever-stable content hashing for the session
 /// journal: logs must replay identically across Rusta versions, so std's
 /// `DefaultHasher` (stability not guaranteed across releases) is
@@ -217,6 +241,7 @@ impl Session {
         if self.sidecar.is_none() {
             self.sidecar =
                 Some(owner_only(OpenOptions::new().create(true).append(true)).open(&sidecar_path)?);
+            restrict_existing(&sidecar_path);
         }
         let sidecar = self.sidecar.as_mut().expect("sidecar just opened");
         for record in [

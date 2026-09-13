@@ -1084,32 +1084,33 @@ impl LoopGuard {
 }
 
 /// Canonical error-kind cues (§6.6: "triggers: [tool names, **error kinds**,
-/// keywords]"). Recovery cards trigger on these, so the names must be
-/// derived from observation text by one shared function rather than
-/// hand-written at each call site — otherwise a card declares a trigger no
-/// code path ever emits.
+/// keywords]"). Recovery cards trigger on these, so the vocabulary is
+/// derived from observation text in one place — otherwise a card declares a
+/// trigger no code path ever emits, which is exactly what shipped in v1.
 pub fn error_cues(tool: &str, content: &str) -> Vec<String> {
-    let mut cues = vec!["error".to_owned()];
     let lower = content.to_lowercase();
     let has = |needle: &str| lower.contains(needle);
+    let mut cues = vec!["error".to_owned()];
+    let mut add = |cue: &str| cues.push(cue.to_owned());
 
-    if tool == "edit" || tool == "write" {
-        cues.push("edit_failed".to_owned());
-        if has("failed to exactly match") || has("no such file") {
-            cues.push("not_found".to_owned());
+    match tool {
+        "edit" | "write" => {
+            add("edit_failed");
+            if has("failed to exactly match") || has("no such file") {
+                add("not_found");
+            }
+            if has("did you mean") || has("already in") {
+                add("duplicate_match");
+            }
         }
-        if has("did you mean") || has("already in") {
-            cues.push("duplicate_match".to_owned());
+        "validation" => {
+            add("validation_failed");
+            if has("test result:") || has("test failed") || has("panicked") || has("0 tests") {
+                add("test_failure");
+            }
         }
-    }
-    if tool == "validation" {
-        cues.push("validation_failed".to_owned());
-        if has("test result:") || has("test failed") || has("panicked") || has("0 tests") {
-            cues.push("test_failure".to_owned());
-        }
-    }
-    if tool == "read" && has("no such file") {
-        cues.push("not_found".to_owned());
+        "read" if has("no such file") => add("not_found"),
+        _ => {}
     }
     cues
 }
