@@ -106,8 +106,34 @@ pub enum FailureReason {
     NoMatch,
     /// Filename resolution failed (no candidate matched and no continuation).
     MissingFilename,
+    /// The resolved path escapes the workspace root (absolute, or `..`).
+    /// §6.12 confines every mutation to the repo; this is that rule applied
+    /// to the text SEARCH/REPLACE pathway, so both edit syntaxes share one
+    /// fence as well as one apply chain (§6.4).
+    OutsideRoot(String),
     /// Filesystem error while reading or writing (message included verbatim).
     Io(String),
+}
+
+/// Repo-relative path fence for the text edit pathway: no absolute paths, no
+/// `..` components, `.` dropped. Mirrors `rusta-tools`' `safe_rel`, which
+/// guards the `edit`/`write` *tool* forms — §6.4 promises both syntaxes
+/// behave identically, and confinement is part of behaving identically.
+fn confine(rel: &Path) -> Option<PathBuf> {
+    if rel.is_absolute() {
+        return None;
+    }
+    if rel
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    Some(
+        rel.components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .collect(),
+    )
 }
 
 /// One successfully applied block.
@@ -324,6 +350,13 @@ impl Editor {
                         }
                     }
                 }
+                Resolved::Outside(path) => {
+                    report.failed.push(FailedBlock {
+                        block,
+                        path: path.clone(),
+                        reason: FailureReason::OutsideRoot(path),
+                    });
+                }
                 Resolved::Missing => {
                     report.failed.push(FailedBlock {
                         block,
@@ -434,45 +467,64 @@ impl Editor {
     /// Filename resolution (§6.3 rule 3): exact path → basename → fuzzy
     /// (similarity ≥ 0.8) → first candidate containing a dot; with no
     /// candidates at all, the previous named file (continuation).
+    ///
+    /// Whatever the strategy produces is then put through [`confine`]: a
+    /// resolved path that escapes the workspace root is refused, never
+    /// written. Only the last strategy can realistically produce one (it
+    /// trusts a raw model-supplied string), but the fence sits on the single
+    /// exit so no future strategy can bypass it.
     fn resolve(&self, block: &EditBlock, continuation: Option<&Path>) -> Resolved {
+        let Some(chosen) = self.resolve_raw(block, continuation) else {
+            return Resolved::Missing;
+        };
+        match confine(&chosen) {
+            Some(rel) => Resolved::Path(rel),
+            None => Resolved::Outside(chosen.display().to_string()),
+        }
+    }
+
+    /// The §6.3 rule 3 strategies, before confinement.
+    fn resolve_raw(&self, block: &EditBlock, continuation: Option<&Path>) -> Option<PathBuf> {
         let set: Vec<PathBuf> = self.ledger.read_set().cloned().collect();
         for cand in &block.candidates {
             let path = crate::ledger::canonical(Path::new(cand));
             if set.contains(&path) {
-                return Resolved::Path(path);
+                return Some(path);
             }
         }
         for cand in &block.candidates {
             let name = Path::new(cand).file_name();
             for file in &set {
                 if file.file_name() == name {
-                    return Resolved::Path(file.clone());
+                    return Some(file.clone());
                 }
             }
         }
         for cand in &block.candidates {
             for file in &set {
                 if similarity(cand, &file.to_string_lossy()) >= 0.8 {
-                    return Resolved::Path(file.clone());
+                    return Some(file.clone());
                 }
             }
         }
         for cand in &block.candidates {
             if cand.contains('.') {
-                return Resolved::Path(PathBuf::from(cand));
+                return Some(PathBuf::from(cand));
             }
         }
         if block.candidates.is_empty() {
             if let Some(prev) = continuation {
-                return Resolved::Path(prev.to_path_buf());
+                return Some(prev.to_path_buf());
             }
         }
-        Resolved::Missing
+        None
     }
 }
 
 enum Resolved {
     Path(PathBuf),
+    /// The resolved path escapes the workspace root; carries its display form.
+    Outside(String),
     Missing,
 }
 
@@ -685,7 +737,10 @@ fn match_but_for_leading_whitespace(window: &[String], part: &[String]) -> Optio
 fn replace_most_similar_chunk(whole: &str, part: &str, replace: &str) -> Option<String> {
     let (whole_text, whole_lines) = prep(whole);
     let (part_text, part_lines) = prep(part);
-    let (_, replace_lines) = prep(replace);
+    // `replace` is prepped too (Aider reassigns it before `try_dotdotdots`):
+    // a REPLACE piece without a trailing newline would otherwise be spliced
+    // onto the following line.
+    let (replace_text, replace_lines) = prep(replace);
 
     if let Some(result) = perfect_or_whitespace(&whole_lines, &part_lines, &replace_lines) {
         return Some(result);
@@ -697,7 +752,7 @@ fn replace_most_similar_chunk(whole: &str, part: &str, replace: &str) -> Option<
             return Some(result);
         }
     }
-    try_dotdotdots(&whole_text, &part_text, replace)
+    try_dotdotdots(&whole_text, &part_text, &replace_text)
 }
 
 /// `...` elision handling (Aider's `try_dotdotdots`): split SEARCH and
@@ -707,10 +762,19 @@ fn replace_most_similar_chunk(whole: &str, part: &str, replace: &str) -> Option<
 /// exactly once (ambiguous ⇒ fall through to failure). An empty SEARCH
 /// piece with non-empty REPLACE piece appends. Any mismatch returns `None`
 /// so the apply chain falls through to cross-file retry / failure.
+///
+/// A block with **no** `...` lines is not this strategy's business: Aider
+/// bails out (`if len(part_pieces) == 1: return`) and so must this port.
+/// Without that guard the single-piece path degenerates into a raw
+/// substring replace that ignores line boundaries — a wrong-guess apply of
+/// exactly the kind §6.3's DECIDED clause rules out.
 fn try_dotdotdots(whole: &str, part: &str, replace: &str) -> Option<String> {
     let part_pieces = split_on_dot_lines(part);
     let replace_pieces = split_on_dot_lines(replace);
 
+    if part_pieces.len() == 1 {
+        return None; // no `...` in this block — not our strategy
+    }
     if part_pieces.len() != replace_pieces.len() {
         return None;
     }
@@ -830,6 +894,11 @@ fn build_failure_feedback(
                 res += &format!(
                     "\n## MissingFilename: no filename found for a SEARCH/REPLACE block\n<<<<<<< SEARCH\n{}=======\n{}>>>>>>> REPLACE\nPut the filename alone on its own line directly above `<<<<<<< SEARCH`, like this:\n\n```\nsrc/main.rs\n<<<<<<< SEARCH\nexisting lines\n=======\nreplacement lines\n>>>>>>> REPLACE\n```\n",
                     failure.block.original, failure.block.updated
+                );
+            }
+            FailureReason::OutsideRoot(path) => {
+                res += &format!(
+                    "\n## OutsideRepo: {path} is outside the repository and was not written\nEvery edit must target a path inside the repo, written relative to its root (no leading `/`, no `..`).\nName the file as e.g. `src/main.rs` on its own line directly above `<<<<<<< SEARCH`.\n"
                 );
             }
             FailureReason::Io(err) => {
@@ -1480,6 +1549,107 @@ mod tests {
             "feedback_missing_filename",
             report.feedback.as_deref().unwrap_or("<none>")
         );
+    }
+
+    #[test]
+    fn no_dots_block_never_degrades_to_a_substring_splice() {
+        // Aider's `try_dotdotdots` bails out when there are no `...` pieces.
+        // Without that guard a mid-line SEARCH fragment gets spliced into the
+        // first matching position and reported as a clean apply.
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        write_file(root, "a.rs", "fn main() {\n    let x = compute(a, b);\n}\n");
+        let mut editor = Editor::new(root);
+        editor.record_read("a.rs");
+
+        let report =
+            editor.apply_response(&response("a.rs", "compute(a, b);\n", "compute(b, a);\n"));
+        assert!(report.applied.is_empty(), "{:?}", report.applied);
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].reason, FailureReason::NoMatch);
+        // The file is untouched: a clear retry request beats a wrong guess.
+        assert_eq!(
+            read_file(root, "a.rs"),
+            "fn main() {\n    let x = compute(a, b);\n}\n"
+        );
+    }
+
+    #[test]
+    fn dotdotdots_still_applies_when_dots_are_present() {
+        // The guard must not disable the real `...` strategy.
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        write_file(root, "a.rs", "start\nA\nmid\nB\nend\n");
+        let mut editor = Editor::new(root);
+        editor.record_read("a.rs");
+
+        let report = editor.apply_response(&response("a.rs", "A\n...\nB\n", "AA\n...\nBB\n"));
+        assert!(report.is_success(), "{:?}", report.failed);
+        assert_eq!(read_file(root, "a.rs"), "start\nAA\nmid\nBB\nend\n");
+    }
+
+    #[test]
+    fn dotdotdots_replace_tail_keeps_its_line_ending() {
+        // Aider preps `replace` before splitting; an unterminated final piece
+        // must not be glued onto the following line.
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        write_file(root, "a.rs", "start\nA\nmid\nB\nend\n");
+        let mut editor = Editor::new(root);
+        editor.record_read("a.rs");
+
+        let block = EditBlock {
+            candidates: vec!["a.rs".to_owned()],
+            original: "A\n...\nB\n".to_owned(),
+            updated: "AA\n...\nBB".to_owned(), // no trailing newline
+        };
+        let report = editor.apply_parsed(ParsedResponse {
+            blocks: vec![block],
+            commands: Vec::new(),
+            notes: Vec::new(),
+        });
+        assert!(report.is_success(), "{:?}", report.failed);
+        assert_eq!(read_file(root, "a.rs"), "start\nAA\nmid\nBB\nend\n");
+    }
+
+    #[test]
+    fn edits_cannot_escape_the_workspace_root() {
+        // §6.12 confines every mutation to the repo. The text SEARCH/REPLACE
+        // pathway must honour the same fence as the `edit`/`write` tools.
+        let base = TempDir::new().expect("tempdir");
+        let root = base.path().join("repo");
+        std::fs::create_dir_all(&root).expect("repo dir");
+        let outside = base.path().join("outside.txt");
+
+        for name in [
+            outside.display().to_string(), // absolute
+            "../outside.txt".to_owned(),   // parent traversal
+        ] {
+            let mut editor = Editor::new(&root);
+            let report = editor.apply_response(&response(&name, "", "PWNED\n"));
+            assert!(report.applied.is_empty(), "{name}: {:?}", report.applied);
+            assert_eq!(report.failed.len(), 1, "{name}");
+            assert!(
+                matches!(report.failed[0].reason, FailureReason::OutsideRoot(_)),
+                "{name}: {:?}",
+                report.failed[0].reason
+            );
+            let feedback = report.feedback.expect("feedback");
+            assert!(feedback.contains("OutsideRepo"), "{feedback}");
+            assert!(!outside.exists(), "{name} escaped the root");
+            assert!(!base.path().join("repo/../outside.txt").exists());
+        }
+    }
+
+    #[test]
+    fn ordinary_relative_paths_still_resolve_through_the_fence() {
+        let dir = TempDir::new().expect("tempdir");
+        let root = dir.path();
+        let mut editor = Editor::new(root);
+        // `./` spelling is normalized, not rejected.
+        let report = editor.apply_response(&response("./docs/notes.md", "", "hi\n"));
+        assert!(report.is_success(), "{:?}", report.failed);
+        assert_eq!(read_file(root, "docs/notes.md"), "hi\n");
     }
 
     #[test]

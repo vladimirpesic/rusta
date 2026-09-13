@@ -11,22 +11,14 @@
 //! Paths are stored workspace-relative, canonically without a leading
 //! `./` so that `read src/a.rs` and a model's `./src/a.rs` agree.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
-/// Per-file read accounting. The count lets the UI surface how often a
-/// file entered the context (and future loop detectors spot re-reads).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReadRecord {
-    /// Number of times the file was read this session (≥ 1 when present).
-    pub reads: u32,
-}
-
 /// The session file-set: every file read this session, deterministically
-/// ordered (`BTreeMap`) so resolution and cross-file retry are reproducible.
+/// ordered (`BTreeSet`) so resolution and cross-file retry are reproducible.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Ledger {
-    entries: BTreeMap<PathBuf, ReadRecord>,
+    entries: BTreeSet<PathBuf>,
 }
 
 impl Ledger {
@@ -34,35 +26,27 @@ impl Ledger {
         Self::default()
     }
 
-    /// Record that `path` was read. Idempotent per read event; the counter
-    /// increments on each record.
+    /// Record that `path` was read. Idempotent.
     pub fn record_read(&mut self, path: &Path) {
-        let key = canonical(path);
-        let entry = self.entries.entry(key).or_insert(ReadRecord { reads: 0 });
-        entry.reads += 1;
+        self.entries.insert(canonical(path));
     }
 
     /// True when `path` has been read this session (auto-inject satisfies this).
     pub fn has_read(&self, path: &Path) -> bool {
-        self.entries.contains_key(&canonical(path))
-    }
-
-    /// The recorded file, if any, for `path`.
-    pub fn record(&self, path: &Path) -> Option<&ReadRecord> {
-        self.entries.get(&canonical(path))
+        self.entries.contains(&canonical(path))
     }
 
     /// Removes `path` from the session read-set — `/drop` (plan §6.9). True
     /// when the file was present. Auto-inject re-protects a later edit of the
     /// dropped file, so dropping is always safe.
     pub fn drop_read(&mut self, path: &Path) -> bool {
-        self.entries.remove(&canonical(path)).is_some()
+        self.entries.remove(&canonical(path))
     }
 
     /// All read files in deterministic (sorted) order — the session read-set
     /// used by filename resolution and cross-file retry.
     pub fn read_set(&self) -> impl Iterator<Item = &PathBuf> {
-        self.entries.keys()
+        self.entries.iter()
     }
 
     pub fn len(&self) -> usize {
@@ -96,16 +80,10 @@ mod tests {
         ledger.record_read(Path::new("src/main.rs"));
         assert!(ledger.has_read(Path::new("src/main.rs")));
         assert_eq!(ledger.len(), 1);
-        assert_eq!(
-            ledger.record(Path::new("src/main.rs")).map(|r| r.reads),
-            Some(1)
-        );
 
+        // Recording the same file again is idempotent.
         ledger.record_read(Path::new("src/main.rs"));
-        assert_eq!(
-            ledger.record(Path::new("src/main.rs")).map(|r| r.reads),
-            Some(2)
-        );
+        assert_eq!(ledger.len(), 1);
     }
 
     #[test]

@@ -20,22 +20,14 @@
 const MARKER_MIN: usize = 5;
 const MARKER_MAX: usize = 9;
 
-/// Fence openings that mark a *suggested command* block (§6.3 rule 5).
+/// Lines scanned above a HEAD marker for a filename (§6.3 rule 3, Aider's
+/// `lines[max(0, i - 3):i]`). Unrelated to the marker run lengths above —
+/// it used to be spelled `MARKER_MIN - 2`, which silently coupled the two.
+const FILENAME_SCAN_LINES: usize = 3;
+
+/// Fence languages that mark a *suggested command* block (§6.3 rule 5).
 /// Such blocks are surfaced to the user for confirmation, never executed.
-const SHELL_FENCES: [&str; 12] = [
-    "```bash",
-    "```sh",
-    "```shell",
-    "```cmd",
-    "```batch",
-    "```powershell",
-    "```ps1",
-    "```zsh",
-    "```fish",
-    "```ksh",
-    "```csh",
-    "```tcsh",
-];
+const SHELL_FENCES: &str = "bash sh shell cmd batch powershell ps1 zsh fish ksh csh tcsh";
 
 /// One parsed SEARCH/REPLACE block, verbatim from the response (LF endings).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,11 +159,22 @@ pub fn parse_response(text: &str) -> ParsedResponse {
     }
 
     // Missing final UPDATED at end-of-stream still commits (§6.3 rule 4).
+    //
+    // Aider rejects this case outright; the plan deliberately forgives it
+    // (§0 rule 3 — the plan wins). Forgiving it safely means one extra
+    // guard: the usual reason the marker is "missing" is that the model
+    // omitted the newline before it, so the marker is sitting at the end of
+    // the last REPLACE line. Committing that verbatim writes
+    // `>>>>>>> REPLACE` into the user's source. Split it back off.
     if in_replace {
+        let (updated, note) = split_trailing_marker(&updated.concat());
+        if let Some(note) = note {
+            out.notes.push(note);
+        }
         out.blocks.push(EditBlock {
             candidates,
             original: original.concat(),
-            updated: updated.concat(),
+            updated,
         });
     } else if in_search {
         out.notes.push(MISSING_DIVIDER_NOTE.to_owned());
@@ -179,6 +182,31 @@ pub fn parse_response(text: &str) -> ParsedResponse {
 
     out
 }
+
+/// Strips an UPDATED marker that the model ran onto the end of the last
+/// REPLACE line (`…BB>>>>>>> REPLACE`). Returns the cleaned text plus a
+/// corrective note when a marker was removed.
+fn split_trailing_marker(updated: &str) -> (String, Option<String>) {
+    let trimmed = updated.trim_end_matches(['\n', ' ', '\t']);
+    let Some(before_word) = trimmed.strip_suffix(" REPLACE") else {
+        return (updated.to_owned(), None);
+    };
+    let run = before_word.len() - before_word.trim_end_matches('>').len();
+    if !(MARKER_MIN..=MARKER_MAX).contains(&run) {
+        return (updated.to_owned(), None);
+    }
+    // A marker alone on its line was consumed by the main loop, so anything
+    // reaching here is glued to content (or is the whole tail).
+    let mut kept = before_word[..before_word.len() - run].to_owned();
+    if !kept.is_empty() && !kept.ends_with('\n') {
+        kept.push('\n');
+    }
+    (kept, Some(TRAILING_MARKER_NOTE.to_owned()))
+}
+
+const TRAILING_MARKER_NOTE: &str = "A `>>>>>>> REPLACE` marker was run onto the end of the last \
+                                     REPLACE line and has been stripped. Put each marker alone on \
+                                     its own line.";
 
 const MISSING_DIVIDER_NOTE: &str = "A SEARCH/REPLACE block was missing its `=======` divider \
                                      and was ignored. Each block needs `<<<<<<< SEARCH`, \
@@ -208,7 +236,9 @@ fn leading_run(line: &str, ch: char) -> usize {
 }
 
 fn is_shell_fence(trimmed: &str) -> bool {
-    SHELL_FENCES.iter().any(|f| trimmed.starts_with(f))
+    trimmed
+        .strip_prefix("```")
+        .is_some_and(|rest| SHELL_FENCES.split(' ').any(|lang| rest.starts_with(lang)))
 }
 
 /// Aider's `next_is_editblock` guard: HEAD on the next line or the one after.
@@ -242,7 +272,7 @@ fn collect_shell_block(lines: &[&str], i: usize) -> (String, usize) {
 /// artifact worth forgiving.
 fn filename_candidates(lines: &[&str], head: usize) -> Vec<String> {
     let mut out = Vec::new();
-    let start = head.saturating_sub(MARKER_MIN - 2); // up to 3 lines above
+    let start = head.saturating_sub(FILENAME_SCAN_LINES);
     for j in (start..head).rev() {
         let trimmed = lines[j].trim();
         if trimmed.is_empty() {
@@ -490,6 +520,39 @@ mod tests {
             parsed.blocks,
             vec![block(&["README.md"], "```\nold\n```\n", "```\nnew\n```\n")]
         );
+    }
+
+    #[test]
+    fn trailing_updated_marker_is_split_off_not_committed() {
+        // Small models drop the newline before the closing marker; §6.3 rule
+        // 4 then commits the whole line. The marker must never reach the file.
+        let text = "a.rs\n<<<<<<< SEARCH\nold\n=======\nnew>>>>>>> REPLACE\n";
+        let parsed = parse_response(text);
+        assert_eq!(parsed.blocks, vec![block(&["a.rs"], "old\n", "new\n")]);
+        assert_eq!(parsed.notes.len(), 1);
+        assert!(
+            parsed.notes[0].contains(">>>>>>> REPLACE"),
+            "{:?}",
+            parsed.notes
+        );
+    }
+
+    #[test]
+    fn marker_alone_on_its_line_still_closes_the_block_cleanly() {
+        // The well-formed case must be untouched by the rule-4 guard.
+        let text = "a.rs\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n";
+        let parsed = parse_response(text);
+        assert_eq!(parsed.blocks, vec![block(&["a.rs"], "old\n", "new\n")]);
+        assert!(parsed.notes.is_empty());
+    }
+
+    #[test]
+    fn replace_text_ending_in_angle_brackets_is_preserved() {
+        // Not a marker: must survive verbatim.
+        let text = "a.rs\n<<<<<<< SEARCH\nold\n=======\nVec<Vec<u8>>\n";
+        let parsed = parse_response(text);
+        assert_eq!(parsed.blocks[0].updated, "Vec<Vec<u8>>\n");
+        assert!(parsed.notes.is_empty());
     }
 
     #[test]
