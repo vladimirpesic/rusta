@@ -42,12 +42,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
       - uses: Swatinem/rust-cache@v2
+
       # llama-cpp-2's cmake build needs cmake + a C++ toolchain, both
       # preinstalled on ubuntu-latest runners.
       - name: Check
         run: cargo check -p rusta-llm --features embedded
+
+      # The feature forwards rusta-llm -> rusta-dispatch -> rusta-cli (the
+      # `BackendKind::Embedded` scheduling arm); check the whole chain, not
+      # just the leaf crate.
+      - name: Check feature forwarding
+        run: cargo check -p rusta-cli --features embedded
+
+      # `cargo check` never runs a test. Without this the embedded unit
+      # tests — the chat-template fallback, the sampler chain, and the whole
+      # DeltaEmitter stop-sequence corpus that M1.5 cites as its acceptance
+      # evidence — were compiled but never executed. The GGUF e2e tests stay
+      # `#[ignore]`d (they need RUSTA_TEST_GGUF).
+      - name: Tests
+        run: cargo test --workspace --features rusta-cli/embedded
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --features rusta-cli/embedded -- -D warnings
 
   deny:
     name: cargo-deny

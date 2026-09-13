@@ -1,7 +1,16 @@
 # Rusta — Development Plan
 
 **Project:** Rusta — a lean, lightweight, all-encompassing AI coding agent harness for small, locally hosted coding LLMs (8B–35B parameters).
-**Version:** 1.1 (implementation-ready; revised after line-by-line review of the reference sources) · **Date:** 2026-09-10 · **Status:** Approved — v1 complete (M0 ✅, M1 ✅, M1.5 ✅, M2 ✅, M3 ✅, M4 ✅, M5 ✅, M6 ✅, M7 ✅, M8 ✅)
+**Version:** 1.2 (v1.1 plus the 2026-09-13 audit errata) · **Date:** 2026-09-13 · **Status:** Approved — v1 complete (M0 ✅, M1 ✅, M1.5 ✅, M2 ✅, M3 ✅, M4 ✅, M5 ✅, M6 ✅, M7 ✅, M8 ✅), audit remediation ✅
+
+**v1.2 changes.** A full line-by-line audit against the five reference implementations (Aider
+included, verified at source) found four critical defects, each of which silently disabled a
+shipped feature while every CI gate stayed green. All are fixed and pinned by regression tests;
+the specification errata they exposed are marked inline below as **Erratum (2026-09-13)**. The
+recurring cause is worth recording: every one of those defects passed its own unit test by
+supplying an input that production never supplies — a hand-fed trigger cue, a 17-line fixture
+file, an exhaustively pinned table with an out-of-band path around it. Coarse end-to-end
+assertions over *real* inputs now guard each.
 
 **Specification sources (authoritative):**
 
@@ -181,8 +190,11 @@ TOOL RESULT read (ok)
 ```
 
 Hard truncation caps: read 2,000 lines / 64 KiB; grep 200 matches; glob 1,000 entries; shell
-16 KiB combined stdout+stderr; dispatch 400 tokens (§6.8); repo-map as rendered (§6.5). On
-truncation append `… [truncated N lines/bytes]`. Errors are returned as actionable text (§6.11),
+16 KiB combined stdout+stderr; dispatch 400 tokens (§6.8) with each sub-coder observation capped
+at 1,500 tokens (a sub-coder has no compressor, so uncapped observations overflow the window and
+lose the whole research thread); repo-map as rendered (§6.5). On truncation append
+`… [truncated N lines/bytes]` — and only when a cap actually truncated, never when the caller
+asked for a bounded window. Errors are returned as actionable text (§6.11),
 never as panics or stack traces.
 
 ### 6.2 Backends (`rusta-llm`) — dual, runtime-selectable (R2)
@@ -217,8 +229,12 @@ with `LlamaSampler` (temp 0.2, top_p 0.9 defaults, configurable), and runs infer
 dedicated OS thread streaming tokens over `tokio::sync::mpsc` (the C-API blocks; the async
 boundary stays clean). Context window and exact token counts come from the loaded model
 (`context_length()`, tokenizer) — no estimation when embedded. Cancellation: a shutdown flag
-checked between tokens. Optional strict GBNF grammar (config `strict_grammar = true`) makes
-malformed edit blocks ungeneratable — opt-in because it constrains reasoning prose too.
+checked between tokens.
+
+> **Erratum (2026-09-13).** v1.1 also specified an optional strict GBNF grammar
+> (`strict_grammar = true`). It was never implemented: the key parsed, was documented in
+> `rusta.toml.example`, and did nothing. Rather than ship a silent no-op the key has been
+> removed; GBNF remains parking-lot (§14), where "GBNF strict grammar as default" already sat.
 
 **Both backends** consume the same `ChatRequest { messages, max_tokens, stop, temperature }`
 and are selected by config or `--backend`; the choice is invisible to every layer above.
@@ -250,7 +266,10 @@ replacement lines
    candidate and a previous block in the same response named a file → continuation (reuse it).
    Otherwise fail with the missing-filename corrective error (includes fence example).
 4. Forgiveness: stray markdown fences around HEAD/UPDATED stripped; CRLF normalized; missing
-   final UPDATED at end-of-stream still commits the block.
+   final UPDATED at end-of-stream still commits the block — **after stripping an UPDATED marker
+   the model ran onto the end of the last REPLACE line**, which is the usual reason the marker
+   looks missing. (Aider rejects this case outright; forgiving it without the strip wrote
+   `>>>>>>> REPLACE` into the user's source and auto-committed it.)
 5. A fenced ` ```bash/sh/shell ` block that is **not** part of an edit is surfaced to the user as
    a *suggested command* requiring confirmation — never auto-executed.
 6. The parser never panics; malformed input degrades to prose + corrective note.
@@ -262,9 +281,14 @@ path; for small models a clear retry request beats a wrong-guess apply):
 1. Exact line-sequence match (line tuples equal).
 2. Whitespace-flexible match: ignore leading whitespace of each SEARCH line when locating.
 3. Retry after dropping a spurious leading blank SEARCH line (models add them; Aider issue #25).
-4. `...` elision handling: if SEARCH/REPLACE contain standalone `...` lines, split both on them;
-   piece counts must pair and all `...` lines must be identical on both sides; then apply each
-   piece pair by exact match. Any mismatch → fall through to 5.
+4. `...` elision handling: **only when SEARCH contains standalone `...` lines** — split both on
+   them; piece counts must pair and all `...` lines must be identical on both sides; then apply
+   each piece pair by exact match. Any mismatch → fall through to 5.
+
+   > **Erratum (2026-09-13).** Aider bails out of this strategy when there are no `...` pieces
+   > (`if len(part_pieces) == 1: return`). Without that guard the single-piece path degenerates
+   > into a raw substring replace that ignores line boundaries — a wrong-guess apply of exactly
+   > the kind this section's DECIDED clause rules out.
 5. **Cross-file retry:** if the named file fails, try the block against every file in the
    session read-set; a match applies there and is reported ("applied in `<path>` instead").
 6. All strategies fail → structured failure feedback returned to the model as the next
@@ -286,6 +310,14 @@ path; for small models a clear retry request beats a wrong-guess apply):
     them. Just reply with fixed versions of the block(s) above that failed to match."]
    ```
 
+- **Repo-root confinement:** a resolved path that is absolute or contains `..` is refused with a
+  corrective note, never written. §6.12 confines mutations to the repo; that fence applies to
+  *both* edit syntaxes (§6.4), not only to the `edit`/`write` tool forms.
+
+  > **Erratum (2026-09-13).** v1.1 stated the confinement rule only for `shell` (§6.12). The
+  > implementation fenced the tool-call pathway but not the canonical text pathway, so an
+  > absolute or `../` filename above a SEARCH block wrote outside the workspace unchecked.
+
 - Applied blocks are journaled (path, before, after) to the undo stack **before** the file write.
 - **Read-before-edit ledger:** a mutation requires its file to have been read this session
   (via `read` or `map_drill`). Violation → auto-inject the file (as a read), notify, and retry
@@ -305,9 +337,17 @@ folded into `Verifying` feedback). **Canonical tool registry — 10 tools, DECID
 | `Editing` | all 10 (shell approval-gated, §6.12) | edit batch applied |
 | `Verifying` | read, grep, glob, map_refresh, map_drill, shell, ask | validation green → done; failed → back to `Editing` |
 
-- Transitions fire only on scaffold events (`PlanApproved`, `EditsApplied`, `ValidationPassed`,
-  `ValidationFailed`, `UserInterrupt`) — a closed `enum`; invalid transitions are impossible by
-  construction (exhaustive match), never silently ignored (SmallCTL `PhaseContract`).
+- Transitions fire only on scaffold events (`PlanDrafted`, `PlanApproved`, `EditsApplied`,
+  `ValidationPassed`, `ValidationFailed`, `UserInterrupt`, `LoopEscalated`) — a closed `enum`;
+  invalid transitions are impossible by construction (exhaustive match), never silently ignored
+  (SmallCTL `PhaseContract`). `LoopEscalated` is the §6.6 escalation edge (`Editing → Planning`).
+
+  > **Erratum (2026-09-13).** v1.1 had no escalation edge, so the implementation re-seeded the
+  > machine out of band and did not journal the regression. The §6.10 replay validator checks
+  > every `StateChange` against this table, so the *next* journaled transition was rejected as
+  > illegal: the session log became unreplayable and — since a session is auto-resumed from
+  > `~/.rusta/sessions/<slug>-<UTC date>.jsonl` — `rusta` refused to start in that repo for the
+  > rest of the day. Making the regression a first-class event fixes both.
 - A tool request unavailable in the current state → 1–2 line corrective note naming the current
   state and the transition that unlocks the tool (cheap context; small models learn the phase
   within one turn).
@@ -350,22 +390,45 @@ Pipeline (port of Aider `repomap.py` semantics; the numbers are normative):
    yields `Tag { rel_fname, name, kind: def|ref, line }`. If a file's query yields defs but no
    refs, backfill refs from an identifier-token word scan so the file still connects to the graph.
 3. **Graph:** one node per file. For each identifier defined in `D` files, referenced by a file
-   `r` with `n_r` references: edge `r → definer` weight = `mul / (|D| · n_r)`, where `mul`:
+   `r` with `n_r` references: edge `r → definer` weight = `mul · √n_r`, where `mul`:
    ×10 identifier explicitly mentioned by the user; ×10 snake/kebab/camelCase identifier with
-   length ≥ 8; ×0.1 identifier starting with `_`; ×0.1 identifier defined in > 5 files.
-   Identifiers defined but never referenced add a self-edge of weight 0.1 (keeps singletons
-   rankable).
+   length ≥ 8; ×0.1 identifier starting with `_`; ×0.1 identifier defined in > 5 files;
+   ×50 when the *referencing* file is in the session chat-set. Identifiers defined but never
+   referenced add a self-edge of weight 0.1 (keeps singletons rankable).
+
+   > **Erratum (2026-09-13).** v1.1 specified `mul / (|D| · n_r)`. That inverts Aider's signal:
+   > `repomap.py` multiplies by `sqrt(num_refs)` with the comment *"scale down so high freq
+   > (low value) mentions don't dominate"* — damping, not inversion. Dividing made heavy use of
+   > an identifier push rank *away* from its definer, which is backwards, and the `/|D|` divisor
+   > double-penalised common identifiers already covered by the ×0.1 rule. The ×50 chat-file
+   > referencer boost was missing entirely. Corrected above to match the reference.
 4. **Ranking:** personalized PageRank — damping 0.85, power iteration until Δ < 1e-6 or 100
    iterations (~40 lines of Rust; no graph crate). Personalization vector: `100/N` baseline per
    file; `+100/N` if the file is in the session chat-set or mentioned by the user; `+100/N` if
    any path component matches a user-mentioned identifier.
-5. **Rendering:** files in rank order; session files excluded (their content is already in
-   context). Per file: def lines as lines-of-interest with up to 8 surrounding context lines,
-   header `path/to/file.rs:`; every rendered line truncated to 100 chars.
+5. **Rendering:** definitions in rank order, grouped by file; session files excluded (their
+   content is already in context). Per definition: the def line with a small surrounding window
+   (1 line above, 2 below), header `path/to/file.rs:`; every rendered line truncated to 100 chars
+   and prefixed `│`, and **every elided region marked `⋮`**.
+
+   > **Erratum (2026-09-13).** v1.1 specified "up to 8 surrounding context lines". Aider passes
+   > `loi_pad=0` to `TreeContext` and shows the def line plus its *parent scopes* — ~1–3 lines
+   > per definition, not 17. The ±8 window made a single mid-sized file exceed the whole §7
+   > default budget (see the step 6 erratum). The wider ±8 pad remains correct for `map_drill`
+   > (step 8), which is a zoom, not an overview. Elision markers were missing altogether, so
+   > non-adjacent regions were rendered as if contiguous — actively misleading for a model
+   > composing a SEARCH block.
 6. **Token fitting:** estimate map cost by tokenizing ≤ 100 evenly-spaced rendered lines and
-   scaling by total/sampled characters (Aider's sampling trick — no full tokenization); while
-   over budget, drop the **middle-ranked** files and re-render (top and bottom of the ranking are
-   the most informative).
+   scaling by total/sampled characters (Aider's sampling trick — no full tokenization); binary
+   search the largest rank-ordered prefix of the **definition** list that fits, dropping the
+   lowest-ranked definitions first (Aider fits over `ranked_tags[:middle]` the same way).
+
+   > **Erratum (2026-09-13).** v1.1 said "drop the middle-ranked **files**". File granularity
+   > makes the smallest renderable unit one whole file's definitions, so when even one file
+   > exceeds the budget the map renders **empty** — which is what happened at the §7 default of
+   > 1024 tokens on every real repository tested, while `map_refresh` reported "no source files
+   > matched". Fitting over definitions makes the budget bind smoothly: a tight budget yields
+   > fewer definitions instead of nothing.
 7. **Cache:** `(path, mtime, size, query_version) → Vec<Tag>` in-memory only for v1 (restart
    re-scans; native tree-sitter parses are ms-per-file).
 8. **`map_drill` tool:** returns one definition's full span or a line window of a file — and
@@ -382,11 +445,21 @@ Pipeline (port of Aider `repomap.py` semantics; the numbers are normative):
 10 tool one-liners + the ```tool call syntax example (~150) · SEARCH/REPLACE example (~80) ·
 output rules (~80) · git footer (~20). Everything else is injected JIT or not at all.
 
-**JIT skill cards** (`skills/*.md`, markdown + YAML front-matter — little-coder's schema):
+**JIT skill cards** (the starter deck is compiled into the binary from `skills/*.md`; a project
+may extend or override it from `<repo>/.rusta/skills/*.md`. Markdown + YAML front-matter —
+little-coder's schema):
 `name`, `type: tool|knowledge|recovery`, `triggers: [tool names, error kinds, keywords]`,
 `priority: 1–9`, `token_cost` (declared; CI verifies ≤ 120), `user-invocable: bool`; body is a
 short imperative card. Injection: on trigger match, at most **2** cards appended as a trailing
 system note; evicted at task end. Never resident by default.
+
+> **Erratum (2026-09-13).** v1.1 left the card directory implicit, and the implementation read
+> `<repo>/skills/`. That meant the shipped deck never loaded for any repository except Rusta's
+> own, and a target repo containing an unrelated `skills/*.md` aborted startup. The starter deck
+> now ships with the binary and project cards live under the unambiguous `.rusta/skills/`.
+> Error-kind trigger cues (`edit_failed`, `not_found`, `duplicate_match`, `validation_failed`,
+> `test_failure`) are produced by one shared function so a card can never declare a trigger no
+> code path emits.
 
 **History compression:** when the assembled prompt would exceed 60% of the context window,
 summarize the oldest turns into a single `assistant` summary message ("episodic memory"), keeping
@@ -480,7 +553,6 @@ api_key_env = "RUSTA_API_KEY"           # optional; read from env, never stored
 model_path = "~/models/qwen3-coder-30b-a3b-q4_k_m.gguf"
 ctx_size = 32768
 gpu_layers = 999          # 0 = CPU
-strict_grammar = false    # opt-in GBNF (§6.2)
 
 [model]
 name = "qwen3-coder-30b-a3b"
@@ -531,8 +603,15 @@ Legend: ✅ — completed; all acceptance criteria verified locally (fmt, clippy
   name, malformed JSON → corrective note.
 - **HTTP e2e** uses a hand-rolled mock SSE server (`tests/mock_server.rs`, tokio + std TcpListener
   - manual SSE chunks) — keeps the dependency tree lean vs wiremock.
-- **Embedded tests** are `#[cfg(feature = "embedded")]` + `#[ignore]` (require a real GGUF path via
-  `RUSTA_TEST_GGUF`), so CI default runs never need cmake.
+- **Embedded tests**: the unit tests (chat-template fallback, sampler chain, `DeltaEmitter` stop
+  corpus, sanitizers) are `#[cfg(all(test, feature = "embedded"))]` and run in the `embedded` CI
+  job; only the *GGUF* e2e tests are additionally `#[ignore]`d, needing a real model via
+  `RUSTA_TEST_GGUF`. The default CI run never needs cmake.
+
+  > **Erratum (2026-09-13).** The `embedded` CI job ran `cargo check` only, so those 12 unit
+  > tests were compiled but never executed, and clippy was never enforced under the feature —
+  > despite M1.5's acceptance notes citing both. The job now runs check, feature-forwarding
+  > check, `cargo test --workspace --features rusta-cli/embedded`, and clippy `-D warnings`.
 - **Invariant tests**: core-prompt < 500 tokens; skill cards ≤ 120 tokens; forbidden-unsafe lint;
   LoC budget gate (§12).
 
@@ -562,7 +641,7 @@ Legend: ✅ — completed; all acceptance criteria verified locally (fmt, clippy
 | tree-sitter grammar drift | Pin grammar crates; golden snapshot tests catch regressions |
 | GPU build complexity (cmake/CUDA) | Default artifact HTTP-only; `rusta-full`/`embedded-cuda` documented as opt-in; CI matrix builds both |
 | Scope creep breaking R1 | LoC budget CI gate (§12) + scope fences (§4); new features go to opt-in crates |
-| Small-model format variance | Canonical fenced-JSON tool calls (proven by little-coder with 9B models) + native `tool_calls` passthrough + conservative drop-with-corrective-note (smallcode pattern) + recovery parser + (embedded) opt-in GBNF |
+| Small-model format variance | Canonical fenced-JSON tool calls (proven by little-coder with 9B models) + native `tool_calls` passthrough + conservative drop-with-corrective-note (smallcode pattern) + recovery parser |
 | Apply-chain edge cases | Port Aider's proven algorithm semantics *exactly* (§6.3), incl. disabled-edit-distance decision; fixtures cover duplicate matches, elisions, cross-file retry |
 | Small models derailed by agent loops | FAMA-lite detectors + capsules (§6.6), turn caps, state regression escalation |
 

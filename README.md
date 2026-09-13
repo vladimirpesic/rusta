@@ -22,11 +22,12 @@ hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 > journal, and phase from the JSONL log plus its hash-keyed diffs sidecar), and
 > **M4 — `rusta-repomap`** (tree-sitter repo map: Aider `.scm` tag queries for
 > seven languages over pinned grammars, def/ref graph with personalized PageRank
-> ranking, identifier word-scan backfill for def-only languages, middle-drop
-> token-budget-fitted rendering, mtime-keyed in-memory tag cache, and the
-> `map_drill` definition-span (±8-line context padding, shared with the map's
-> render constant) / exact line-window API), and
-> **M5 — `rusta-core` context manager** (JIT skill cards from `skills/*.md` with a
+> ranking, identifier word-scan backfill for def-only languages, definition-level
+> token-budget-fitted rendering with `⋮` elision markers, mtime-keyed in-memory tag
+> cache, and the `map_drill` definition-span (±8-line context padding) / exact
+> line-window API), and
+> **M5 — `rusta-core` context manager** (JIT skill cards — a starter deck compiled
+> into the binary, extensible per project from `.rusta/skills/*.md` — with a
 > strict little-coder front-matter schema and ≤ 120-token bodies, ≤ 2 cards injected
 > per request as a trailing system note; episodic history compression past 60% of the
 > context window that keeps the last three turns, every edit block, and every error
