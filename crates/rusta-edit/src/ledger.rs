@@ -69,7 +69,7 @@ impl Ledger {
 /// crate resolves through here, so the §6.12 fence sits at the boundary
 /// rather than in each caller (`rusta-tools`' `safe_rel` guards tool-call
 /// *inputs*, which is a different thing).
-pub(crate) fn confine(path: &Path) -> Option<PathBuf> {
+pub fn confine(path: &Path) -> Option<PathBuf> {
     if path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
         return None;
     }

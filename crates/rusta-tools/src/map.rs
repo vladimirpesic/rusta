@@ -12,27 +12,55 @@ use crate::exec::{ToolOutcome, caps, clip_bytes, opt_usize, req_nonempty, safe_r
 
 /// Clips a drilled span to the §6.1 `read` caps (2,000 lines / 64 KiB),
 /// marking the cut so the model narrows its next drill instead of assuming
-/// it saw the whole region. The first line is the `path:from-to` header and
-/// is always kept.
+/// it saw the whole region.
+///
+/// The `path:from-to` header is **rewritten to the range actually returned**,
+/// the way `read` reports its own last line. Capping the body while leaving
+/// the header claiming `1-50000` told the model it had received 50,000 lines
+/// when it held 2,000 — and this output is what a SEARCH block anchors on,
+/// which is exactly the "actively misleading" failure the §6.5 elision
+/// erratum was written about.
 fn cap_window(text: &str) -> (String, bool) {
     let mut lines = text.lines();
     let header = lines.next().unwrap_or_default();
     let body: Vec<&str> = lines.collect();
     let kept = body.len().min(caps::READ_LINES);
-    let dropped = body.len() - kept;
     let joined = body[..kept].join("\n");
     let (mut content, clipped) = clip_bytes(
         &joined,
         caps::READ_BYTES,
         "\n[... truncated at the 64 KiB cap]",
     );
+    // Whatever survived both caps is what the header must describe.
+    let shown = content.lines().count().min(kept);
+    let dropped = body.len() - shown;
     if dropped > 0 {
         content.push_str(&format!(
-            "\n[... {dropped} more lines truncated (cap: {} lines)]",
-            caps::READ_LINES
+            "\n[... {dropped} more lines not shown (§6.1 caps: {} lines / {} KiB)]",
+            caps::READ_LINES,
+            caps::READ_BYTES / 1024
         ));
     }
-    (format!("{header}\n{content}"), clipped || dropped > 0)
+    (
+        format!("{}\n{content}", retitle(header, shown)),
+        clipped || dropped > 0,
+    )
+}
+
+/// Rewrites a `path:from-to` header so `to` names the last line actually
+/// included. Anything not in that shape is passed through untouched.
+fn retitle(header: &str, shown: usize) -> String {
+    let Some((path, range)) = header.rsplit_once(':') else {
+        return header.to_owned();
+    };
+    let Some((from, _)) = range.split_once('-') else {
+        return header.to_owned();
+    };
+    let Ok(start) = from.parse::<usize>() else {
+        return header.to_owned();
+    };
+    // `shown` lines starting at `start`, 1-based inclusive.
+    format!("{path}:{start}-{}", start + shown.saturating_sub(1))
 }
 
 /// Shown when the map renders nothing. The old wording blamed the language

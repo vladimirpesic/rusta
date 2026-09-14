@@ -479,3 +479,72 @@ async fn resume_restores_history_ledger_undo_and_phase() {
     assert_eq!(lib, "fn one_renamed() {}\n", "post-resume undo restores");
     assert_eq!(resumed.git.log(5).len(), 1, "post-resume undo reverts");
 }
+
+/// G9 (fourth audit): §6.4 allows at most one pending `ask` per turn.
+/// Nothing enforced it — `ask.rs` named the agent loop as the owner and the
+/// loop had no such guard — so a completion carrying several asks put that
+/// many consecutive blocking prompts in front of the user inside one turn.
+///
+/// Driven through the real loop with a counting responder: only the first
+/// ask reaches the user, and the rest come back as one corrective note, never
+/// a silent drop.
+#[tokio::test]
+async fn only_the_first_ask_of_a_turn_reaches_the_user() {
+    use std::sync::Mutex;
+
+    struct Counting(Arc<Mutex<Vec<String>>>);
+    impl rusta_tools::Responder for Counting {
+        fn reply(&mut self, question: &str) -> String {
+            self.0.lock().expect("lock").push(question.to_owned());
+            "answered".to_owned()
+        }
+    }
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("src")).expect("dirs");
+    std::fs::write(dir.path().join("src/lib.rs"), "fn two() {}\n").expect("seed");
+
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let mock = Mock::start(move |n| match n {
+        // One completion, three asks.
+        1 => "```tool\n{\"name\": \"ask\", \"input\": {\"question\": \"first?\"}}\n```\n\
+              ```tool\n{\"name\": \"ask\", \"input\": {\"question\": \"second?\"}}\n```\n\
+              ```tool\n{\"name\": \"ask\", \"input\": {\"question\": \"third?\"}}\n```\n"
+            .to_owned(),
+        _ => "All clear.\n".to_owned(),
+    });
+
+    let capture = Capture::default();
+    let mut app = app_for(dir.path(), &mock, 8, &capture, Mode::Repl);
+    // Same backend the app would build, with a counting responder installed.
+    let backend = Arc::new(
+        rusta_llm::Backend::http(rusta_llm::HttpConfig {
+            base_url: format!("http://127.0.0.1:{}/v1", mock.port),
+            ..rusta_llm::HttpConfig::default()
+        })
+        .expect("backend"),
+    );
+    app.tools = Arc::new(
+        rusta_tools::Tools::new(
+            dir.path(),
+            backend,
+            rusta_tools::ShellPolicy::standard().expect("policy"),
+        )
+        .expect("tools")
+        .with_responder(Box::new(Counting(Arc::clone(&asked)))),
+    );
+
+    app.handle_line("please check the thing").await;
+
+    let questions = asked.lock().expect("lock").clone();
+    assert_eq!(
+        questions,
+        vec!["first?".to_owned()],
+        "only the first ask of a turn may reach the user"
+    );
+    let shown = capture.text();
+    assert!(
+        shown.contains("ask (error)") || shown.contains("* ask"),
+        "the extra asks must surface, not vanish: {shown}"
+    );
+}

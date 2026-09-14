@@ -44,6 +44,28 @@ pub(crate) const WRAP_UP: &str = "TURN BUDGET REACHED: summarize what was done, 
 /// Terminal-line cap for the commit-message summary of a user request.
 const SUMMARY_CHARS: usize = 72;
 
+/// Reads one line from the terminal without parking a tokio worker.
+///
+/// The interactive hooks below run inside the async agent loop, and a bare
+/// `stdin().read_line` there blocks a runtime thread for as long as the user
+/// takes to answer — delaying any sub-coder actors in flight (§6.8 spawns up
+/// to four). `repl.rs` already wraps its reedline read this way; these three
+/// did not. `block_in_place` requires the multi-threaded runtime, which
+/// `#[tokio::main]` provides and which is the only place these hooks are
+/// installed; outside a runtime it falls back to a plain read.
+fn read_user_line(answer: &mut String) {
+    let mut read = || {
+        let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), answer);
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(read);
+        }
+        // Single-threaded runtime or none: `block_in_place` would panic.
+        _ => read(),
+    }
+}
+
 /// The §6.4 plan-approval gate (`Planning → Editing`): the CLI prompts the
 /// user y/n; `/auto` and non-interactive `-c` runs approve automatically.
 pub trait PlanGate: Send {
@@ -76,7 +98,7 @@ impl PlanGate for TerminalGate {
         print!("Approve plan? (y/n) ");
         let _ = std::io::Write::flush(&mut std::io::stdout());
         let mut answer = String::new();
-        let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut answer);
+        read_user_line(&mut answer);
         matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
     }
 }
@@ -99,7 +121,7 @@ impl Approver for TerminalApprover {
         print!("Run it? (y/n/a = always this session) ");
         let _ = std::io::Write::flush(&mut std::io::stdout());
         let mut answer = String::new();
-        let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut answer);
+        read_user_line(&mut answer);
         match answer.trim().to_ascii_lowercase().as_str() {
             "y" => Decision::Allow,
             "a" => {
@@ -121,7 +143,7 @@ impl Responder for TerminalResponder {
         print!("> ");
         let _ = std::io::Write::flush(&mut std::io::stdout());
         let mut answer = String::new();
-        let _ = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut answer);
+        read_user_line(&mut answer);
         let trimmed = answer.trim();
         if trimmed.is_empty() {
             "(user gave no answer — proceed with your best judgment)".to_owned()
@@ -135,7 +157,7 @@ impl Responder for TerminalResponder {
 /// corrective notes, and suggested shell commands (§6.3 rule 5 — surfaced
 /// for confirmation, never auto-executed).
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct Parsed {
+pub struct Parsed {
     pub items: Vec<Item>,
     pub notes: Vec<String>,
     pub commands: Vec<String>,
@@ -143,7 +165,7 @@ pub(crate) struct Parsed {
 
 /// One actionable thing a completion asked for, in document order (§6.1).
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Item {
+pub enum Item {
     /// SEARCH/REPLACE blocks from one prose run (§6.3, applied as a group).
     Blocks(Vec<EditBlock>),
     /// A tool call — fenced JSON or native passthrough (§6.1).
@@ -157,7 +179,7 @@ pub(crate) enum Item {
 
 /// A native `tool_calls` entry converted for execution (§6.1 priority 3).
 #[derive(Debug, Clone)]
-pub(crate) struct NativeCall {
+pub struct NativeCall {
     /// Tool name.
     pub name: String,
     /// Parsed arguments (`{"_raw": ...}` when the model emitted invalid JSON;
@@ -172,7 +194,7 @@ pub(crate) struct NativeCall {
 /// through `rusta_dispatch::parse_tool_calls` — both syntaxes keep their
 /// proven parsers and still execute in the order the model wrote them.
 /// Native `tool_calls` execute after the text items, in server order.
-pub(crate) fn parse_items(text: &str, native: &[NativeCall]) -> Parsed {
+pub fn parse_items(text: &str, native: &[NativeCall]) -> Parsed {
     let mut out = Parsed::default();
     let mut prose = String::new();
 
@@ -380,9 +402,30 @@ impl App {
             }
 
             let undo_before = self.tools.editor().undo_stack().len();
+            // §6.4: "at most one pending `ask` per turn". The bound lives
+            // here because turns are this loop's unit — `ask.rs` said so and
+            // nothing implemented it, so a completion carrying five asks put
+            // five consecutive blocking prompts in front of the user inside
+            // a single turn. The second one gets the standard corrective
+            // note instead, never a silent drop.
+            let mut asked = false;
             for item in parsed.items {
                 match item {
                     Item::Blocks(blocks) => self.apply_blocks(blocks),
+                    Item::Call { name, input } if name == Tool::Ask.as_str() => {
+                        if asked {
+                            self.push_observation(
+                                &name,
+                                "Only one `ask` per turn — the rest of this turn's questions were \
+                                 not put to the user. Ask the single most important one, wait for \
+                                 the reply, then continue.",
+                                Status::Error,
+                            );
+                        } else {
+                            asked = true;
+                            self.exec_call(&name, &input).await;
+                        }
+                    }
                     Item::Call { name, input } => self.exec_call(&name, &input).await,
                 }
             }
@@ -505,6 +548,23 @@ impl App {
         }
         if wrapup {
             messages.push(Message::system(WRAP_UP));
+        }
+        // §6.6's last line of defence. The compressor is best-effort — it
+        // can run out of clippable material — and nothing downstream used to
+        // measure the result, so an oversized request simply shipped. Over
+        // HTTP that is worse than an error: llama-server and Ollama commonly
+        // truncate from the *left*, which silently discards the system
+        // prompt and with it every phase gate the §6.4 machine relies on.
+        let window = self.tools.backend().context_window();
+        let assembled: u64 = messages
+            .iter()
+            .map(|message| estimate_tokens(&message.content))
+            .sum();
+        if assembled > window {
+            self.reporter.line(&format!(
+                "! context overflow: {assembled} estimated tokens against a {window}-token \
+                 window. Drop files with /drop, or raise [model] context_window."
+            ));
         }
         messages
     }

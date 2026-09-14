@@ -244,7 +244,19 @@ impl App {
             ledger,
             undo,
             state,
+            skipped_edits,
         } = rc;
+        // §6.12: edits naming paths outside the workspace are dropped from
+        // the journal rather than restored by `/undo`. Say so — silently
+        // shorter undo depth is worse than a line of output.
+        if !skipped_edits.is_empty() {
+            self.reporter.line(&format!(
+                "note: {} journaled edit(s) name paths outside this repo and were \
+                 skipped — /undo will not restore them: {}",
+                skipped_edits.len(),
+                skipped_edits.join(", ")
+            ));
+        }
         {
             let mut editor = self.tools.editor();
             for path in ledger.read_set() {

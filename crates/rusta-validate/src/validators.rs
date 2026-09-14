@@ -317,10 +317,12 @@ impl Report {
         timeout: Duration,
     ) -> Self {
         let cap = OUTPUT_CAP_BYTES / 2;
-        // `capped_read` cuts on a byte count, so the tail may be a partial
-        // UTF-8 sequence; trim back to a boundary before lossy conversion.
-        let stdout = String::from_utf8_lossy(truncate(&stdout, cap));
-        let stderr = String::from_utf8_lossy(truncate(&stderr, cap));
+        // `capped_read` cuts on a byte count, so a stream it *did* cut may
+        // end mid-character. Trim back to a boundary before lossy conversion
+        // — and only for a stream that was cut, since an uncut one ends
+        // wherever the process ended and must not lose its last character.
+        let stdout = String::from_utf8_lossy(trim_partial_utf8(&stdout, stdout_cut));
+        let stderr = String::from_utf8_lossy(trim_partial_utf8(&stderr, stderr_cut));
         let mut output = String::with_capacity(stdout.len() + stderr.len() + 1);
         output.push_str(&stdout);
         if !stdout.is_empty() && !stderr.is_empty() {
@@ -367,17 +369,46 @@ impl Report {
     }
 }
 
-/// `bytes` capped at `cap` bytes, cut on a char boundary when possible so
-/// lossy conversion sees whole chars.
-fn truncate(bytes: &[u8], cap: usize) -> &[u8] {
-    if bytes.len() <= cap {
+/// Drops a trailing partial UTF-8 sequence from `bytes`, but only when the
+/// stream was actually `cut` mid-flight.
+///
+/// The previous form took a byte cap and returned early whenever
+/// `bytes.len() <= cap`. Once `capped_read` started cutting to exactly that
+/// same cap, the guard short-circuited on every call and the function became
+/// inert — while the comment above it went on claiming the tail was trimmed,
+/// and its unit test went on passing by supplying caps *smaller* than the
+/// input, which production no longer does.
+fn trim_partial_utf8(bytes: &[u8], cut: bool) -> &[u8] {
+    if !cut || bytes.is_empty() {
         return bytes;
     }
-    let mut end = cap;
-    while end > 0 && (bytes[end] & 0b1100_0000) == 0b1000_0000 {
-        end -= 1;
+    // Walk back over the trailing continuation bytes (at most three) to find
+    // the lead byte of the final sequence.
+    let mut start = bytes.len();
+    while start > 0 && bytes.len() - start < 3 && (bytes[start - 1] & 0b1100_0000) == 0b1000_0000 {
+        start -= 1;
     }
-    &bytes[..end]
+    if start == 0 {
+        return bytes; // nothing but continuations: let lossy conversion deal with it
+    }
+    let lead = bytes[start - 1];
+    let needed = if lead < 0x80 {
+        1
+    } else if lead & 0b1110_0000 == 0b1100_0000 {
+        2
+    } else if lead & 0b1111_0000 == 0b1110_0000 {
+        3
+    } else if lead & 0b1111_1000 == 0b1111_0000 {
+        4
+    } else {
+        return bytes; // stray continuation or invalid lead; not ours to repair
+    };
+    // Keep the sequence only when all of its bytes made it through the cut.
+    if bytes.len() - (start - 1) < needed {
+        &bytes[..start - 1]
+    } else {
+        bytes
+    }
 }
 
 /// All validator reports for one validation round.
@@ -914,12 +945,30 @@ mod tests {
     }
 
     #[test]
-    fn truncate_cuts_on_char_boundaries() {
-        // 4-byte emoji split at byte 5 lands mid-char; the cut backs up.
-        let text = "ab😀cd".as_bytes();
-        assert_eq!(truncate(text, 5), b"ab");
-        assert_eq!(truncate(text, 2), b"ab");
-        assert_eq!(truncate(text, 100), text);
+    fn trim_partial_utf8_uses_the_shape_capped_read_produces() {
+        // What `capped_read` actually hands over: a stream cut at a byte
+        // count, which can land inside a 4-byte character. The old test used
+        // caps smaller than its input — an input production no longer
+        // supplies — so it stayed green while the function went inert.
+        let whole = "ab😀".as_bytes();
+        for stranded in 1..=3 {
+            let cut = &whole[..whole.len() - stranded];
+            let trimmed = trim_partial_utf8(cut, true);
+            assert_eq!(
+                trimmed, b"ab",
+                "cut leaving {stranded} byte(s) of the emoji"
+            );
+            assert!(
+                String::from_utf8(trimmed.to_vec()).is_ok(),
+                "must be valid UTF-8"
+            );
+        }
+        // A complete sequence at the boundary survives even when cut is set.
+        assert_eq!(trim_partial_utf8(whole, true), whole);
+        // An uncut stream is never touched, even if it somehow ends mid-char.
+        let ragged = &whole[..whole.len() - 1];
+        assert_eq!(trim_partial_utf8(ragged, false), ragged);
+        assert_eq!(trim_partial_utf8(b"", true), b"");
     }
 
     #[cfg(unix)]

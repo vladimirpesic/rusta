@@ -50,6 +50,18 @@ pub const MAX_ACTIVE_CAPSULES: usize = 5;
 /// Capsules expire after this many turns (§6.6).
 pub const CAPSULE_TTL_TURNS: u32 = 3;
 
+/// Floor for an observation clipped to fit the window. Below this a `read`
+/// result stops carrying usable evidence, so the clipper stops rather than
+/// shaving a message into uselessness — and the §6.1 size guard reports the
+/// overflow instead of hiding it.
+pub const MIN_KEPT_OBSERVATION: u64 = 256;
+
+/// Appended to an observation clipped by [`Compressor::compress`], so the
+/// model narrows its next read instead of assuming it saw the whole file —
+/// the same contract as the §6.1 tool caps.
+const CLIP_MARKER: &str =
+    "\n[… clipped to fit the context window — narrow the range and read again]";
+
 /// Detector (a): trips at this many identical `tool|args` calls.
 pub const STAGNATION_TRIP: u32 = 3;
 /// Detector (b): trips at this many *consecutive* identical tool calls.
@@ -549,9 +561,24 @@ impl Compressor {
     /// remainder (§6.1).
     pub fn compress(&self, history: Vec<Message>, reserved: u64) -> Compression {
         let total_turns = count_turns(&history);
-        if !self.over_budget(&history, reserved) || total_turns <= KEEP_TURNS {
+        if !self.over_budget(&history, reserved) {
             return Compression {
                 messages: history,
+                summary: None,
+            };
+        }
+        if total_turns <= KEEP_TURNS {
+            // Dropping turns is not available: §6.6 keeps the last
+            // [`KEEP_TURNS`] verbatim, and there are no others. But three
+            // `read` observations at the §6.1 cap is 65k estimated tokens
+            // against a 32k window — twice the whole context — and the
+            // request used to ship at that size, because nothing downstream
+            // measured it. Clip the oversized observations instead, exactly
+            // as a sub-coder clips its own (§6.8 `OBSERVATION_TOKEN_CAP`):
+            // "verbatim" becomes "verbatim up to a cap", which keeps every
+            // turn present rather than losing the whole request.
+            return Compression {
+                messages: self.clip_oversized(history, reserved),
                 summary: None,
             };
         }
@@ -565,6 +592,52 @@ impl Compressor {
                 covers_turns: covers,
                 text,
             }),
+        }
+    }
+
+    /// Clips the largest observations until the history fits the §6.6
+    /// budget, largest first, never below [`MIN_KEPT_OBSERVATION`] tokens
+    /// each.
+    ///
+    /// Only `user`-role observations are clipped: assistant turns carry the
+    /// model's own reasoning and edit blocks, which §6.6 keeps verbatim and
+    /// which are small in practice. A clip is marked in the text so the
+    /// model narrows its next read rather than assuming it saw everything —
+    /// the same contract as the §6.1 tool caps.
+    fn clip_oversized(&self, mut history: Vec<Message>, reserved: u64) -> Vec<Message> {
+        loop {
+            if !self.over_budget(&history, reserved) {
+                return history;
+            }
+            // The biggest clippable observation, if any is still worth cutting.
+            let target = history
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| message.role == Role::User)
+                .map(|(index, message)| (index, estimate_tokens(&message.content)))
+                .filter(|(_, cost)| *cost > MIN_KEPT_OBSERVATION)
+                .max_by_key(|(_, cost)| *cost);
+            let Some((index, cost)) = target else {
+                return history; // nothing left to give; the guard reports it
+            };
+            // Halve it, with a floor — repeated passes converge quickly and
+            // spread the loss across turns instead of gutting the first one.
+            let budget = (cost / 2).max(MIN_KEPT_OBSERVATION);
+            let kept: String = history[index]
+                .content
+                .chars()
+                .take(budget as usize * 3)
+                .collect();
+            let clipped = format!("{kept}{CLIP_MARKER}");
+            // Strict progress, or stop. The marker costs tokens of its own,
+            // so a message only just above the floor clips to something no
+            // smaller — and since this always picks the *largest* candidate,
+            // nothing smaller could shrink either. Without this the loop
+            // spins forever on exactly that input.
+            if estimate_tokens(&clipped) >= cost {
+                return history;
+            }
+            history[index].content = clipped;
         }
     }
 

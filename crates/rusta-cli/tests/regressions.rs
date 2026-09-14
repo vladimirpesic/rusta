@@ -139,6 +139,29 @@ async fn add_uses_path_semantics_and_offers_the_recursive_form() {
         "directory expansion: {shown}"
     );
     assert!(shown.contains("src/deep/mod.rs"), "{shown}");
+
+    // G5: `.` is the repo root, and a leading `./` is not part of the path.
+    // Walk output carries no `./`, so both built a prefix that matched
+    // nothing — in the very command whose directory form had just been added.
+    app.handle_line("/drop **/*.rs").await;
+    let mark = capture.text().len();
+    app.handle_line("/add .").await;
+    let shown = capture.text()[mark..].to_string();
+    for source in ["root.rs", "src/lib.rs", "src/deep/mod.rs"] {
+        assert!(
+            shown.contains(source),
+            "/add . must reach the whole repo, missing {source}: {shown}"
+        );
+    }
+
+    app.handle_line("/drop **/*.rs").await;
+    let mark = capture.text().len();
+    app.handle_line("/add ./src").await;
+    let shown = capture.text()[mark..].to_string();
+    assert!(
+        shown.contains("added 2 file"),
+        "/add ./src == /add src: {shown}"
+    );
 }
 
 /// The hint only fires when it would actually help: it names a recursive
@@ -182,4 +205,97 @@ async fn the_recursive_hint_is_never_a_second_dead_end() {
         .next()
         .unwrap_or_default();
     assert!(!tail.contains("did you mean"), "{tail}");
+}
+
+// ------------------------------------------- 2026-09-14 fourth-audit findings
+
+/// G11: the §9 edit corpus is M2's acceptance evidence, and it drove
+/// `parse_response` — while the agent drives `parse_items`, which splits on
+/// ` ```tool ` fences first. That seam is where F1 lived, and no fixture
+/// crossed it. Every fixture now runs through both entry points and must
+/// agree, so the corpus covers the path the agent actually takes.
+#[test]
+fn the_edit_corpus_agrees_across_both_parser_entry_points() {
+    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/edit_corpus");
+    let mut fixtures: Vec<std::path::PathBuf> = std::fs::read_dir(&corpus)
+        .expect("corpus dir")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    fixtures.sort();
+    assert!(
+        fixtures.len() >= 15,
+        "expected the §9 corpus, found {}",
+        fixtures.len()
+    );
+
+    for path in fixtures {
+        let text = std::fs::read_to_string(&path).expect("fixture");
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let direct = rusta_edit::parse_response(&text);
+        let seam = rusta_cli::parse_items(&text, &[]);
+
+        let via_seam: Vec<rusta_edit::EditBlock> = seam
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                rusta_cli::Item::Blocks(blocks) => Some(blocks.clone()),
+                rusta_cli::Item::Call { .. } => None,
+            })
+            .flatten()
+            .collect();
+
+        assert_eq!(
+            via_seam, direct.blocks,
+            "{name}: the agent's parser and the edit parser disagree about the blocks"
+        );
+        assert_eq!(
+            seam.commands, direct.commands,
+            "{name}: suggested commands differ across the seam"
+        );
+    }
+}
+
+/// G9: §6.4 allows at most one pending `ask` per turn. Nothing enforced it,
+/// so a completion carrying several put that many consecutive blocking
+/// prompts in front of the user inside one turn.
+#[test]
+fn one_ask_per_turn_is_parseable_as_such() {
+    let completion = "```tool\n{\"name\": \"ask\", \"input\": {\"question\": \"a?\"}}\n```\n\
+                      ```tool\n{\"name\": \"ask\", \"input\": {\"question\": \"b?\"}}\n```\n\
+                      ```tool\n{\"name\": \"ask\", \"input\": {\"question\": \"c?\"}}\n```\n";
+    let parsed = rusta_cli::parse_items(completion, &[]);
+    let asks = parsed
+        .items
+        .iter()
+        .filter(|i| matches!(i, rusta_cli::Item::Call { name, .. } if name == "ask"))
+        .count();
+    // The parser still reports all three — the *loop* is what bounds them,
+    // which is where §6.4 puts the bound and where `submit` now enforces it.
+    assert_eq!(asks, 3, "the parser reports what the model wrote");
+}
+
+/// G12: a ` ```tool ` fence inside a ` ```bash ` block executes. Recorded
+/// rather than fixed — markdown fences do not nest, so the inner ``` closes
+/// the outer block in any reading, and `parse_response`'s own shell-block
+/// collector ends the command there too. Both parsers agree the bash block
+/// ended, and the input is textually identical to a legitimate suggested
+/// command followed by a legitimate tool call. Pinned so the behaviour is a
+/// known property rather than an accident.
+#[test]
+fn a_tool_fence_after_a_shell_fence_is_a_call_by_design() {
+    let text = "```bash\necho hello\n```tool\n{\"name\": \"read\", \"input\": {\"path\": \"a.rs\"}}\n```\n";
+    let parsed = rusta_cli::parse_items(text, &[]);
+    assert_eq!(parsed.commands, ["echo hello".to_owned()]);
+    assert!(
+        parsed
+            .items
+            .iter()
+            .any(|i| matches!(i, rusta_cli::Item::Call { name, .. } if name == "read")),
+        "the fence after the closed bash block is a call"
+    );
 }

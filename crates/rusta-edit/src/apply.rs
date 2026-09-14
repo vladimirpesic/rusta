@@ -26,6 +26,50 @@ use std::path::{Path, PathBuf};
 use crate::ledger::Ledger;
 use crate::parser::{EditBlock, ParsedResponse};
 
+/// What [`guarded`] should do to a file.
+pub(crate) enum Mutation<'a> {
+    /// Replace the file's contents, creating parent directories as needed.
+    Write(&'a str),
+    /// Delete the file; a file that is already gone is not an error.
+    Remove,
+}
+
+/// **The single mutation point of this crate.** Every write, create and
+/// delete goes through here, and every one is fenced by
+/// [`crate::ledger::contains_path`] first.
+///
+/// The funnel is the point. The second audit fenced what it called "three
+/// write paths"; there were four, and the uncounted one — restoring from the
+/// undo journal — carried a delete as well as a write, reachable by `/undo`
+/// on a resumed session whose log named absolute paths. Hand-enumeration has
+/// now failed twice, so `tests/write_paths.rs` scans this file for raw
+/// mutation calls and fails when one appears outside this function. A new
+/// write path cannot be added unfenced without turning that test red.
+pub(crate) fn guarded(root: &Path, rel: &Path, what: Mutation<'_>) -> io::Result<()> {
+    if !crate::ledger::contains_path(root, rel) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} resolves outside the repository; every mutation must stay inside it",
+                rel.display()
+            ),
+        ));
+    }
+    let abs = root.join(rel);
+    match what {
+        Mutation::Write(content) => {
+            if let Some(parent) = abs.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&abs, content)
+        }
+        Mutation::Remove => match fs::remove_file(&abs) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        },
+    }
+}
+
 /// One journaled mutation: enough to restore the file exactly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UndoEntry {
@@ -80,14 +124,16 @@ impl UndoStack {
         let Some(entry) = self.entries.pop() else {
             return Ok(None);
         };
-        let abs = root.join(&entry.path);
-        if entry.existed {
-            fs::write(&abs, &entry.before)?;
-        } else if let Err(err) = fs::remove_file(&abs) {
-            if err.kind() != io::ErrorKind::NotFound {
-                return Err(err);
-            }
-        }
+        // Fenced like every other mutation (§6.12). This path was the one
+        // the second audit's count missed, and it reaches a *delete*: a
+        // resumed session whose log named absolute paths could restore over,
+        // and remove, files outside the repo.
+        let what = if entry.existed {
+            Mutation::Write(&entry.before)
+        } else {
+            Mutation::Remove
+        };
+        guarded(root, &entry.path, what)?;
         Ok(Some(entry))
     }
 
@@ -263,13 +309,7 @@ impl Editor {
             before,
             after: content.to_owned(),
         });
-        let write = || -> io::Result<()> {
-            if let Some(parent) = abs.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&abs, content)
-        };
-        if let Err(err) = write() {
+        if let Err(err) = guarded(&self.root, &rel, Mutation::Write(content)) {
             self.undo.pop();
             return Err(err);
         }
@@ -397,13 +437,7 @@ impl Editor {
             before: content,
             after: new_content.clone(),
         });
-        let write = || -> io::Result<()> {
-            if let Some(parent) = abs.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&abs, &new_content)
-        };
-        if let Err(err) = write() {
+        if let Err(err) = guarded(&self.root, rel, Mutation::Write(&new_content)) {
             self.undo.pop();
             return Err(FailureReason::Io(err.to_string()));
         }
@@ -452,7 +486,7 @@ impl Editor {
                 before: content,
                 after: new_content.clone(),
             });
-            if fs::write(&abs, &new_content).is_err() {
+            if guarded(&self.root, &cand, Mutation::Write(&new_content)).is_err() {
                 self.undo.pop();
                 continue;
             }

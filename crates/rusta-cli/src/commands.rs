@@ -411,12 +411,24 @@ fn walk_matching(root: &Path, pattern: &str) -> Vec<String> {
 /// the prefix is only ever matched against repo-relative walk output, so it
 /// cannot select anything outside the root.
 fn directory_prefix(root: &Path, pattern: &str) -> Option<String> {
-    let trimmed = pattern.trim_end_matches('/');
-    if trimmed.is_empty()
-        || trimmed.contains(['*', '?', '['])
-        || trimmed.split('/').any(|part| part == "..")
-    {
+    if pattern.contains(['*', '?', '[']) {
         return None;
+    }
+    // Walk output is repo-relative with no `./`, so the prefix must be too:
+    // `/add .` and `/add ./src` built the prefixes `./` and `./src/` and so
+    // matched nothing at all — in the very command whose directory form had
+    // just been advertised.
+    let trimmed = pattern
+        .trim_end_matches('/')
+        .trim_start_matches("./")
+        .trim_end_matches('/');
+    if trimmed.split('/').any(|part| part == "..") {
+        return None;
+    }
+    // `.` — or a bare `./` — is the repo root: an empty prefix, which every
+    // repo-relative path starts with.
+    if trimmed.is_empty() || trimmed == "." {
+        return root.is_dir().then(String::new);
     }
     root.join(trimmed).is_dir().then(|| format!("{trimmed}/"))
 }

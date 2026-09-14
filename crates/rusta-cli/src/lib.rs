@@ -19,6 +19,7 @@ pub mod repl;
 
 use clap::Parser;
 
+pub use agent::{Item, Parsed, parse_items};
 pub use config::Config;
 pub use repl::{App, Control, Mode};
 

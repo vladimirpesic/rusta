@@ -218,3 +218,197 @@ fn replay_credits_only_successful_reads() {
         .collect();
     assert_eq!(credited, vec!["real.rs".to_owned()]);
 }
+
+// ------------------------------------------- 2026-09-14 fourth-audit findings
+
+/// G1: `/undo` on a resumed session must not write or delete outside the
+/// repo. Replay builds undo entries from `EditApplied` paths, and
+/// `root.join(absolute)` *replaces* the base — so an absolute path in a log
+/// (which logs written before the §6.12 fence legitimately carry) turned the
+/// journal's restore step into an arbitrary write, and its create-undo step
+/// into an arbitrary delete.
+#[test]
+fn resumed_undo_cannot_escape_the_workspace() {
+    let repo = tempfile::tempdir().expect("repo");
+    let outside = tempfile::tempdir().expect("outside");
+    let victim = outside.path().join("victim.txt");
+    let doomed = outside.path().join("doomed.txt");
+    std::fs::write(&victim, "ORIGINAL\n").expect("seed");
+    std::fs::write(&doomed, "STILL HERE\n").expect("seed");
+
+    let log = repo.path().join("s.jsonl");
+    {
+        let mut session = Session::open(&log).expect("open");
+        // An edit of an existing file outside the repo, and a "created" file
+        // outside the repo — the write and the delete arms of undo.
+        session
+            .record_edit(
+                victim.to_str().expect("utf8"),
+                true,
+                "RESTORED\n",
+                "after\n",
+            )
+            .expect("record");
+        session
+            .record_edit(doomed.to_str().expect("utf8"), false, "", "after\n")
+            .expect("record");
+        // A legitimate in-repo edit after them: the sidecar must stay in
+        // lockstep, so this one must still replay correctly.
+        std::fs::write(repo.path().join("inside.txt"), "NEW\n").expect("seed");
+        session
+            .record_edit("inside.txt", true, "OLD\n", "NEW\n")
+            .expect("record");
+    }
+
+    let replayed = Session::open(&log)
+        .expect("open")
+        .replay_context()
+        .expect("replay");
+    assert_eq!(
+        replayed.skipped_edits.len(),
+        2,
+        "both escaping edits must be reported: {:?}",
+        replayed.skipped_edits
+    );
+    // Only the in-repo edit survives into the journal, and it is intact —
+    // proving the sidecar stayed in lockstep past the two dropped entries.
+    assert_eq!(replayed.undo.pending().len(), 1);
+    assert_eq!(replayed.undo.pending()[0].before, "OLD\n");
+
+    let mut undo = replayed.undo;
+    for _ in 0..3 {
+        let _ = undo.undo_last(repo.path());
+    }
+    assert_eq!(
+        std::fs::read_to_string(&victim).expect("read"),
+        "ORIGINAL\n",
+        "a file outside the repo was overwritten by /undo"
+    );
+    assert!(
+        doomed.exists(),
+        "a file outside the repo was deleted by /undo"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("inside.txt")).expect("read"),
+        "OLD\n",
+        "the legitimate in-repo undo must still work"
+    );
+}
+
+/// G2: compression could not fire with three turns or fewer, whatever their
+/// size. Three `read` observations at the §6.1 cap measured 65,574 estimated
+/// tokens against a 32,768-token window — twice the whole context — returned
+/// unchanged, and nothing downstream measured the request.
+///
+/// §6.6 keeps the last three turns verbatim, so the fix is not to drop them:
+/// oversized observations are clipped instead, as a sub-coder clips its own
+/// (§6.8). Every turn stays present; the evidence in each is bounded.
+#[test]
+fn few_but_huge_turns_are_clipped_to_fit() {
+    use rusta_core::Compressor;
+    use rusta_llm::Message;
+    use rusta_llm::tokens::estimate_tokens;
+
+    let window = 32_768u64;
+    let compressor = Compressor::new(window);
+    let big = "x".repeat(64 * 1024); // the §6.1 read cap
+    let mut history = Vec::new();
+    for turn in 0..3 {
+        history.push(Message::assistant(format!("reading file {turn}")));
+        history.push(Message::user(format!("TOOL RESULT read (ok)\n{big}")));
+    }
+    let before: u64 = history.iter().map(|m| estimate_tokens(&m.content)).sum();
+    assert!(
+        before > window,
+        "fixture must start over the window: {before}"
+    );
+
+    let out = compressor.compress(history, 400);
+    let after: u64 = out
+        .messages
+        .iter()
+        .map(|m| estimate_tokens(&m.content))
+        .sum();
+
+    assert!(
+        after + 400 <= compressor.history_budget(),
+        "clipped history is {after} tokens, over the {} budget",
+        compressor.history_budget()
+    );
+    // All three turns survive — clipping, not dropping.
+    assert_eq!(out.messages.len(), 6, "no message may be removed");
+    assert!(
+        out.summary.is_none(),
+        "no episodic summary at this turn count"
+    );
+    assert!(
+        out.messages
+            .iter()
+            .any(|m| m.content.contains("clipped to fit")),
+        "a clipped observation must say so"
+    );
+    // The assistant turns are untouched: §6.6 keeps model output verbatim.
+    for turn in 0..3 {
+        assert!(
+            out.messages
+                .iter()
+                .any(|m| m.content == format!("reading file {turn}")),
+            "assistant turn {turn} was modified"
+        );
+    }
+}
+
+/// G2 control: a history that already fits is returned byte-for-byte.
+#[test]
+fn a_history_within_budget_is_never_clipped() {
+    use rusta_core::Compressor;
+    use rusta_llm::Message;
+
+    let compressor = Compressor::new(32_768);
+    let history = vec![
+        Message::user("please fix the parser"),
+        Message::assistant("looking now"),
+        Message::user("TOOL RESULT read (ok)\nfn main() {}"),
+    ];
+    let out = compressor.compress(history.clone(), 400);
+    assert_eq!(out.messages, history);
+    assert!(out.summary.is_none());
+}
+
+/// G2 follow-up, found by self-review of the G2 fix: the clip loop must make
+/// strict progress. `CLIP_MARKER` costs tokens of its own, so an observation
+/// only just above `MIN_KEPT_OBSERVATION` clipped to something *no smaller*,
+/// and since the loop always picks the largest candidate it spun on that
+/// input forever — a hang in the agent's hot path.
+#[test]
+fn the_clip_loop_always_terminates() {
+    use rusta_core::{Compressor, MIN_KEPT_OBSERVATION};
+    use rusta_llm::Message;
+    use rusta_llm::tokens::estimate_tokens;
+
+    // A window so small that no amount of clipping can satisfy it, with
+    // every observation sitting just above the floor — the worst case.
+    let compressor = Compressor::new(100);
+    let just_above = "z".repeat((MIN_KEPT_OBSERVATION as usize + 8) * 3);
+    let history: Vec<Message> = (0..3)
+        .flat_map(|turn| {
+            [
+                Message::assistant(format!("turn {turn}")),
+                Message::user(format!("TOOL RESULT read (ok)\n{just_above}")),
+            ]
+        })
+        .collect();
+    for message in &history {
+        if message.role == rusta_llm::Role::User {
+            assert!(
+                estimate_tokens(&message.content) > MIN_KEPT_OBSERVATION,
+                "fixture must sit above the floor to exercise the no-progress path"
+            );
+        }
+    }
+
+    // The assertion is that this returns at all.
+    let out = compressor.compress(history, 0);
+    assert_eq!(out.messages.len(), 6, "clipping never drops messages");
+    assert!(out.summary.is_none());
+}

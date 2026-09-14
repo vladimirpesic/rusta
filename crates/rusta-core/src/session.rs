@@ -296,6 +296,7 @@ impl Session {
         let mut ledger = Ledger::new();
         let mut undo_entries: Vec<UndoEntry> = Vec::new();
         let mut phase = State::Exploring;
+        let mut skipped_edits: Vec<String> = Vec::new();
         let mut pending_call: Option<(String, Option<String>)> = None;
 
         for event in &self.events {
@@ -350,12 +351,22 @@ impl Session {
                     ledger.record_read(Path::new(path));
                     let before = next_record(&mut records, &self.sidecar_path(), *before_hash)?;
                     let after = next_record(&mut records, &self.sidecar_path(), *after_hash)?;
-                    undo_entries.push(UndoEntry {
-                        path: PathBuf::from(path),
-                        existed: !before.created,
-                        before: before.content,
-                        after: after.content,
-                    });
+                    // The sidecar records must be consumed in lockstep with
+                    // the events whatever happens to the path, or every later
+                    // edit replays against the wrong pair — so confinement is
+                    // checked *after* reading, and only the journal entry is
+                    // dropped. Logs written before the §6.12 fence existed
+                    // legitimately carry absolute paths, and `/undo` writes
+                    // and deletes through this entry.
+                    match rusta_edit::confine(Path::new(path)) {
+                        Some(rel) => undo_entries.push(UndoEntry {
+                            path: rel,
+                            existed: !before.created,
+                            before: before.content,
+                            after: after.content,
+                        }),
+                        None => skipped_edits.push(path.clone()),
+                    }
                 }
                 Event::StateChange { from, to, .. } => {
                     let legal = state::PHASE_EVENTS.iter().any(|event| {
@@ -393,6 +404,7 @@ impl Session {
             ledger,
             undo: UndoStack::from_entries(undo_entries),
             state: phase,
+            skipped_edits,
         })
     }
 }
@@ -408,6 +420,11 @@ pub struct Reconstructed {
     pub undo: UndoStack,
     /// The final phase; feed to [`crate::state::Machine::resume_at`].
     pub state: State,
+    /// Paths from `EditApplied` events that escape the workspace and were
+    /// therefore left out of the undo journal (§6.12). Non-empty only for
+    /// logs written before the confinement fence, or hand-edited ones; the
+    /// CLI reports them so the lost undo depth is visible rather than silent.
+    pub skipped_edits: Vec<String>,
 }
 
 /// Consumes the next sidecar record, verifying its hash matches the one

@@ -1,9 +1,10 @@
 //! The `ask` tool — §6.4: pause the turn for a user reply.
 //!
 //! The reply text returns as the observation and the turn continues. At
-//! most one pending `ask` per turn — that bound is enforced by the agent
-//! loop (M8), which owns turn boundaries; this handler only performs the
-//! question→reply exchange through the injected [`Responder`].
+//! most one pending `ask` per turn (§6.4) — that bound is enforced in
+//! `rusta-cli`'s agent loop, which owns turn boundaries, and is pinned by
+//! `one_ask_per_turn` there. This handler only performs the question→reply
+//! exchange through the injected [`Responder`].
 
 use std::sync::Mutex;
 
