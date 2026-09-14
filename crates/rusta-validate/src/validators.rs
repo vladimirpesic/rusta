@@ -164,7 +164,10 @@ async fn run_one(command: &str, cwd: &Path, timeout: Duration) -> Report {
     let collect = async {
         // Both pipes must drain concurrently: reading one to EOF first
         // deadlocks as soon as the other fills its kernel buffer.
-        let (out, err) = tokio::join!(capped_read(stdout, cap), capped_read(stderr, cap));
+        let (out, err) = tokio::join!(
+            rusta_core::proc::capped_read(stdout, cap),
+            rusta_core::proc::capped_read(stderr, cap)
+        );
         (child.wait().await, out, err)
     };
     match tokio::time::timeout(timeout, collect).await {
@@ -180,43 +183,6 @@ async fn run_one(command: &str, cwd: &Path, timeout: Duration) -> Report {
         Ok((Err(cause), ..)) => Report::unstartable(command, timeout, cause),
         Err(_elapsed) => Report::timed_out(command, timeout),
     }
-}
-
-/// Drains `source` to EOF, keeping at most `cap` bytes.
-///
-/// Bounded *memory*, not just bounded output: `wait_with_output` buffers
-/// whatever the child produces before any cap is applied, and a three-second
-/// `yes` measured 5.26 GB of peak RSS — at the §7 default timeouts that is an
-/// OOM, from a command no deny rule would stop. Reading past the cap and
-/// discarding (rather than stopping) keeps the child unblocked, so a noisy
-/// command still exits on its own instead of running to the timeout.
-///
-/// `true` means output was discarded past the cap.
-pub async fn capped_read<R>(source: Option<R>, cap: usize) -> (Vec<u8>, bool)
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    use tokio::io::AsyncReadExt as _;
-
-    let Some(mut source) = source else {
-        return (Vec::new(), false);
-    };
-    let mut kept: Vec<u8> = Vec::new();
-    let mut buffer = [0u8; 8192];
-    let mut overflowed = false;
-    loop {
-        match source.read(&mut buffer).await {
-            Ok(0) | Err(_) => break,
-            Ok(read) => {
-                let room = cap.saturating_sub(kept.len());
-                if read > room {
-                    overflowed = true;
-                }
-                kept.extend_from_slice(&buffer[..read.min(room)]);
-            }
-        }
-    }
-    (kept, overflowed)
 }
 
 /// Exit code with the session contract's Unix convention: negative means
@@ -339,7 +305,7 @@ impl Report {
     }
 
     /// Assembles a finished report: both streams already bounded by
-    /// [`capped_read`], combined, and marked when truncation happened.
+    /// [`rusta_core::proc::capped_read`], combined, and marked when truncated.
     #[allow(clippy::too_many_arguments)]
     fn finished(
         command: &str,

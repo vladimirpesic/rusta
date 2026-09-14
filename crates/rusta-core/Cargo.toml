@@ -11,10 +11,14 @@ repository.workspace = true
 rusta-edit = { path = "../rusta-edit" }
 rusta-llm = { path = "../rusta-llm" }
 serde.workspace = true
+# Already in this crate's closure via rusta-llm; declared directly for
+# `proc::capped_read`, the §6.1 memory bound both subprocess call sites share.
+tokio.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "rt"] }
 rusta-edit = { path = "../rusta-edit" }
 rusta-llm = { path = "../rusta-llm" }
 tempfile.workspace = true

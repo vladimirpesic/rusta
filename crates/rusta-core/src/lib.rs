@@ -16,6 +16,7 @@
 
 pub mod context;
 pub mod error;
+pub mod proc;
 pub mod prompt;
 pub mod session;
 pub mod state;

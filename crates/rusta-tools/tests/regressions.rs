@@ -213,11 +213,16 @@ fn stacked_globstars_do_not_backtrack_exponentially() {
     );
 }
 
-/// F9: `/add`'s matcher and the `glob` tool share one normalization, so a
-/// slash-free pattern matches at any depth in both. `/add *.rs` previously
-/// reported "no files match" in any repo with sources in subdirectories.
+/// F9: the *model-facing* `glob` tool normalizes a slash-free pattern to
+/// `**/pattern`, gitignore-style — a small model that writes `glob("*.rs")`
+/// means "find the Rust files" and cannot see the result to correct it.
+///
+/// The CLI's `/add` deliberately does **not** share this dialect: it keeps
+/// shell/Aider path semantics, where `*.rs` is root-level, because the user
+/// can see what was selected. F9 was really that the code comment claimed
+/// the two agreed; they share a walker and an ignore set, not a dialect.
 #[test]
-fn slash_free_patterns_match_at_any_depth() {
+fn the_glob_tool_normalizes_slash_free_patterns_to_any_depth() {
     for pattern in ["*.rs", "main.rs"] {
         let effective = rusta_tools::effective_pattern(pattern);
         assert!(

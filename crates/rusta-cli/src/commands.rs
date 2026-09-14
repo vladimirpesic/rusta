@@ -74,12 +74,17 @@ pub(crate) async fn run(app: &mut App, command: &str) -> Control {
 fn add(app: &mut App, pattern: &str) -> Control {
     if pattern.is_empty() {
         app.reporter
-            .line("usage: /add <glob>  e.g. /add src/**/*.rs");
+            .line("usage: /add <path|dir|glob>  e.g. /add src  ·  /add '**/*.rs'");
         return Control::Continue;
     }
     let matched = walk_matching(&app.root, pattern);
     if matched.is_empty() {
         app.reporter.line(&format!("no files match {pattern}"));
+        // `*.rs` is root-level here, as in a shell. Point at the recursive
+        // form instead of leaving the user at a silent dead end.
+        if let Some(hint) = recursive_hint(&app.root, pattern) {
+            app.reporter.line(&hint);
+        }
         return Control::Continue;
     }
     {
@@ -138,14 +143,16 @@ fn drop_files(app: &mut App, pattern: &str) -> Control {
         }
         return Control::Continue;
     }
-    let effective = rusta_tools::effective_pattern(pattern);
+    // Same dialect as `/add` (see `walk_matching`); the chat-set is small
+    // and `/drop` with no argument lists it, so there is no silent dead end
+    // here to compensate for.
     let dropped: Vec<String> = {
         let mut editor = app.tools.editor();
         let matched: Vec<String> = editor
             .ledger()
             .read_set()
             .map(|p| p.display().to_string())
-            .filter(|display| glob_match(&effective, display))
+            .filter(|display| glob_match(pattern, display))
             .collect();
         matched
             .iter()
@@ -362,31 +369,68 @@ fn resume(app: &mut App, arg: &str) -> Control {
 
 // -------------------------------------------------------------- glob support
 
-/// Repo-relative paths under `root` matching `pattern`, capped at the §6.1
-/// glob limit.
+/// Repo-relative paths under `root` selected by `pattern`, capped at the
+/// §6.1 glob limit.
 ///
-/// Uses the same walker, the same matcher *and* the same gitignore-style
-/// normalization as the model's `glob` tool, so `/add` and `glob` agree
-/// about what the repo contains. They previously did not: `glob` normalizes
-/// a slash-free pattern to `**/pattern`, while `/add` matched it raw, so
-/// `/add *.rs` reported "no files match" in any repo with sources in
-/// subdirectories.
+/// **Path semantics, like a shell and like Aider's `/add`** (which globs
+/// with `Path(root).glob(pattern)`): `*.rs` matches at the repo root and
+/// `**/*.rs` recurses. A bare **directory** expands to its whole subtree —
+/// Aider's `expand_subdir`, and the ordinary way to add a package without
+/// knowing glob syntax at all.
 ///
-/// The one deliberate difference is that `/add` skips dot-entries: the model
-/// may legitimately want `.github/workflows`, but sweeping hidden files into
-/// the chat-set by glob is almost never what a user means.
+/// The model-facing `glob` tool deliberately differs: it normalizes a
+/// slash-free pattern to `**/pattern`, gitignore-style, because a small
+/// model that writes `glob("*.rs")` means "find the Rust files" and cannot
+/// see the result to correct it. Here the user can, so least-surprise wins;
+/// when a slash-free pattern selects nothing, [`add`] offers the recursive
+/// form rather than expanding silently and sweeping in hundreds of files.
+/// The two share a walker and an ignore set, not a pattern dialect.
+///
+/// Dot-entries are skipped: the model may legitimately want
+/// `.github/workflows`, but sweeping hidden files into the chat-set by glob
+/// is almost never what a user means.
 fn walk_matching(root: &Path, pattern: &str) -> Vec<String> {
     const CAP: usize = 1_000;
-    let effective = rusta_tools::effective_pattern(pattern);
+    let subtree = directory_prefix(root, pattern);
     let mut out: Vec<String> = rusta_tools::walk(root)
         .iter()
         .map(|rel| rusta_tools::display(rel))
         .filter(|rel| !rel.split('/').any(|part| part.starts_with('.')))
-        .filter(|rel| glob_match(&effective, rel))
+        .filter(|rel| match &subtree {
+            Some(prefix) => rel.starts_with(prefix.as_str()),
+            None => glob_match(pattern, rel),
+        })
         .take(CAP)
         .collect();
     out.sort();
     out
+}
+
+/// `Some("src/")` when `pattern` names an existing directory in the repo —
+/// the subtree form. Glob metacharacters and `..` never take this path, and
+/// the prefix is only ever matched against repo-relative walk output, so it
+/// cannot select anything outside the root.
+fn directory_prefix(root: &Path, pattern: &str) -> Option<String> {
+    let trimmed = pattern.trim_end_matches('/');
+    if trimmed.is_empty()
+        || trimmed.contains(['*', '?', '['])
+        || trimmed.split('/').any(|part| part == "..")
+    {
+        return None;
+    }
+    root.join(trimmed).is_dir().then(|| format!("{trimmed}/"))
+}
+
+/// For a slash-free pattern that selected nothing, the recursive form and
+/// how many files it would select — `None` when that finds nothing either,
+/// so the hint is never a second dead end.
+fn recursive_hint(root: &Path, pattern: &str) -> Option<String> {
+    if pattern.contains('/') || !pattern.contains(['*', '?', '[']) {
+        return None;
+    }
+    let recursive = format!("**/{pattern}");
+    let count = walk_matching(root, &recursive).len();
+    (count > 0).then(|| format!("  did you mean /add {recursive}?  ({count} file(s))"))
 }
 
 #[cfg(test)]

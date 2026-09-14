@@ -315,8 +315,8 @@ async fn unix_execute(policy: &ShellPolicy, root: &Path, command: &str) -> ToolO
     let stderr = child.stderr.take();
     let collect = async {
         let (out, err) = tokio::join!(
-            rusta_validate::capped_read(stdout, caps::SHELL_BYTES),
-            rusta_validate::capped_read(stderr, caps::SHELL_BYTES)
+            rusta_core::proc::capped_read(stdout, caps::SHELL_BYTES),
+            rusta_core::proc::capped_read(stderr, caps::SHELL_BYTES)
         );
         (child.wait().await, out, err)
     };
