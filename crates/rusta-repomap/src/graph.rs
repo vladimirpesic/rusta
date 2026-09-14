@@ -2,7 +2,9 @@
 //!
 //! One node per file. Each identifier defined in `D` files and referenced `n_r`
 //! times by a file `r` contributes edges `r → definer` of weight
-//! `mul / (|D| · n_r)` with the plan's boost/suppression rules; identifiers
+//! `mul · √n_r` — Aider's damping, so heavier use pulls rank *toward* the
+//! definer (see the §6.5 step 3 erratum; dividing inverted the signal) —
+//! with the plan's boost/suppression rules; identifiers
 //! defined but never referenced keep their files rankable through a 0.1
 //! self-edge. Ranking is power-iteration PageRank (damping 0.85,
 //! personalization `100/N` baseline plus boosts, dangling mass redistributed

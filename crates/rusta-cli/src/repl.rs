@@ -315,15 +315,30 @@ impl App {
         let prompt = DefaultPrompt::default();
         self.reporter
             .line("rusta — /help lists commands, /exit quits");
+        // Ctrl-C at an idle prompt cancels; only a second, consecutive press
+        // exits (§6.1 step 5 "preserves session state", and the Aider-style
+        // convention R3 cites). One press used to end the session outright,
+        // which is a reflex users carry over from cancelling a running turn.
+        let mut interrupt_armed = false;
         loop {
             let signal = tokio::task::block_in_place(|| editor.read_line(&prompt));
             match signal {
                 Ok(Signal::Success(buffer)) => {
+                    interrupt_armed = false;
                     if self.handle_line(&buffer).await == Control::Exit {
                         break;
                     }
                 }
-                Ok(Signal::CtrlC) | Ok(Signal::CtrlD) => {
+                Ok(Signal::CtrlC) => {
+                    if interrupt_armed {
+                        self.reporter.line("(exit)");
+                        break;
+                    }
+                    interrupt_armed = true;
+                    self.reporter
+                        .line("(^C — press Ctrl-C again to exit, or /exit)");
+                }
+                Ok(Signal::CtrlD) => {
                     self.reporter.line("(exit)");
                     break;
                 }

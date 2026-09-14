@@ -82,7 +82,10 @@ impl TaskSet {
 
     /// Build from `{label, task}` JSON objects (the `tasks` array body).
     pub fn from_items(items: &[Value]) -> Result<Self, TaskSetError> {
-        if items.is_empty() || items.len() > MAX_TASKS {
+        if items.is_empty() {
+            return Err(TaskSetError::Malformed);
+        }
+        if items.len() > MAX_TASKS {
             return Err(TaskSetError::TooMany(items.len()));
         }
         let mut tasks = Vec::with_capacity(items.len());
@@ -261,9 +264,16 @@ mod tests {
             TaskSet::from_items(&[json!({"label": "x", "task": "  "})]).unwrap_err(),
             TaskSetError::EmptyTask
         );
+        // An empty array is not "too many": that message read
+        // "too many tasks: 0 (max 4)", which told the model the opposite of
+        // what was wrong. Malformed names the expected shape instead.
         assert_eq!(
             TaskSet::from_items(&[]).unwrap_err(),
-            TaskSetError::TooMany(0)
+            TaskSetError::Malformed
+        );
+        assert_eq!(
+            TaskSet::from_items(&vec![json!({"label": "a", "task": "t"}); 5]).unwrap_err(),
+            TaskSetError::TooMany(5)
         );
     }
 

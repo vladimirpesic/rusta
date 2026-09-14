@@ -50,7 +50,7 @@ fn walk_dir(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) {
 
 /// Normalize a path filter the way the `glob` tool does: a pattern with no
 /// `/` matches at any depth (gitignore-style).
-pub(crate) fn effective_pattern(filter: &str) -> String {
+pub fn effective_pattern(filter: &str) -> String {
     if filter.contains('/') {
         filter.to_owned()
     } else {

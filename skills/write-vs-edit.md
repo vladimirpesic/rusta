@@ -1,7 +1,7 @@
 ---
 name: write-vs-edit
 type: tool
-triggers: [write, create_file]
+triggers: [write]
 priority: 4
 token_cost: 80
 user-invocable: false

@@ -8,7 +8,32 @@ use std::path::Path;
 use rusta_repomap::{DrillError, DrillRequest, RepoMap};
 use serde_json::Value;
 
-use crate::exec::{ToolOutcome, opt_usize, req_nonempty, safe_rel};
+use crate::exec::{ToolOutcome, caps, clip_bytes, opt_usize, req_nonempty, safe_rel};
+
+/// Clips a drilled span to the §6.1 `read` caps (2,000 lines / 64 KiB),
+/// marking the cut so the model narrows its next drill instead of assuming
+/// it saw the whole region. The first line is the `path:from-to` header and
+/// is always kept.
+fn cap_window(text: &str) -> (String, bool) {
+    let mut lines = text.lines();
+    let header = lines.next().unwrap_or_default();
+    let body: Vec<&str> = lines.collect();
+    let kept = body.len().min(caps::READ_LINES);
+    let dropped = body.len() - kept;
+    let joined = body[..kept].join("\n");
+    let (mut content, clipped) = clip_bytes(
+        &joined,
+        caps::READ_BYTES,
+        "\n[... truncated at the 64 KiB cap]",
+    );
+    if dropped > 0 {
+        content.push_str(&format!(
+            "\n[... {dropped} more lines truncated (cap: {} lines)]",
+            caps::READ_LINES
+        ));
+    }
+    (format!("{header}\n{content}"), clipped || dropped > 0)
+}
 
 /// Shown when the map renders nothing. The old wording blamed the language
 /// filter or a zero budget, which was wrong whenever fitting was the cause —
@@ -47,13 +72,16 @@ pub(crate) fn drill(root: &Path, input: &Value) -> ToolOutcome {
         Ok(to) => to,
         Err(outcome) => return outcome,
     };
+    // The *validated* spelling is the one that gets used: `safe_rel` checks
+    // `raw.trim()`, so passing `raw` on meant validated value ≠ used value.
+    let checked = rel.display().to_string();
     let request = match (name, from, to) {
         (Some(name), None, None) => DrillRequest::Definition {
-            path: raw,
+            path: &checked,
             name: name.trim(),
         },
         (None, Some(from), Some(to)) => DrillRequest::Window {
-            path: raw,
+            path: &checked,
             from,
             to,
         },
@@ -65,12 +93,21 @@ pub(crate) fn drill(root: &Path, input: &Value) -> ToolOutcome {
     };
 
     match rusta_repomap::drill(root, request) {
-        Ok(text) => ToolOutcome {
-            status: rusta_core::Status::Ok,
-            content: text,
-            truncated: false,
-            read_credit: Some(rel.display().to_string()),
-        },
+        Ok(text) => {
+            // §6.1 caps apply here exactly as they do to `read`. An explicit
+            // from/to window is model-supplied and unbounded: drilling
+            // 1..50000 of a large file returned 1.5 MB — ~24× the read cap —
+            // straight into the context this project exists to protect. The
+            // core prompt steers the model here ("prefer map_drill to
+            // whole-file reads"), so this is the hot path, not the edge.
+            let (content, truncated) = cap_window(&text);
+            ToolOutcome {
+                status: rusta_core::Status::Ok,
+                content,
+                truncated,
+                read_credit: Some(rel.display().to_string()),
+            }
+        }
         Err(DrillError::NotFound { path, name }) => ToolOutcome::error(format!(
             "no definition named {name:?} in {path} — check the identifier in the repo map (map_refresh) or drill an exact window with from/to"
         )),

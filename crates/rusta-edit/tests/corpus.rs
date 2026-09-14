@@ -193,3 +193,73 @@ fn parser_corpus_is_green() {
         assert_eq!(parsed.notes.len(), case.notes, "{}: notes", case.file);
     }
 }
+
+// ------------------------------------------- 2026-09-14 third-audit findings
+
+/// F13: §6.12 confinement must hold at the *filesystem* level, not only
+/// lexically. `confine` rejects `..` and absolute spellings, but a symlink
+/// committed inside the repo and pointing out of it was followed by
+/// `fs::write`, so an in-repo-looking path wrote outside the workspace.
+#[test]
+fn a_symlink_out_of_the_repo_is_not_a_write_target() {
+    let repo = tempfile::tempdir().expect("repo");
+    let outside = tempfile::tempdir().expect("outside");
+    std::fs::write(outside.path().join("victim.txt"), "ORIGINAL\n").expect("seed");
+    std::os::unix::fs::symlink(outside.path(), repo.path().join("escape")).expect("symlink");
+
+    let mut editor = rusta_edit::Editor::new(repo.path());
+    editor.record_read("escape/victim.txt");
+    let report = editor.apply_response(
+        "escape/victim.txt\n<<<<<<< SEARCH\nORIGINAL\n=======\nOVERWRITTEN\n>>>>>>> REPLACE\n",
+    );
+
+    assert!(report.applied.is_empty(), "the write must be refused");
+    assert_eq!(
+        std::fs::read_to_string(outside.path().join("victim.txt")).expect("read"),
+        "ORIGINAL\n",
+        "a file outside the repo was modified"
+    );
+    assert!(matches!(
+        report.failed[0].reason,
+        rusta_edit::FailureReason::OutsideRoot(_)
+    ));
+}
+
+/// F13 control: ordinary in-repo edits are untouched by the containment
+/// check, including creating a file that does not exist yet.
+#[test]
+fn repo_local_edits_and_creates_still_apply() {
+    let repo = tempfile::tempdir().expect("repo");
+    std::fs::write(repo.path().join("a.txt"), "ORIGINAL\n").expect("seed");
+    let mut editor = rusta_edit::Editor::new(repo.path());
+    editor.record_read("a.txt");
+
+    let edited = editor
+        .apply_response("a.txt\n<<<<<<< SEARCH\nORIGINAL\n=======\nCHANGED\n>>>>>>> REPLACE\n");
+    assert_eq!(edited.applied.len(), 1, "{:?}", edited.failed);
+
+    let created =
+        editor.apply_response("new/deep/b.txt\n<<<<<<< SEARCH\n=======\nfresh\n>>>>>>> REPLACE\n");
+    assert_eq!(created.applied.len(), 1, "{:?}", created.failed);
+    assert!(repo.path().join("new/deep/b.txt").exists());
+}
+
+/// F11: shell-fence detection matches the language token whole. Prefix
+/// matching made ` ```csharp ` a suggested shell command (via `csh`), and
+/// likewise ` ```shader ` and ` ```batchfile `.
+#[test]
+fn code_fences_are_not_mistaken_for_shell_commands() {
+    for language in ["csharp", "shader", "batchfile", "rust", "python"] {
+        let parsed = rusta_edit::parse_response(&format!("```{language}\nlet x = 1;\n```\n"));
+        assert!(
+            parsed.commands.is_empty(),
+            "```{language} was read as a shell command: {:?}",
+            parsed.commands
+        );
+    }
+    // Real shell fences still are.
+    for language in ["bash", "sh", "shell", "zsh"] {
+        let parsed = rusta_edit::parse_response(&format!("```{language}\ncargo test\n```\n"));
+        assert_eq!(parsed.commands, ["cargo test".to_owned()], "```{language}");
+    }
+}

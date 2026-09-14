@@ -62,6 +62,49 @@ pub struct ParsedResponse {
     pub notes: Vec<String>,
 }
 
+/// Line-by-line "am I inside a SEARCH/REPLACE block?" tracker, sharing this
+/// module's forgiving marker rules so it can never drift from the parser.
+///
+/// The CLI splits a completion at ` ```tool ` fences before handing prose to
+/// [`parse_response`]. Without this tracker a fence *inside* an edit body
+/// tore the block in half: the REPLACE payload was silently truncated to the
+/// text before the fence, the edit was still reported as applied, and the
+/// fenced content was executed as a tool call. File content the model is
+/// writing must never be re-read as an instruction to the agent — and this
+/// is ordinary content, since any repo documenting Rusta's own tool format
+/// contains such a fence.
+#[derive(Debug, Default, Clone)]
+pub struct BlockScan {
+    inside: bool,
+}
+
+impl BlockScan {
+    /// A scanner positioned outside any block.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feeds the next line; `true` when it belongs to an edit block — the
+    /// HEAD and UPDATED markers included — and must not be reinterpreted.
+    ///
+    /// Only UPDATED closes a block: a DIVIDER seen mid-REPLACE chains
+    /// straight into the next block (§6.3 rule 1), so the scan correctly
+    /// stays inside. A block whose UPDATED never arrives holds the scan to
+    /// end of input, matching §6.3 rule 4, which commits that trailing text
+    /// as the REPLACE payload rather than leaving it loose.
+    pub fn inside(&mut self, line: &str) -> bool {
+        let trimmed = line.trim();
+        if !self.inside {
+            self.inside = is_head(trimmed);
+            return self.inside;
+        }
+        if is_updated(trimmed) {
+            self.inside = false;
+        }
+        true
+    }
+}
+
 /// Parse a full model response into edits, commands, and notes.
 ///
 /// Never panics on any input (§6.3 rule 6); malformed blocks are dropped
@@ -235,10 +278,18 @@ fn leading_run(line: &str, ch: char) -> usize {
     line.chars().take_while(|&c| c == ch).count()
 }
 
+/// A fence whose *language token* is one of [`SHELL_FENCES`]. The token is
+/// matched whole: prefix matching made ` ```csharp ` a shell block (via
+/// `csh`), and likewise ` ```shader ` and ` ```batchfile `.
 fn is_shell_fence(trimmed: &str) -> bool {
-    trimmed
-        .strip_prefix("```")
-        .is_some_and(|rest| SHELL_FENCES.split(' ').any(|lang| rest.starts_with(lang)))
+    let Some(rest) = trimmed.strip_prefix("```") else {
+        return false;
+    };
+    let lang = rest
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .next()
+        .unwrap_or_default();
+    SHELL_FENCES.split(' ').any(|known| known == lang)
 }
 
 /// Aider's `next_is_editblock` guard: HEAD on the next line or the one after.

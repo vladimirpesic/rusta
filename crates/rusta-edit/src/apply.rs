@@ -234,6 +234,16 @@ impl Editor {
                 format!("{rel} is outside the repository; use a repo-relative path"),
             )
         })?;
+        if !crate::ledger::contains_path(&self.root, &rel) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{} resolves outside the repository through a symbolic link; \
+                     use a path that stays inside it",
+                    rel.display()
+                ),
+            ));
+        }
         let abs = self.root.join(&rel);
         let existed = abs.try_exists().map_err(io::Error::other)?;
         let before = if existed {
@@ -362,6 +372,12 @@ impl Editor {
         block: &EditBlock,
         rel: &Path,
     ) -> Result<AppliedBlock, FailureReason> {
+        // §6.12 confinement, filesystem-level: `confine` already rejected
+        // `..` and absolute spellings, but a symlink inside the repo still
+        // resolves outside it.
+        if !crate::ledger::contains_path(&self.root, rel) {
+            return Err(FailureReason::OutsideRoot(rel.display().to_string()));
+        }
         let abs = self.root.join(rel);
         let existed = abs
             .try_exists()
@@ -420,6 +436,9 @@ impl Editor {
             .cloned()
             .collect();
         for cand in candidates {
+            if !crate::ledger::contains_path(&self.root, &cand) {
+                continue; // a linked-out read-set entry is never a write target
+            }
             let abs = self.root.join(&cand);
             let Ok(content) = read_file_utf8(&abs) else {
                 continue;

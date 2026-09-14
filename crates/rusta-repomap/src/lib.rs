@@ -8,8 +8,8 @@
 //!    (`discover`), with an ignore-aware walk fallback outside git repos;
 //! 2. tag extraction — tree-sitter `.scm` queries yielding def/ref tags per
 //!    file (`tags`), with a word-scan ref backfill for def-only languages;
-//! 3. graph construction — edge weights `mul / (|D| · n_r)` with mention and
-//!    multi-case boosts (`graph`);
+//! 3. graph construction — edge weights `mul · √n_r` (Aider's damping, not
+//!    an inversion) with mention, multi-case and chat-file boosts (`graph`);
 //! 4. personalized PageRank ranking (damping 0.85, personalization `100/N`
 //!    plus chat/mention boosts);
 //! 5. budget-fitted rendering — a small context window per definition,

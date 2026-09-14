@@ -138,13 +138,14 @@ fn drop_files(app: &mut App, pattern: &str) -> Control {
         }
         return Control::Continue;
     }
+    let effective = rusta_tools::effective_pattern(pattern);
     let dropped: Vec<String> = {
         let mut editor = app.tools.editor();
         let matched: Vec<String> = editor
             .ledger()
             .read_set()
             .map(|p| p.display().to_string())
-            .filter(|display| glob_match(pattern, display))
+            .filter(|display| glob_match(&effective, display))
             .collect();
         matched
             .iter()
@@ -305,7 +306,7 @@ fn skills(app: &mut App, arg: &str) -> Control {
         let cards = app.deck.cards();
         if cards.is_empty() {
             app.reporter
-                .line("no skill cards (drop *.md files in ./skills/)");
+                .line("no skill cards (drop *.md files in .rusta/skills/)");
             return Control::Continue;
         }
         app.reporter.line(&format!("{} card(s):", cards.len()));
@@ -362,18 +363,26 @@ fn resume(app: &mut App, arg: &str) -> Control {
 // -------------------------------------------------------------- glob support
 
 /// Repo-relative paths under `root` matching `pattern`, capped at the §6.1
-/// glob limit. Uses the same walker and matcher as the model's `glob` tool,
-/// so `/add` and `glob` agree about what the repo contains — except that
-/// `/add` also skips dot-entries: the model may legitimately want
-/// `.github/workflows`, but sweeping hidden files into the chat-set by
-/// glob is almost never what a user means.
+/// glob limit.
+///
+/// Uses the same walker, the same matcher *and* the same gitignore-style
+/// normalization as the model's `glob` tool, so `/add` and `glob` agree
+/// about what the repo contains. They previously did not: `glob` normalizes
+/// a slash-free pattern to `**/pattern`, while `/add` matched it raw, so
+/// `/add *.rs` reported "no files match" in any repo with sources in
+/// subdirectories.
+///
+/// The one deliberate difference is that `/add` skips dot-entries: the model
+/// may legitimately want `.github/workflows`, but sweeping hidden files into
+/// the chat-set by glob is almost never what a user means.
 fn walk_matching(root: &Path, pattern: &str) -> Vec<String> {
     const CAP: usize = 1_000;
+    let effective = rusta_tools::effective_pattern(pattern);
     let mut out: Vec<String> = rusta_tools::walk(root)
         .iter()
         .map(|rel| rusta_tools::display(rel))
         .filter(|rel| !rel.split('/').any(|part| part.starts_with('.')))
-        .filter(|rel| glob_match(pattern, rel))
+        .filter(|rel| glob_match(&effective, rel))
         .take(CAP)
         .collect();
     out.sort();

@@ -3,7 +3,9 @@
 
 [graph]
 targets = []
-all-features = false
+# The `embedded` feature pulls llama-cpp-2, which vendors llama.cpp; with
+# all-features off that whole subtree was never licence- or advisory-checked.
+all-features = true
 
 [licenses]
 version = 2

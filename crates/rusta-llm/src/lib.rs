@@ -77,6 +77,22 @@ impl Backend {
         Ok(Self::Embedded(EmbeddedBackend::new(config)?))
     }
 
+    /// Asks the backend to stop the generation in flight (§6.2 cancellation).
+    ///
+    /// The embedded backend checks its shutdown flag between tokens; the
+    /// HTTP backend has no such flag — dropping the event receiver ends its
+    /// SSE pump — so this is a no-op there. Callers abort by dropping the
+    /// receiver *and* calling this, which covers both backends: without it
+    /// the embedded worker only notices the drop at its next token send, and
+    /// §6.2's documented flag had no caller at all.
+    pub fn stop(&self) {
+        match self {
+            Backend::Http(_) => {}
+            #[cfg(feature = "embedded")]
+            Backend::Embedded(backend) => backend.stop(),
+        }
+    }
+
     /// Starts a streaming completion; returns the event channel.
     pub async fn stream(&self, request: ChatRequest) -> Result<mpsc::Receiver<StreamEvent>, Error> {
         match self {

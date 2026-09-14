@@ -25,4 +25,5 @@ pub mod validators;
 
 pub use validators::{
     Error, Gate, Outcome, REPAIR_BOUND, Report, ValidateConfig, Verdict, ZERO_TEST_CAPSULE,
+    capped_read,
 };

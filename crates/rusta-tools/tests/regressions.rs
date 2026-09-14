@@ -133,3 +133,125 @@ fn the_deny_table_covers_the_612_escape_routes() {
         assert!(!denied(command), "must be allowed: {command}");
     }
 }
+
+// ------------------------------------------- 2026-09-14 third-audit findings
+
+/// F2: shell output must bound *memory*, not just the observation.
+///
+/// `wait_with_output` buffered everything the child wrote before any §6.1 cap
+/// applied; a three-second `yes` measured 5.26 GB of peak RSS, from a benign
+/// command no deny rule stops and `/auto` approves.
+#[tokio::test]
+async fn shell_output_is_bounded_in_memory_not_just_in_the_observation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = registry(dir.path(), 2);
+    let before = peak_rss_kb();
+    let outcome = tools
+        .exec(
+            rusta_core::State::Editing,
+            "shell",
+            &serde_json::json!({"command": "yes ABCDEFGHIJKLMNOPQRSTUVWXYZ"}),
+        )
+        .await;
+    let growth = peak_rss_kb().saturating_sub(before);
+    // Two seconds of `yes` is gigabytes unbounded; the cap is 16 KiB, so any
+    // sane bound separates the two. 256 MB leaves room for allocator slack.
+    assert!(
+        growth < 256 * 1024,
+        "peak RSS grew {growth} kB draining a capped pipe"
+    );
+    assert!(
+        outcome.content.len() < 256 * 1024,
+        "observation stayed capped"
+    );
+}
+
+/// F3: `map_drill` honours the §6.1 read caps like every sibling file tool.
+/// An explicit from/to window is model-supplied and was entirely unbounded —
+/// drilling 1..50000 of a large file returned 1.5 MB with `truncated: false`,
+/// ~24× the `read` cap, straight into the context.
+#[tokio::test]
+async fn map_drill_windows_obey_the_read_caps() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let big: String = (1..=50_000)
+        .map(|i| format!("line {i} aaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"))
+        .collect();
+    std::fs::write(dir.path().join("big.rs"), &big).expect("write");
+    let tools = registry(dir.path(), 60);
+
+    let drilled = tools
+        .exec(
+            rusta_core::State::Exploring,
+            "map_drill",
+            &serde_json::json!({"path": "big.rs", "from": 1, "to": 50_000}),
+        )
+        .await;
+    assert!(drilled.truncated, "a capped drill must report truncation");
+    assert!(
+        drilled.content.len() <= 64 * 1024 + 512,
+        "drill returned {} bytes, past the 64 KiB read cap",
+        drilled.content.len()
+    );
+}
+
+/// F5: stacked `**` segments are memoized, not explored combinatorially.
+/// Twenty of them against a twelve-segment path took 43 s — once per file the
+/// `glob` tool walks. The in-code comment claimed this case was already
+/// memoized; only the within-segment `*` walk was.
+#[test]
+fn stacked_globstars_do_not_backtrack_exponentially() {
+    let pattern = "**/".repeat(20) + "zzz";
+    let start = std::time::Instant::now();
+    assert!(!rusta_tools::glob_match(
+        &pattern,
+        "a/a/a/a/a/a/a/a/a/a/a/a"
+    ));
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "cross-segment matching took {elapsed:?}"
+    );
+}
+
+/// F9: `/add`'s matcher and the `glob` tool share one normalization, so a
+/// slash-free pattern matches at any depth in both. `/add *.rs` previously
+/// reported "no files match" in any repo with sources in subdirectories.
+#[test]
+fn slash_free_patterns_match_at_any_depth() {
+    for pattern in ["*.rs", "main.rs"] {
+        let effective = rusta_tools::effective_pattern(pattern);
+        assert!(
+            rusta_tools::glob_match(&effective, "src/main.rs"),
+            "{pattern} should match src/main.rs at depth"
+        );
+    }
+    // An anchored pattern still means what it says.
+    let anchored = rusta_tools::effective_pattern("src/*.rs");
+    assert!(rusta_tools::glob_match(&anchored, "src/main.rs"));
+    assert!(!rusta_tools::glob_match(&anchored, "src/deep/main.rs"));
+}
+
+fn registry(root: &std::path::Path, timeout_secs: u64) -> rusta_tools::Tools {
+    let backend = std::sync::Arc::new(
+        rusta_llm::Backend::http(rusta_llm::HttpConfig::default()).expect("backend"),
+    );
+    rusta_tools::Tools::new(
+        root,
+        backend,
+        rusta_tools::ShellPolicy::new(timeout_secs, &[], &[]).expect("policy"),
+    )
+    .expect("tools")
+    .with_approver(Box::new(rusta_tools::AutoApprove))
+}
+
+fn peak_rss_kb() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find(|line| line.starts_with("VmHWM"))
+                .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
+        })
+        .unwrap_or(0)
+}

@@ -193,29 +193,39 @@ pub(crate) fn parse_items(text: &str, native: &[NativeCall]) -> Parsed {
 
     let mut in_fence = false;
     let mut fence_body = String::new();
+    // A fence inside a SEARCH/REPLACE body is *content* the model is writing
+    // into a file, not a call. `BlockScan` shares the §6.3 parser's marker
+    // rules, so the two can never disagree about where a block ends.
+    let mut block = rusta_edit::BlockScan::new();
     for line in text.split_inclusive('\n') {
         let trimmed = line.trim_start();
-        if !in_fence && trimmed.starts_with("```tool") {
+        if in_fence {
+            if trimmed.starts_with("```") {
+                // The proven fence parser, scoped to this one block — so calls
+                // interleave with prose edit blocks in true document order.
+                let calls = parse_tool_calls(&format!("```tool\n{fence_body}\n```"));
+                for call in calls.calls {
+                    out.items.push(Item::Call {
+                        name: call.name,
+                        input: call.input,
+                    });
+                }
+                out.notes.extend(calls.notes);
+                in_fence = false;
+            } else {
+                fence_body.push_str(line);
+            }
+            continue;
+        }
+        // Only advance the block scan outside fences: an `edit` tool call may
+        // legitimately carry marker text inside its JSON `search` argument.
+        if !block.inside(line) && trimmed.starts_with("```tool") {
             flush(&mut out, &mut prose);
             in_fence = true;
             fence_body.clear();
-        } else if in_fence && trimmed.starts_with("```") {
-            // The proven fence parser, scoped to this one block — so calls
-            // interleave with prose edit blocks in true document order.
-            let calls = parse_tool_calls(&format!("```tool\n{fence_body}\n```"));
-            for call in calls.calls {
-                out.items.push(Item::Call {
-                    name: call.name,
-                    input: call.input,
-                });
-            }
-            out.notes.extend(calls.notes);
-            in_fence = false;
-        } else if in_fence {
-            fence_body.push_str(line);
-        } else {
-            prose.push_str(line);
+            continue;
         }
+        prose.push_str(line);
     }
     // Unterminated fence at EOF: parse what was gathered (§6.1 forgiveness).
     if in_fence {
@@ -258,13 +268,32 @@ pub(crate) fn is_plan(text: &str) -> bool {
         "first,",
     ];
     let lower = text.to_lowercase();
-    let signals_intent = CUES.iter().any(|cue| lower.contains(cue));
+    let signals_intent = CUES.iter().any(|cue| mentions_cue(&lower, cue));
     let numbered = text.lines().any(|line| {
         let trimmed = line.trim_start();
         let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
         digits > 0 && matches!(trimmed.chars().nth(digits), Some('.' | ')'))
     });
     signals_intent && numbered
+}
+
+/// Whether `lower` (already lowercased) carries the intent cue `cue`.
+///
+/// Single-word cues match at a **word start**, not anywhere in the text: a
+/// bare `contains` made "footsteps" and "stepped" read as a drafted plan, so
+/// an ordinary answer that happened to carry a numbered list tripped the
+/// §6.4 approval gate — against "Read-only Q&A … the state remains
+/// Exploring". Word-*start* rather than whole-word keeps the inflections
+/// that matter ("planning", "steps"), which is why the literal-"plan" rule
+/// was abandoned in the first place. Punctuated cues ("i will", "here's
+/// what", "first,") are specific enough to match as written.
+fn mentions_cue(lower: &str, cue: &str) -> bool {
+    if cue.contains(|c: char| !c.is_ascii_alphanumeric()) {
+        return lower.contains(cue);
+    }
+    lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| word.starts_with(cue))
 }
 
 /// The one-line summary of a user request for commit messages (§6.9):
@@ -302,6 +331,12 @@ impl App {
             content: request.to_owned(),
         });
         self.history.push(Message::user(request));
+        // §6.6 lists "keywords" alongside tool names and error kinds as a
+        // card trigger axis, but nothing fed the user's own words in, so
+        // keyword triggers on `knowledge` cards could never fire. The whole
+        // request is one cue; `SkillCard::matches` does the word-boundary
+        // work, so "spread" still never fires the `read` card.
+        self.card_cues.push(request.to_owned());
 
         let mut turn: u32 = 0;
         loop {
@@ -491,7 +526,11 @@ impl App {
         loop {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
-                    drop(rx); // consumer dropped — the SSE pump ends
+                    // Both halves of §6.2 cancellation: the flag stops the
+                    // embedded inference thread between tokens, the drop ends
+                    // the HTTP SSE pump.
+                    self.tools.backend().stop();
+                    drop(rx);
                     self.reporter.line("\n^C aborted — partial turn discarded");
                     self.fire(PhaseEvent::UserInterrupt);
                     return None;
@@ -722,7 +761,7 @@ impl App {
         self.push_observation(
             "shell suggestion",
             &format!(
-                "These commands were shown to the user but NOT run:\n{}\nRun one with the shell                  tool if you need its output.",
+                "These commands were shown to the user but NOT run:\n{}\nRun one with the shell tool if you need its output.",
                 commands.join("\n")
             ),
             Status::Ok,
@@ -768,10 +807,14 @@ impl App {
     }
 
     /// §6.6 escalation (a detector at 2× its threshold): `Editing → Planning`
-    /// regression plus the user notification. Deliberately *not* journaled —
-    /// the machine table has no such scaffold edge, and the loop guard is
-    /// task-scoped and unjournaled by design ("`/resume` starts detectors
-    /// fresh, which is the safe side").
+    /// regression plus the user notification.
+    ///
+    /// The regression *is* journaled, through the first-class
+    /// [`PhaseEvent::LoopEscalated`] edge — an out-of-band re-seed made the
+    /// next `StateChange` fail §6.10 replay validation, which left the
+    /// session unresumable and the repo unusable for the day. The loop
+    /// guard's own detector state stays unjournaled by design: `/resume`
+    /// starts detectors fresh, which is the safe side.
     fn handle_trip(&mut self, trip: Trip) {
         if !trip.escalate {
             return;
@@ -922,5 +965,89 @@ mod tests {
             ]
         );
         assert!(split_labeled("no reports here").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod audit_regressions {
+    use super::*;
+
+    /// F1: a ` ```tool ` fence inside a SEARCH/REPLACE body is file content,
+    /// not a call.
+    ///
+    /// The splitter used to cut the prose segment at the fence, so the
+    /// REPLACE payload was silently truncated to the text above it — the
+    /// edit still reported success — and the fenced JSON was executed as a
+    /// tool call. `rusta-edit` already asserted fences survive inside blocks,
+    /// but against `parse_response`; nothing covered this seam, which is the
+    /// production path. Any repo documenting Rusta's own tool format (this
+    /// one included) contains such a fence.
+    #[test]
+    fn a_tool_fence_inside_an_edit_block_is_content_not_a_call() {
+        let completion = "docs/tools.md\n\
+             <<<<<<< SEARCH\n\
+             TODO\n\
+             =======\n\
+             Call a tool like this:\n\
+             \n\
+             ```tool\n\
+             {\"name\": \"shell\", \"input\": {\"command\": \"rm -rf /\"}}\n\
+             ```\n\
+             \n\
+             That is the whole format.\n\
+             >>>>>>> REPLACE\n";
+        let parsed = parse_items(completion, &[]);
+
+        assert!(
+            !parsed
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Call { .. })),
+            "fenced content inside an edit body must never become a call: {:?}",
+            parsed.items
+        );
+        let [Item::Blocks(blocks)] = parsed.items.as_slice() else {
+            panic!("expected exactly one edit block, got {:?}", parsed.items);
+        };
+        assert_eq!(blocks.len(), 1);
+        // The whole payload survives, fence and trailing prose included.
+        assert_eq!(
+            blocks[0].updated,
+            "Call a tool like this:\n\n```tool\n{\"name\": \"shell\", \"input\": \
+             {\"command\": \"rm -rf /\"}}\n```\n\nThat is the whole format.\n"
+        );
+    }
+
+    /// F1 corollary: a genuine fence *outside* any block still executes, and
+    /// still in document order relative to the edits around it.
+    #[test]
+    fn fences_outside_edit_blocks_still_execute_in_document_order() {
+        let completion = "```tool\n{\"name\": \"read\", \"input\": {\"path\": \"a.rs\"}}\n```\n\
+             a.rs\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n\
+             ```tool\n{\"name\": \"grep\", \"input\": {\"pattern\": \"x\"}}\n```\n";
+        let parsed = parse_items(completion, &[]);
+        let names: Vec<String> = parsed
+            .items
+            .iter()
+            .map(|item| match item {
+                Item::Call { name, .. } => name.clone(),
+                Item::Blocks(_) => "<edit>".to_owned(),
+            })
+            .collect();
+        assert_eq!(names, ["read", "<edit>", "grep"]);
+    }
+
+    /// F10: an ordinary answer that happens to carry a numbered list must not
+    /// trip the §6.4 plan gate. `contains` matched "step" inside "footsteps".
+    #[test]
+    fn prose_answers_do_not_trip_the_plan_gate() {
+        assert!(
+            !is_plan("The parser footsteps through:\n1. lex\n2. parse\n3. apply\n"),
+            "mid-word cue must not read as a drafted plan"
+        );
+        // Real plans, and ordinary inflections, still do.
+        assert!(is_plan("Plan:\n1. edit lib.rs\n2. run tests\n"));
+        assert!(is_plan("Here are the steps:\n1. edit lib.rs\n2. verify\n"));
+        assert!(is_plan("I'll do this:\n1. patch the parser\n"));
     }
 }

@@ -80,6 +80,38 @@ pub(crate) fn confine(path: &Path) -> Option<PathBuf> {
     )
 }
 
+/// Whether `rel`, resolved under `root`, actually stays inside the repo.
+///
+/// `confine` rejects `..` and absolute paths *lexically*, which stops the
+/// spelling but not the filesystem: a symlink committed inside the repo and
+/// pointing outside it is followed by `fs::write`, so `docs/notes.md` can
+/// land in `/etc`. The deepest existing ancestor of the target is
+/// canonicalized and checked against the canonical root, which catches a
+/// link anywhere along the path whether or not the final component exists
+/// yet (creates must be checked too).
+///
+/// **This is hardening, not a sandbox.** There is an unavoidable TOCTOU
+/// window between this check and the write, and a root that cannot itself be
+/// canonicalized falls back to the lexical fence alone. §6.12's framing
+/// holds: a guard rail, not an isolation boundary.
+pub fn contains_path(root: &Path, rel: &Path) -> bool {
+    let Ok(real_root) = root.canonicalize() else {
+        return true; // unknowable root — the lexical fence is all there is
+    };
+    let mut probe = root.join(rel);
+    loop {
+        if let Ok(real) = probe.canonicalize() {
+            return real.starts_with(&real_root);
+        }
+        // The target does not exist yet; walk up to the nearest ancestor
+        // that does. Stops at `root`, which canonicalized above.
+        match probe.parent() {
+            Some(parent) if parent.starts_with(root) => probe = parent.to_path_buf(),
+            _ => return true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

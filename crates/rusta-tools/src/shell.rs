@@ -300,27 +300,49 @@ async fn unix_execute(policy: &ShellPolicy, root: &Path, command: &str) -> ToolO
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let child = match process.spawn() {
+    let mut child = match process.spawn() {
         Ok(child) => child,
         Err(err) => return ToolOutcome::error(format!("{command}: failed to start sh: {err}")),
     };
 
-    match tokio::time::timeout(policy.timeout, child.wait_with_output()).await {
+    // Bounded *memory*, not just a bounded observation: `wait_with_output`
+    // buffered everything the child wrote before any §6.1 cap applied, and a
+    // three-second `yes` measured 5.26 GB of peak RSS. Both pipes drain
+    // concurrently — reading one to EOF first deadlocks once the other fills
+    // its kernel buffer — and each is bounded at the combined cap, which is
+    // all the joined observation can use anyway.
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let collect = async {
+        let (out, err) = tokio::join!(
+            rusta_validate::capped_read(stdout, caps::SHELL_BYTES),
+            rusta_validate::capped_read(stderr, caps::SHELL_BYTES)
+        );
+        (child.wait().await, out, err)
+    };
+
+    match tokio::time::timeout(policy.timeout, collect).await {
         Err(_) => ToolOutcome::error(format!(
             "{command}: timed out after {} s and was killed. Split the work or raise [shell] timeout_secs.",
             policy.timeout.as_secs()
         )),
-        Ok(Err(err)) => ToolOutcome::error(format!("{command}: {err}")),
-        Ok(Ok(output)) => {
-            let mut combined = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        Ok((Err(err), ..)) => ToolOutcome::error(format!("{command}: {err}")),
+        Ok((Ok(status), (out, out_cut), (err, err_cut))) => {
+            let mut combined = String::from_utf8_lossy(&out).to_string();
+            let stderr = String::from_utf8_lossy(&err);
             if !stderr.trim().is_empty() {
                 combined.push_str("\nstderr:\n");
                 combined.push_str(&stderr);
             }
-            let (content, truncated) =
+            let (content, clipped) =
                 clip_bytes(&combined, caps::SHELL_BYTES, "\n[... output truncated]");
-            let exit = exit_code(&output.status);
+            let truncated = clipped || out_cut || err_cut;
+            let content = if truncated && !clipped {
+                format!("{content}\n[... output truncated]")
+            } else {
+                content
+            };
+            let exit = exit_code(&status);
             let outcome = if exit == 0 {
                 ToolOutcome::ok(content)
             } else {

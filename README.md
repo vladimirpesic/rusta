@@ -4,9 +4,10 @@ A lean, lightweight, all-encompassing AI coding-agent harness for small, locally
 hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 
 > **Status: pre-alpha.** Development is driven milestone-by-milestone by
-> [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) (v1.1) — the single source of truth.
-> **v1 is milestone-complete: M0–M8 all green** (214 tests, clippy `-D warnings`
-> clean, `cargo doc` 0 warnings, 14,469/16,681 LoC against the 15k/20k R1 budget).
+> [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) (v1.2) — the single source of truth.
+> **v1 is milestone-complete: M0–M8 all green**, plus the 2026-09-14 third-audit
+> remediation (clippy `-D warnings` clean, `cargo doc` 0 warnings; counts below
+> are produced by `scripts/loc_budget.sh` and `cargo test --workspace`).
 > The subsystem trail: **M0 — workspace skeleton** (8 crates, CI, LoC-budget gate), **M1 —
 > `HttpBackend`** (SSE streaming, 3-attempt retry/backoff, 404 `base_url` hints, native
 > `tool_calls` passthrough, mock-server e2e) plus **JSONL session persistence** (§6.10),
@@ -101,8 +102,27 @@ cargo run -p rusta-cli -- --version
 Two backends (plan §6.2), selected at runtime in `rusta.toml` or via `--backend`:
 
 - **HTTP** (default, always compiled): any OpenAI-compatible server — llama.cpp
-  `llama-server`, Ollama, LM Studio, vLLM.
+  `llama-server`, Ollama, LM Studio, vLLM. `base_url` must be the full API root
+  including `/v1`.
 - **Embedded** (opt-in): in-process llama.cpp via `cargo build --features embedded`.
+  Needs cmake and a C++ toolchain; the default artifact stays cmake-free.
+
+## Choosing a model (plan §13)
+
+Rusta targets 8B–35B coding models. Pick by the VRAM you actually have — a model
+that spills to system RAM will dominate your turn latency far more than the
+scaffold does.
+
+| Budget | Suggested models |
+| ------ | ---------------- |
+| **24 GB VRAM** | Qwen3-Coder 30B-A3B · Qwen3.6 27B MTP · Gemma 4 31B IT QAT |
+| **12–16 GB VRAM** | gpt-oss-20b · DeepSeek-R1 14B · Gemma 4 12B |
+| **≤ 8 GB VRAM** | Qwen3.5 9B MTP |
+| **CPU only** | 4-bit MoE A3B models via llama.cpp, with `-t` set to your *physical* core count |
+
+On the embedded backend one loaded model shares one inference thread, so
+sub-coder dispatch (§6.8) serializes; true parallel research needs the HTTP
+backend against a server that batches.
 
 ## License
 

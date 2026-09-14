@@ -22,7 +22,12 @@ use crate::search::{display, effective_pattern, walk};
 pub fn glob_match(pattern: &str, path: &str) -> bool {
     let pattern: Vec<&str> = pattern.split('/').collect();
     let path: Vec<&str> = path.split('/').collect();
-    match_segments(&pattern, &path)
+    // `seen[p * (path.len() + 1) + t]` — segment-level states already proven
+    // unmatchable, the same memo `match_segment` keeps one level down.
+    // Without it stacked `**`s explore C(n+k, k) skip combinations: twenty of
+    // them against a twelve-segment path took 43 s — once per file walked.
+    let mut seen = vec![false; (pattern.len() + 1) * (path.len() + 1)];
+    segments(&pattern, &path, 0, 0, &mut seen)
 }
 
 /// Execute `glob(pattern)` against `root`: paths in sorted order, capped at
@@ -65,20 +70,43 @@ pub(crate) fn glob(root: &Path, input: &Value) -> ToolOutcome {
     }
 }
 
-fn match_segments(pattern: &[&str], path: &[&str]) -> bool {
-    if pattern.is_empty() {
-        return path.is_empty();
-    }
-    if pattern[0] == "**" {
-        // `**` swallows zero or more whole segments. Memoized by the caller
-        // below, so stacked `**`s cost O(pattern × path) rather than
-        // exponential time.
-        return (0..=path.len()).any(|skip| match_segments(&pattern[1..], &path[skip..]));
-    }
-    if path.is_empty() {
+/// True when `pattern[p..]` matches `path[t..]`. `seen` marks `(p, t)` pairs
+/// already shown not to match, which bounds the whole walk at
+/// O(pattern × path) with no change in the accepted language.
+fn segments(pattern: &[&str], path: &[&str], p: usize, t: usize, seen: &mut [bool]) -> bool {
+    let key = p * (path.len() + 1) + t;
+    if seen[key] {
         return false;
     }
-    match_segment(pattern[0], path[0]) && match_segments(&pattern[1..], &path[1..])
+    let matched = segments_uncached(pattern, path, p, t, seen);
+    if !matched {
+        seen[key] = true;
+    }
+    matched
+}
+
+fn segments_uncached(
+    pattern: &[&str],
+    path: &[&str],
+    p: usize,
+    t: usize,
+    seen: &mut [bool],
+) -> bool {
+    if p == pattern.len() {
+        return t == path.len();
+    }
+    if pattern[p] == "**" {
+        // `**` swallows zero or more whole segments.
+        for skip in t..=path.len() {
+            if segments(pattern, path, p + 1, skip, seen) {
+                return true;
+            }
+        }
+        return false;
+    }
+    t < path.len()
+        && match_segment(pattern[p], path[t])
+        && segments(pattern, path, p + 1, t + 1, seen)
 }
 
 fn match_segment(pattern: &str, text: &str) -> bool {

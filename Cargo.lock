@@ -1410,6 +1410,7 @@ dependencies = [
  "rusta-edit",
  "rusta-llm",
  "rusta-repomap",
+ "rusta-validate",
  "serde_json",
  "tempfile",
  "thiserror",

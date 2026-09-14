@@ -145,7 +145,7 @@ async fn run_one(command: &str, cwd: &Path, timeout: Duration) -> Report {
     } else {
         ("sh", "-c")
     };
-    let child = match Command::new(shell)
+    let mut child = match Command::new(shell)
         .arg(flag)
         .arg(command)
         .current_dir(cwd)
@@ -158,17 +158,65 @@ async fn run_one(command: &str, cwd: &Path, timeout: Duration) -> Report {
         Ok(child) => child,
         Err(cause) => return Report::unstartable(command, timeout, cause),
     };
-    match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => Report::finished(
+    let cap = OUTPUT_CAP_BYTES / 2;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let collect = async {
+        // Both pipes must drain concurrently: reading one to EOF first
+        // deadlocks as soon as the other fills its kernel buffer.
+        let (out, err) = tokio::join!(capped_read(stdout, cap), capped_read(stderr, cap));
+        (child.wait().await, out, err)
+    };
+    match tokio::time::timeout(timeout, collect).await {
+        Ok((Ok(status), (stdout, stdout_cut), (stderr, stderr_cut))) => Report::finished(
             command,
-            output.stdout,
-            output.stderr,
-            exit_code(&output.status),
+            stdout,
+            stdout_cut,
+            stderr,
+            stderr_cut,
+            exit_code(&status),
             timeout,
         ),
-        Ok(Err(cause)) => Report::unstartable(command, timeout, cause),
+        Ok((Err(cause), ..)) => Report::unstartable(command, timeout, cause),
         Err(_elapsed) => Report::timed_out(command, timeout),
     }
+}
+
+/// Drains `source` to EOF, keeping at most `cap` bytes.
+///
+/// Bounded *memory*, not just bounded output: `wait_with_output` buffers
+/// whatever the child produces before any cap is applied, and a three-second
+/// `yes` measured 5.26 GB of peak RSS — at the §7 default timeouts that is an
+/// OOM, from a command no deny rule would stop. Reading past the cap and
+/// discarding (rather than stopping) keeps the child unblocked, so a noisy
+/// command still exits on its own instead of running to the timeout.
+///
+/// `true` means output was discarded past the cap.
+pub async fn capped_read<R>(source: Option<R>, cap: usize) -> (Vec<u8>, bool)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt as _;
+
+    let Some(mut source) = source else {
+        return (Vec::new(), false);
+    };
+    let mut kept: Vec<u8> = Vec::new();
+    let mut buffer = [0u8; 8192];
+    let mut overflowed = false;
+    loop {
+        match source.read(&mut buffer).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => {
+                let room = cap.saturating_sub(kept.len());
+                if read > room {
+                    overflowed = true;
+                }
+                kept.extend_from_slice(&buffer[..read.min(room)]);
+            }
+        }
+    }
+    (kept, overflowed)
 }
 
 /// Exit code with the session contract's Unix convention: negative means
@@ -290,20 +338,23 @@ impl Report {
         }
     }
 
-    /// Assembles a finished report: both streams capped, combined, and
-    /// marked when truncation happened.
+    /// Assembles a finished report: both streams already bounded by
+    /// [`capped_read`], combined, and marked when truncation happened.
+    #[allow(clippy::too_many_arguments)]
     fn finished(
         command: &str,
         stdout: Vec<u8>,
+        stdout_cut: bool,
         stderr: Vec<u8>,
+        stderr_cut: bool,
         exit: i32,
         timeout: Duration,
     ) -> Self {
         let cap = OUTPUT_CAP_BYTES / 2;
-        let (stdout, stdout_cut) = (truncate(&stdout, cap), stdout.len() > cap);
-        let (stderr, stderr_cut) = (truncate(&stderr, cap), stderr.len() > cap);
-        let stdout = String::from_utf8_lossy(stdout);
-        let stderr = String::from_utf8_lossy(stderr);
+        // `capped_read` cuts on a byte count, so the tail may be a partial
+        // UTF-8 sequence; trim back to a boundary before lossy conversion.
+        let stdout = String::from_utf8_lossy(truncate(&stdout, cap));
+        let stderr = String::from_utf8_lossy(truncate(&stderr, cap));
         let mut output = String::with_capacity(stdout.len() + stderr.len() + 1);
         output.push_str(&stdout);
         if !stdout.is_empty() && !stderr.is_empty() {
@@ -425,11 +476,13 @@ impl Outcome {
                 lines.extend(report.window(budget - 1));
             }
         }
+        // Unreachable by construction; kept as a hard guarantee. Applied
+        // *before* the capsule so a full window can never truncate it away.
+        lines.truncate(FEEDBACK_MAX_LINES);
         if self.zero_tests().is_some() {
+            lines.truncate(FEEDBACK_MAX_LINES - 1);
             lines.push(ZERO_TEST_CAPSULE.to_owned());
         }
-        // Unreachable by construction; kept as a hard guarantee.
-        lines.truncate(FEEDBACK_MAX_LINES);
         lines.join("\n")
     }
 }

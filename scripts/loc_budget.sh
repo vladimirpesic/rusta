@@ -14,13 +14,19 @@
 set -euo pipefail
 
 split_counts() {
+  # `xargs` may split a long file list across several awk invocations, each
+  # printing its own totals — so sum the partial lines rather than reading
+  # only the first. (At ~50 files this never splits today; a gate that
+  # silently undercounts as the workspace grows is exactly the failure mode
+  # §12's erratum was written about.)
   find crates -name '*.rs' -not -path '*/tests/*' -not -name 'tests.rs' -type f -print0 |
     xargs -0 awk '
       FNR == 1 { in_test = 0 }
       !in_test && /^[[:space:]]*#\[cfg\((all\()?test/ { in_test = 1 }
       { if (in_test) t++; else p++ }
       END { printf "%d %d\n", p, t }
-    '
+    ' |
+    awk '{ p += $1; t += $2 } END { printf "%d %d\n", p, t }'
 }
 
 read -r PROD INLINE_TESTS < <(split_counts)

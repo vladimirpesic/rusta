@@ -437,40 +437,77 @@ where
 }
 
 /// Loads the sidecar; a missing file simply means no edits were recorded.
+///
+/// A torn final record is dropped for the same reason as in [`replay`] — and
+/// more readily here, since each record carries a whole file's contents and
+/// so spans many more bytes of non-atomic append. `next_record` then reports
+/// the missing half as a hash mismatch with its own remedy.
 fn load_sidecar(path: &Path) -> Result<Vec<DiffRecord>, Error> {
     let Ok(file) = File::open(path) else {
         return Ok(Vec::new());
     };
+    let lines: Vec<String> = BufReader::new(file).lines().collect::<Result<_, _>>()?;
+    let last = lines.len().saturating_sub(1);
     let mut records = Vec::new();
-    for (index, line) in BufReader::new(file).lines().enumerate() {
-        let line = line?;
+    for (index, line) in lines.iter().enumerate() {
         if line.trim().is_empty() {
-            continue; // tolerate a torn final line after a crash
+            continue;
         }
-        let record: DiffRecord = serde_json::from_str(&line).map_err(|e| Error::Corrupt {
-            path: path.display().to_string(),
-            cause: format!("sidecar line {}: {e}", index + 1),
-        })?;
-        records.push(record);
+        match serde_json::from_str::<DiffRecord>(line) {
+            Ok(record) => records.push(record),
+            Err(_) if index == last => break, // torn tail: the write never landed
+            Err(e) => {
+                return Err(Error::Corrupt {
+                    path: path.display().to_string(),
+                    cause: format!(
+                        "sidecar line {}: {e}. Remedy: delete or repair that \
+                         line; /undo depth is lost but the session still replays",
+                        index + 1
+                    ),
+                });
+            }
+        }
     }
     Ok(records)
 }
 
 /// Parses an existing JSONL log, rejecting corrupt lines with a line-numbered
 /// remedy (plan §6.11).
+///
+/// A torn **final** line is forgiven and dropped: `writeln!` + `flush` is not
+/// atomic, so a crash, a SIGKILL, or ENOSPC mid-append leaves a partial
+/// record, and the event it described never completed. Anything torn
+/// *earlier* in the file is real corruption and still fails loudly — the
+/// events after it would replay against the wrong state.
+///
+/// The distinction matters because a session is auto-resumed from
+/// `~/.rusta/sessions/<slug>-<UTC date>.jsonl`: failing the whole log for a
+/// half-written tail made `rusta` refuse to start in that repo until the date
+/// rolled over.
 fn replay(path: &Path) -> Result<Vec<Event>, Error> {
     let file = File::open(path)?;
+    let lines: Vec<String> = BufReader::new(file).lines().collect::<Result<_, _>>()?;
+    let last = lines.len().saturating_sub(1);
     let mut events = Vec::new();
-    for (index, line) in BufReader::new(file).lines().enumerate() {
-        let line = line?;
+    for (index, line) in lines.iter().enumerate() {
         if line.trim().is_empty() {
-            continue; // tolerate a torn final line after a crash
+            continue;
         }
-        let event: Event = serde_json::from_str(&line).map_err(|e| Error::Corrupt {
-            path: path.display().to_string(),
-            cause: format!("line {}: {e}", index + 1),
-        })?;
-        events.push(event);
+        match serde_json::from_str::<Event>(line) {
+            Ok(event) => events.push(event),
+            Err(_) if index == last => break, // torn tail: the write never landed
+            Err(e) => {
+                return Err(Error::Corrupt {
+                    path: path.display().to_string(),
+                    cause: format!(
+                        "line {}: {e}. Remedy: the log is append-only JSON \
+                         Lines — delete or repair that line, or move the file \
+                         aside to start a fresh session",
+                        index + 1
+                    ),
+                });
+            }
+        }
     }
     Ok(events)
 }
@@ -526,15 +563,68 @@ mod tests {
 
     #[test]
     fn rejects_corrupt_lines_with_line_numbered_remedy() {
+        // Corruption *before* the end is real: the events after it would
+        // replay against the wrong state, so the log must fail loudly.
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("corrupt.jsonl");
         std::fs::write(
             &path,
-            "{\"type\":\"user_message\",\"content\":\"ok\"}\nnot json at all\n",
+            "{\"type\":\"user_message\",\"content\":\"ok\"}\nnot json at all\n{\"type\":\"session_end\"}\n",
         )
         .expect("write");
         let error = Session::open(&path).unwrap_err();
-        assert!(error.to_string().contains("line 2"), "{error}");
+        let text = error.to_string();
+        assert!(text.contains("line 2"), "{text}");
+        assert!(text.contains("Remedy:"), "§6.11 needs a remedy: {text}");
+    }
+
+    #[test]
+    fn a_torn_final_line_is_dropped_not_fatal() {
+        // `writeln!` + `flush` is not atomic: a crash, SIGKILL or ENOSPC
+        // mid-append leaves a partial record for an event that never
+        // completed. Sessions auto-resume per repo per UTC day, so failing
+        // the whole log here made `rusta` refuse to start in that repo until
+        // the date rolled over.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("torn.jsonl");
+        std::fs::write(
+            &path,
+            "{\"type\":\"user_message\",\"content\":\"hello\"}\n{\"type\":\"assistant_message\",\"cont",
+        )
+        .expect("write");
+
+        let session = Session::open(&path).expect("a torn tail must still open");
+        assert_eq!(
+            session.events(),
+            [Event::UserMessage {
+                content: "hello".to_owned()
+            }]
+        );
+        // And the surviving prefix still replays.
+        assert_eq!(session.replay_context().expect("replays").messages.len(), 1);
+    }
+
+    #[test]
+    fn a_torn_final_sidecar_record_is_dropped_not_fatal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("s.jsonl");
+        {
+            let mut session = Session::open(&path).expect("open");
+            session
+                .record_edit("a.rs", true, "before", "after")
+                .expect("edit");
+        }
+        // Simulate a crash part-way through appending a third record.
+        let sidecar = path.with_extension("diffs.jsonl");
+        let mut text = std::fs::read_to_string(&sidecar).expect("read");
+        text.push_str("{\"hash\":123,\"cont");
+        std::fs::write(&sidecar, text).expect("write");
+
+        let session = Session::open(&path).expect("open");
+        let replayed = session
+            .replay_context()
+            .expect("torn sidecar tail is benign");
+        assert_eq!(replayed.undo.pending().len(), 1);
     }
 
     #[test]

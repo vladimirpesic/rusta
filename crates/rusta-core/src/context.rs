@@ -366,7 +366,10 @@ impl CardDeck {
     pub fn shipped() -> Self {
         let cards = SHIPPED_CARDS
             .iter()
-            .map(|text| SkillCard::parse(text).expect("shipped cards are tested at build time"))
+            .map(|text| {
+                SkillCard::parse(text)
+                    .expect("the shipped deck is pinned by shipped_cards_parse_and_fit")
+            })
             .collect();
         Self::from_cards(cards)
     }
@@ -1193,7 +1196,6 @@ mod tests {
             ("not_found", &["edit-recovery"]),
             ("duplicate_match", &["edit-recovery"]),
             ("write", &["write-vs-edit"]),
-            ("create_file", &["write-vs-edit"]),
             ("validation_failed", &["verify-focus"]),
             ("test_failure", &["verify-focus"]),
             ("shell", &[]),

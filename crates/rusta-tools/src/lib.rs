@@ -34,7 +34,7 @@ pub use ask::{Headless, Responder};
 pub use exec::{ToolOutcome, Tools};
 pub use glob::glob_match;
 pub use map::EMPTY_MAP;
-pub use search::{display, walk};
+pub use search::{display, effective_pattern, walk};
 pub use shell::{Approver, AutoApprove, DEFAULT_DENY, Decision, DenyAll, ShellPolicy, Verdict};
 
 /// §6.11 error taxonomy. Tool *misuse* never appears here — it surfaces as

@@ -16,6 +16,10 @@ rusta-dispatch = { path = "../rusta-dispatch" }
 rusta-edit = { path = "../rusta-edit" }
 rusta-llm = { path = "../rusta-llm" }
 rusta-repomap = { path = "../rusta-repomap" }
+# For `capped_read` only: the §6.1 memory bound on subprocess output is a
+# safety fix, and one implementation must serve both subprocess call sites
+# (`shell` here, validators there) so the two can never drift apart.
+rusta-validate = { path = "../rusta-validate" }
 regex.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

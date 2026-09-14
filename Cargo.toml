@@ -36,7 +36,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "signal"] }
+# `io-util` added post-audit: §6.1's output caps must bound *memory*, not just
+# the observation text, so both subprocess call sites drain their pipes
+# incrementally (`AsyncReadExt`) instead of buffering with `wait_with_output`.
+# It was already present transitively via reqwest → hyper-util; depending on
+# that silently is exactly the coupling the audit flagged elsewhere.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "process", "signal"] }
 # Snapshot testing (DEVELOPMENT_PLAN.md §10, dev-only) — failure-feedback
 # contract of rusta-edit and later validator/repomap golden files.
 insta = "1"

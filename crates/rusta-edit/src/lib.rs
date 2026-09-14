@@ -26,5 +26,5 @@ mod parser;
 pub use apply::{
     AppliedBlock, ApplyReport, Editor, FailedBlock, FailureReason, UndoEntry, UndoStack,
 };
-pub use ledger::Ledger;
-pub use parser::{EditBlock, ParsedResponse, parse_response};
+pub use ledger::{Ledger, contains_path};
+pub use parser::{BlockScan, EditBlock, ParsedResponse, parse_response};
