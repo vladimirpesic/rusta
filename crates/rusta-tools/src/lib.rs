@@ -33,7 +33,7 @@ mod shell;
 pub use ask::{Headless, Responder};
 pub use exec::{ToolOutcome, Tools};
 pub use glob::glob_match;
-pub use map::EMPTY_MAP;
+pub use map::{EMPTY_MAP, mentioned_identifiers};
 pub use search::{display, effective_pattern, walk};
 pub use shell::{Approver, AutoApprove, DEFAULT_DENY, Decision, DenyAll, ShellPolicy, Verdict};
 

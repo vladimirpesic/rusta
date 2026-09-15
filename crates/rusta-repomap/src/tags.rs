@@ -16,8 +16,13 @@ use std::sync::{OnceLock, RwLock};
 use crate::lang::Lang;
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
-/// Bumped when an embedded query changes what tags mean — part of the cache
-/// key (§6.5 step 7) so stale entries can never serve old tag shapes.
+/// Bumped **by hand** when an embedded query changes what tags mean — part
+/// of the cache key (§6.5 step 7).
+///
+/// It is not derived from the query text, so editing a `.scm` without
+/// bumping this serves stale tag shapes from the in-memory cache until the
+/// process restarts (the cache is per-process, so the blast radius is one
+/// session). Treat a query edit and a bump here as one change.
 pub(crate) const QUERY_VERSION: u32 = 1;
 
 /// Reserved words across the supported languages; a merged set suffices

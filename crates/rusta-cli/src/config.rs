@@ -146,6 +146,11 @@ pub struct ShellSection {
     pub allow: Vec<String>,
     /// Extra deny regexes extending the §6.12 table.
     pub deny: Vec<String>,
+    /// Environment variable *names* forwarded into `shell` and validator
+    /// subprocesses on top of `PATH`/`HOME`/`LANG` — §6.12's "minimal
+    /// environment (… + config allow-list)". Values come from the parent
+    /// process, never from this file.
+    pub env: Vec<String>,
 }
 
 impl Default for ShellSection {
@@ -154,6 +159,7 @@ impl Default for ShellSection {
             timeout_secs: 60,
             allow: Vec::new(),
             deny: Vec::new(),
+            env: Vec::new(),
         }
     }
 }

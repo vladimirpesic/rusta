@@ -43,7 +43,13 @@ where
     let mut overflowed = false;
     loop {
         match source.read(&mut buffer).await {
-            Ok(0) | Err(_) => break,
+            // A read error truncates the stream; treating it as a clean EOF
+            // made a partial capture indistinguishable from a complete one.
+            Err(_) => {
+                overflowed = true;
+                break;
+            }
+            Ok(0) => break,
             Ok(read) => {
                 let room = cap.saturating_sub(kept.len());
                 if read > room {

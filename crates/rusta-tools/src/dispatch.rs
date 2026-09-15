@@ -38,6 +38,23 @@ pub(crate) async fn dispatch(tools: &Tools, input: &Value) -> ToolOutcome {
     } else {
         rusta_core::Status::Ok
     };
+    // §6.8: the sub-transcripts go to the session log only, never main
+    // context. `content` below is the labeled reports; the transcripts ride
+    // out separately so the host can journal them.
+    *lock(tools.dispatch_log()) = reports
+        .iter()
+        .map(|report| {
+            (
+                report.label.clone(),
+                report.report.clone(),
+                report
+                    .transcript
+                    .iter()
+                    .map(|message| (message.role.as_str().to_owned(), message.content.clone()))
+                    .collect(),
+            )
+        })
+        .collect();
     ToolOutcome {
         status,
         content: labeled(&reports),
@@ -62,7 +79,8 @@ impl RunTool for ReadOnly {
             "map_drill" => crate::map::drill(&self.root, &input),
             "map_refresh" => {
                 let mut map = lock(&self.repomap);
-                crate::map::refresh(&mut map, &[])
+                // A sub-coder has no chat-set and no user message of its own.
+                crate::map::refresh(&mut map, &[], &[])
             }
             other => ToolOutcome::error(format!(
                 "{other:?} is not available to sub-coders. Available: read, grep, glob, \

@@ -90,6 +90,27 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Repo-relative path fence shared by every path-taking tool: no absolute
 /// paths, no `..`, `.` components dropped. Mirrors the shell policy's
 /// repo-root confinement (§6.12) for the file tools.
+/// [`safe_rel`] plus a filesystem check that the path really stays inside
+/// `root` — for the tools that read file *content*.
+///
+/// `safe_rel` is lexical: it rejects absolute paths and `..`, but a symlink
+/// committed inside the repo and pointing out of it resolved straight
+/// through `fs::read`, so outside-repo content could enter the model context
+/// and the session log (and `map_drill` credited the ledger for it). §6.12
+/// governs mutations; this extends the same fence to the read side. Like
+/// `contains_path`, it is hardening rather than a sandbox — a TOCTOU window
+/// remains — and a root that cannot be canonicalized falls back to lexical.
+pub(crate) fn safe_rel_in(root: &Path, raw: &str) -> Result<PathBuf, ToolOutcome> {
+    let rel = safe_rel(raw)?;
+    if rusta_edit::contains_path(root, &rel) {
+        return Ok(rel);
+    }
+    Err(ToolOutcome::error(format!(
+        "{raw}: resolves outside the repository (a symbolic link leaves the \
+         workspace); read a path that stays inside it"
+    )))
+}
+
 pub(crate) fn safe_rel(raw: &str) -> Result<PathBuf, ToolOutcome> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -184,7 +205,20 @@ pub struct Tools {
     shell: ShellPolicy,
     approver: Mutex<Box<dyn Approver>>,
     responder: Mutex<Box<dyn Responder>>,
+    /// Identifiers the user named in the current request (§6.5 steps 3–4).
+    /// The host sets this per request; without it the mention boosts are
+    /// unreachable, which is how half of §6.5's ranking spec sat dead.
+    mentions: Mutex<Vec<String>>,
+    /// `(label, report, transcript)` from the last `dispatch`, for the host
+    /// to journal (§6.8). Transcripts must reach the session log and must
+    /// never reach main context, so they travel beside the observation
+    /// rather than inside it.
+    dispatch_log: Mutex<DispatchLog>,
 }
+
+/// What one `dispatch` call produced, for §6.10 journaling:
+/// `(label, report, [(role, content)])` per sub-coder.
+pub type DispatchLog = Vec<(String, String, Vec<(String, String)>)>;
 
 impl Tools {
     /// Registry for the repo at `root` against `backend`, with the given
@@ -205,6 +239,8 @@ impl Tools {
             shell,
             approver: Mutex::new(Box::new(crate::shell::DenyAll)),
             responder: Mutex::new(Box::new(crate::ask::Headless)),
+            mentions: Mutex::new(Vec::new()),
+            dispatch_log: Mutex::new(Vec::new()),
         })
     }
 
@@ -220,6 +256,22 @@ impl Tools {
     pub fn with_responder(mut self, responder: Box<dyn Responder>) -> Self {
         self.responder = Mutex::new(responder);
         self
+    }
+
+    /// The last `dispatch` call's labels, reports and transcripts, drained
+    /// by the host for §6.10 journaling.
+    pub fn take_dispatch_log(&self) -> DispatchLog {
+        std::mem::take(&mut *lock(&self.dispatch_log))
+    }
+
+    pub(crate) fn dispatch_log(&self) -> &Mutex<DispatchLog> {
+        &self.dispatch_log
+    }
+
+    /// Records the identifiers named by the current user request, for the
+    /// §6.5 steps 3–4 mention boosts.
+    pub fn set_mentions(&self, mentions: Vec<String>) {
+        *lock(&self.mentions) = mentions;
     }
 
     /// The workspace root every relative path resolves against.
@@ -286,8 +338,9 @@ impl Tools {
                     .read_set()
                     .map(|path| path.display().to_string())
                     .collect();
+                let mentions = lock(&self.mentions).clone();
                 let mut map = self.repomap();
-                crate::map::refresh(&mut map, &chat_files)
+                crate::map::refresh(&mut map, &chat_files, &mentions)
             }
             Tool::MapDrill => crate::map::drill(&self.root, input),
             Tool::Dispatch => crate::dispatch::dispatch(self, input).await,

@@ -178,10 +178,21 @@ pub fn parse_response(text: &str) -> ParsedResponse {
 
         // in_replace: UPDATED commits; a new DIVIDER commits *and* chains.
         if is_updated(trimmed) || is_divider(trimmed) {
+            // The rule-4 marker strip applies to *every* commit, not only the
+            // end-of-stream one. A block closed mid-stream — by the UPDATED
+            // line below, or by a chained DIVIDER — used to commit
+            // `…new>>>>>>> REPLACE` verbatim and write the marker into the
+            // user's source, silently: the apply reported success and no
+            // corrective note was emitted. Any completion with more than one
+            // edit block reaches this path.
+            let (text, note) = split_trailing_marker(&updated.concat());
+            if let Some(note) = note {
+                out.notes.push(note);
+            }
             out.blocks.push(EditBlock {
                 candidates: std::mem::take(&mut candidates),
                 original: original.concat(),
-                updated: updated.concat(),
+                updated: text,
             });
             original.clear();
             updated.clear();

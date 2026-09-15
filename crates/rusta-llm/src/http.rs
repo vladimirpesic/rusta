@@ -23,6 +23,11 @@ const RETRY_ATTEMPTS: u32 = 3;
 const DEFAULT_BACKOFF: Duration = Duration::from_millis(250);
 /// Backoff ceiling (plan §6.2: 250 ms → 2 s).
 const MAX_BACKOFF: Duration = Duration::from_secs(2);
+/// Upper bound on concurrently assembled native `tool_calls` (§6.1). The
+/// index arrives from the server, so it bounds an allocation, not a policy;
+/// no real completion carries anywhere near this many.
+const MAX_TOOL_CALLS: usize = 64;
+
 /// Lines of server text kept in [`Error::Http`] messages (plan §6.11).
 const SERVER_MESSAGE_LINES: usize = 10;
 /// Cap on establishing a connection.
@@ -372,6 +377,17 @@ async fn pump_events(
             }
             for call in choice.delta.tool_calls {
                 let index = call.index as usize;
+                // The index is wire-supplied. Resizing to an unbounded `u32`
+                // asks for ~309 GB in one contiguous allocation on
+                // `"index": 4294967295` — an abort, not a recoverable error,
+                // against §6.1's never-panic-on-malformed-input posture.
+                if index >= MAX_TOOL_CALLS {
+                    return Err(Error::Malformed {
+                        cause: format!(
+                            "tool_call index {index} exceeds the {MAX_TOOL_CALLS}-call limit"
+                        ),
+                    });
+                }
                 if index >= tools.len() {
                     tools.resize(index + 1, ToolCallAccumulator::default());
                 }

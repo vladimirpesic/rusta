@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::exec::{ToolOutcome, caps, opt_usize, req_nonempty, safe_rel};
+use crate::exec::{ToolOutcome, caps, opt_usize, req_nonempty, safe_rel_in};
 
 /// Execute `read(path, from?, to?)` against `root`.
 pub(crate) fn read(root: &Path, input: &Value) -> ToolOutcome {
@@ -13,7 +13,7 @@ pub(crate) fn read(root: &Path, input: &Value) -> ToolOutcome {
 
 fn run(root: &Path, input: &Value) -> Result<ToolOutcome, ToolOutcome> {
     let raw = req_nonempty(input, "path")?;
-    let rel = safe_rel(raw)?;
+    let rel = safe_rel_in(root, raw)?;
     let from = opt_usize(input, "from")?.unwrap_or(1).max(1);
     let to = opt_usize(input, "to")?;
     if let Some(to) = to {
@@ -24,8 +24,20 @@ fn run(root: &Path, input: &Value) -> Result<ToolOutcome, ToolOutcome> {
         }
     }
 
-    let bytes = match std::fs::read(root.join(&rel)) {
-        Ok(bytes) => bytes,
+    // Bounded read: the §6.1 caps govern what is *returned*, but the file
+    // was loaded whole first, so a multi-gigabyte file in the repo meant a
+    // multi-gigabyte allocation to hand back 64 KiB. Read a bounded prefix —
+    // generous enough that the line/byte caps below still decide the slice.
+    const READ_PREFIX_BYTES: u64 = (caps::READ_BYTES as u64) * 8;
+    let bytes = match std::fs::File::open(root.join(&rel)) {
+        Ok(file) => {
+            use std::io::Read as _;
+            let mut bytes = Vec::new();
+            if let Err(err) = file.take(READ_PREFIX_BYTES).read_to_end(&mut bytes) {
+                return Err(ToolOutcome::error(format!("{raw}: {err}")));
+            }
+            bytes
+        }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(ToolOutcome::error(format!(
                 "{raw}: no such file — check the path (glob can find it)"

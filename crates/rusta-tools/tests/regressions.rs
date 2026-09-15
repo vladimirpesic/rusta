@@ -243,7 +243,7 @@ fn registry(root: &std::path::Path, timeout_secs: u64) -> rusta_tools::Tools {
     rusta_tools::Tools::new(
         root,
         backend,
-        rusta_tools::ShellPolicy::new(timeout_secs, &[], &[]).expect("policy"),
+        rusta_tools::ShellPolicy::new(timeout_secs, &[], &[], &[]).expect("policy"),
     )
     .expect("tools")
     .with_approver(Box::new(rusta_tools::AutoApprove))
@@ -259,4 +259,247 @@ fn peak_rss_kb() -> u64 {
                 .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
         })
         .unwrap_or(0)
+}
+
+// ------------------------------------- 2026-09-15 consolidated-audit findings
+
+/// A5: §6.5 steps 3–4 give a user-mentioned identifier ×10 edge weight and
+/// `+100/N` personalization. Every production `render_map` caller passed
+/// `&[], &[]`, so that half of the ranking spec was unreachable — the same
+/// shape as the withdrawn `strict_grammar` key.
+#[test]
+fn user_mentions_are_extracted_for_the_repo_map() {
+    let found = rusta_tools::mentioned_identifiers(
+        "please fix parse_response in crates/rusta-edit/src/parser.rs, it breaks CamelCase",
+    );
+    for expected in [
+        "parse_response",
+        "crates/rusta-edit/src/parser.rs",
+        "CamelCase",
+    ] {
+        assert!(
+            found.iter().any(|m| m == expected),
+            "{expected:?} must be extracted, got {found:?}"
+        );
+    }
+    // Prose words must not flood the boost: everything is ×10 or nothing.
+    for noise in ["please", "fix", "it", "in", "breaks"] {
+        assert!(
+            !found.iter().any(|m| m == noise),
+            "{noise:?} must not be treated as an identifier: {found:?}"
+        );
+    }
+    assert!(rusta_tools::mentioned_identifiers("just fix the bug").is_empty());
+}
+
+/// A5: the mentions actually reach ranking. Rank decides *which*
+/// definitions survive the §6.5 step 6 budget — the renderer then groups
+/// what survived by path — so the effect is only observable when the budget
+/// binds. A map that fits entirely looks the same however it is ranked.
+#[tokio::test]
+async fn mentions_reach_the_rendered_map() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("src")).expect("dirs");
+    std::fs::write(
+        dir.path().join("src/alpha.rs"),
+        "pub fn alpha_widget_builder() {}\npub fn alpha_helper() { beta_widget_maker(); }\n",
+    )
+    .expect("write");
+    std::fs::write(
+        dir.path().join("src/beta.rs"),
+        "pub fn beta_widget_maker() {}\npub fn beta_helper() { alpha_widget_builder(); }\n",
+    )
+    .expect("write");
+
+    let render = |mentions: Vec<String>| {
+        let backend = Arc::new(Backend::http(HttpConfig::default()).expect("backend"));
+        // The budget must *bind* for ranking to be observable: too tight and
+        // nothing renders at all, too loose and every definition fits so the
+        // order the renderer groups by (path) hides the rank entirely.
+        let tools = Tools::new(
+            dir.path(),
+            backend,
+            ShellPolicy::standard().expect("policy"),
+        )
+        .expect("tools")
+        .with_repomap(rusta_repomap::RepoMap::new(dir.path()).with_budget(56));
+        tools.set_mentions(mentions);
+        tools
+    };
+
+    let plain = render(Vec::new())
+        .exec(rusta_core::State::Exploring, "map_refresh", &json!({}))
+        .await;
+    let steered = render(rusta_tools::mentioned_identifiers(
+        "what does beta_widget_maker do?",
+    ))
+    .exec(rusta_core::State::Exploring, "map_refresh", &json!({}))
+    .await;
+
+    assert!(!plain.content.is_empty(), "the map must render at all");
+    assert_ne!(
+        plain.content, steered.content,
+        "a user mention must change which definitions survive the budget; \
+         if these match, the §6.5 boost is dead again"
+    );
+}
+
+/// A12: `map_drill`'s rewritten header must describe only real content
+/// lines. `clip_bytes`'s truncation marker is not one, and counting it made
+/// the header claim one line more than the drill returned.
+#[tokio::test]
+async fn a_capped_drill_header_matches_the_lines_returned() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Long lines, so the 64 KiB byte cap bites before the 2,000-line cap —
+    // the combined path where the marker line was miscounted.
+    let long: String = (1..=400)
+        .map(|i| format!("{i}:{}\n", "z".repeat(400)))
+        .collect();
+    std::fs::write(dir.path().join("long.rs"), &long).expect("write");
+    let tools = registry(dir.path(), 60);
+
+    let drilled = tools
+        .exec(
+            rusta_core::State::Exploring,
+            "map_drill",
+            &json!({"path": "long.rs", "from": 1, "to": 400}),
+        )
+        .await;
+
+    let header = drilled.content.lines().next().expect("header");
+    let claimed: usize = header
+        .rsplit_once('-')
+        .and_then(|(_, to)| to.parse().ok())
+        .expect("header names a range");
+    let last_real: usize = drilled
+        .content
+        .lines()
+        .rfind(|line| line.starts_with(|c: char| c.is_ascii_digit()) && line.contains(':'))
+        .and_then(|line| line.split(':').next()?.parse().ok())
+        .expect("a numbered content line");
+    assert_eq!(
+        claimed, last_real,
+        "header claims {claimed} but the last content line is {last_real}"
+    );
+}
+
+/// A13: §6.1 requires a marker whenever a cap truncated. A grep line clipped
+/// at 200 characters read as a complete one.
+#[tokio::test]
+async fn grep_marks_a_clipped_line() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("wide.rs"),
+        format!("fn wide() {{ {} }}\nfn narrow() {{}}\n", "a".repeat(900)),
+    )
+    .expect("write");
+    let tools = registry(dir.path(), 60);
+
+    let out = tools
+        .exec(
+            rusta_core::State::Exploring,
+            "grep",
+            &json!({"pattern": "fn "}),
+        )
+        .await;
+    let wide = out
+        .content
+        .lines()
+        .find(|line| line.contains("fn wide"))
+        .expect("the wide match");
+    assert!(wide.ends_with("[…]"), "a clipped line must say so: {wide}");
+    let narrow = out
+        .content
+        .lines()
+        .find(|line| line.contains("fn narrow"))
+        .expect("the narrow match");
+    assert!(
+        !narrow.ends_with("[…]"),
+        "an unclipped line must not claim truncation: {narrow}"
+    );
+}
+
+/// A9: §6.12's "minimal environment (PATH, HOME, LANG + config allow-list)".
+/// The allow-list half had no implementation and no config key, so a
+/// validator needing `RUSTFLAGS` or a proxy variable could never receive one.
+#[tokio::test]
+async fn the_shell_environment_allow_list_forwards_named_variables() {
+    // A variable the test process genuinely has — R10 forbids `set_var`
+    // even here, and reading a real one is the more honest test anyway.
+    let probe = "CARGO_PKG_NAME";
+    let expected = std::env::var(probe).expect("cargo sets this for test binaries");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let backend = Arc::new(Backend::http(HttpConfig::default()).expect("backend"));
+    let tools = Tools::new(
+        dir.path(),
+        backend,
+        ShellPolicy::new(60, &[], &[], &[probe.to_owned()]).expect("policy"),
+    )
+    .expect("tools")
+    .with_approver(Box::new(rusta_tools::AutoApprove));
+
+    let out = tools
+        .exec(
+            rusta_core::State::Editing,
+            "shell",
+            &json!({"command": format!("echo \"[${probe}]\"")}),
+        )
+        .await;
+    assert!(
+        out.content.contains(&format!("[{expected}]")),
+        "allow-listed variable must reach the child: {}",
+        out.content
+    );
+
+    // And the default policy still forwards nothing beyond PATH/HOME/LANG.
+    let bare = registry(dir.path(), 60)
+        .exec(
+            rusta_core::State::Editing,
+            "shell",
+            &json!({"command": format!("echo \"[${probe}]\"")}),
+        )
+        .await;
+    assert!(
+        bare.content.contains("[]"),
+        "an un-listed variable must stay out: {}",
+        bare.content
+    );
+}
+
+/// A10: §6.12's fence extends to the read side. A symlink committed inside
+/// the repo and pointing out of it resolved straight through `fs::read`, so
+/// outside-repo content entered the model context and the session log.
+#[tokio::test]
+async fn read_tools_refuse_a_symlink_out_of_the_repo() {
+    let repo = tempfile::tempdir().expect("repo");
+    let outside = tempfile::tempdir().expect("outside");
+    std::fs::write(outside.path().join("secrets.txt"), "API_KEY=hunter2\n").expect("seed");
+    std::os::unix::fs::symlink(outside.path(), repo.path().join("escape")).expect("symlink");
+    std::fs::write(repo.path().join("inside.txt"), "ordinary\n").expect("seed");
+    let tools = registry(repo.path(), 60);
+
+    let escaped = tools
+        .exec(
+            rusta_core::State::Exploring,
+            "read",
+            &json!({"path": "escape/secrets.txt"}),
+        )
+        .await;
+    assert_eq!(escaped.status, rusta_core::Status::Error);
+    assert!(
+        !escaped.content.contains("hunter2"),
+        "outside-repo content leaked into an observation: {}",
+        escaped.content
+    );
+
+    // Ordinary in-repo reads are unaffected.
+    let fine = tools
+        .exec(
+            rusta_core::State::Exploring,
+            "read",
+            &json!({"path": "inside.txt"}),
+        )
+        .await;
+    assert_eq!(fine.status, rusta_core::Status::Ok);
+    assert!(fine.content.contains("ordinary"), "{}", fine.content);
 }

@@ -263,3 +263,56 @@ fn code_fences_are_not_mistaken_for_shell_commands() {
         assert_eq!(parsed.commands, ["cargo test".to_owned()], "```{language}");
     }
 }
+
+// ------------------------------------- 2026-09-15 consolidated-audit findings
+
+/// A1: §6.3 rule 4's marker strip must run on *every* commit out of the
+/// REPLACE state, not only at end-of-stream.
+///
+/// A block closed mid-stream — by a following UPDATED line, or by a chained
+/// DIVIDER — used to commit `…new>>>>>>> REPLACE` verbatim, writing the
+/// marker into the user's source while reporting the apply as successful and
+/// emitting no corrective note. Any completion carrying more than one edit
+/// block reaches that path.
+#[test]
+fn a_glued_replace_marker_is_stripped_at_every_commit() {
+    // (a) end-of-stream — the case rule 4's erratum already covered.
+    let eos = "a.rs\n<<<<<<< SEARCH\nold\n=======\nnew>>>>>>> REPLACE\n";
+    let parsed = rusta_edit::parse_response(eos);
+    assert_eq!(parsed.blocks[0].updated, "new\n");
+    assert_eq!(parsed.notes.len(), 1, "end-of-stream must warn");
+
+    // (b) mid-stream, closed by a following UPDATED line.
+    let mid = "a.rs\n<<<<<<< SEARCH\nold\n=======\nnew>>>>>>> REPLACE\n>>>>>>> REPLACE\n";
+    let parsed = rusta_edit::parse_response(mid);
+    assert_eq!(
+        parsed.blocks[0].updated, "new\n",
+        "the marker must never reach the file"
+    );
+    assert_eq!(parsed.notes.len(), 1, "mid-stream must warn too");
+
+    // (c) mid-stream, closed by a chained DIVIDER (§6.3 rule 1).
+    let chained = "a.rs\n<<<<<<< SEARCH\nold\n=======\nnew>>>>>>> REPLACE\n=======\nthree\n=======\nfour\n>>>>>>> REPLACE\n";
+    let parsed = rusta_edit::parse_response(chained);
+    assert_eq!(parsed.blocks[0].updated, "new\n");
+    assert_eq!(parsed.blocks.len(), 2, "chaining still works");
+    assert_eq!(parsed.blocks[1].original, "three\n");
+    assert!(parsed.notes.iter().any(|n| n.contains(">>>>>>> REPLACE")));
+}
+
+/// A1 control: well-formed blocks are untouched by the strip, and REPLACE
+/// text that merely *ends* in angle brackets survives verbatim.
+#[test]
+fn well_formed_blocks_are_unaffected_by_the_marker_strip() {
+    let clean = "a.rs\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\nb.rs\n<<<<<<< SEARCH\np\n=======\nq\n>>>>>>> REPLACE\n";
+    let parsed = rusta_edit::parse_response(clean);
+    assert_eq!(parsed.blocks.len(), 2);
+    assert_eq!(parsed.blocks[0].updated, "new\n");
+    assert_eq!(parsed.blocks[1].updated, "q\n");
+    assert!(parsed.notes.is_empty(), "{:?}", parsed.notes);
+
+    let generics = "a.rs\n<<<<<<< SEARCH\nold\n=======\nVec<Vec<u8>>\n>>>>>>> REPLACE\n";
+    let parsed = rusta_edit::parse_response(generics);
+    assert_eq!(parsed.blocks[0].updated, "Vec<Vec<u8>>\n");
+    assert!(parsed.notes.is_empty());
+}

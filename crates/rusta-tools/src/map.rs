@@ -8,7 +8,7 @@ use std::path::Path;
 use rusta_repomap::{DrillError, DrillRequest, RepoMap};
 use serde_json::Value;
 
-use crate::exec::{ToolOutcome, caps, clip_bytes, opt_usize, req_nonempty, safe_rel};
+use crate::exec::{ToolOutcome, caps, clip_bytes, opt_usize, req_nonempty, safe_rel_in};
 
 /// Clips a drilled span to the §6.1 `read` caps (2,000 lines / 64 KiB),
 /// marking the cut so the model narrows its next drill instead of assuming
@@ -31,8 +31,15 @@ fn cap_window(text: &str) -> (String, bool) {
         caps::READ_BYTES,
         "\n[... truncated at the 64 KiB cap]",
     );
-    // Whatever survived both caps is what the header must describe.
-    let shown = content.lines().count().min(kept);
+    // Whatever survived both caps is what the header must describe. The
+    // byte-cap marker `clip_bytes` appends is not a content line; counting
+    // it made the header claim one line more than it returned.
+    let marker_lines = usize::from(clipped);
+    let shown = content
+        .lines()
+        .count()
+        .saturating_sub(marker_lines)
+        .min(kept);
     let dropped = body.len() - shown;
     if dropped > 0 {
         content.push_str(&format!(
@@ -68,10 +75,58 @@ fn retitle(header: &str, shown: usize) -> String {
 /// it told the model a repo full of source had none.
 pub const EMPTY_MAP: &str = "(repo map is empty: no source files in the configured languages, or [repomap] max_tokens is 0)";
 
-/// Execute `map_refresh()` — re-render the repo map. Session chat-files
-/// (the ledger read-set) steer ranking but never render (§6.5 step 5).
-pub(crate) fn refresh(map: &mut RepoMap, chat_files: &[String]) -> ToolOutcome {
-    let rendered = map.render_map(chat_files, None, &[], &[]);
+/// Identifiers a user message plausibly names, for §6.5's mention boosts.
+///
+/// §6.5 steps 3–4 give a user-mentioned identifier ×10 edge weight and
+/// `+100/N` personalization. Every production caller passed `&[], &[]`, so
+/// that half of the ranking spec was unreachable — the same shape as the
+/// withdrawn `strict_grammar` key. The scan is deliberately the repo map's
+/// own: ASCII identifier runs, no tokenizer, so it costs nothing and cannot
+/// disagree with the tag vocabulary it is matched against. Short and
+/// all-lowercase-common words are dropped: `the`/`fix`/`add` would boost
+/// half the graph and steer nothing.
+pub fn mentioned_identifiers(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.' || ch == '/' {
+            current.push(ch);
+        } else if !current.is_empty() {
+            push_mention(&mut out, std::mem::take(&mut current));
+        }
+    }
+    push_mention(&mut out, current);
+    out
+}
+
+/// Keeps a candidate when it could plausibly name code: a path-like token,
+/// or an identifier long enough and shaped enough to be worth boosting.
+fn push_mention(out: &mut Vec<String>, word: String) {
+    let looks_pathy = word.contains('.') || word.contains('/');
+    // §6.5's own ladder: snake, kebab or camel case.
+    let shaped = word.contains('_')
+        || word.contains('-')
+        || (word.chars().any(|c| c.is_ascii_uppercase())
+            && word.chars().any(|c| c.is_ascii_lowercase()));
+    let worth_it = looks_pathy || (word.len() >= 4 && shaped);
+    if worth_it && !out.contains(&word) {
+        out.push(word);
+    }
+}
+
+/// Execute `map_refresh()` — re-render the repo map.
+///
+/// Session chat-files (the ledger read-set) steer ranking but never render
+/// (§6.5 step 5); `mentions` carries the §6.5 steps 3–4 user-mention boosts,
+/// which no production caller used to supply.
+pub(crate) fn refresh(
+    map: &mut RepoMap,
+    chat_files: &[String],
+    mentions: &[String],
+) -> ToolOutcome {
+    // A mention that names a file steers personalization; the same token
+    // also steers edge weight as an identifier, so both lists get it.
+    let rendered = map.render_map(chat_files, None, mentions, mentions);
     if rendered.is_empty() {
         return ToolOutcome::ok(EMPTY_MAP);
     }
@@ -84,7 +139,7 @@ pub(crate) fn drill(root: &Path, input: &Value) -> ToolOutcome {
         Ok(raw) => raw,
         Err(outcome) => return outcome,
     };
-    let rel = match safe_rel(raw) {
+    let rel = match safe_rel_in(root, raw) {
         Ok(rel) => rel,
         Err(outcome) => return outcome,
     };

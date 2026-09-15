@@ -74,7 +74,7 @@ cp rusta.toml.example rusta.toml   # edit [backend] base_url + [validate] comman
 
 ./target/release/rusta            # interactive REPL — /help lists commands
 ./target/release/rusta -c "fix the failing test in src/lib.rs"   # one shot, then exit
-cargo build --release --features embedded   # rusta-full: in-process llama.cpp
+cargo build --release --features embedded   # same `rusta` binary, with in-process llama.cpp
 ```
 
 The REPL runs the full loop: model turns stream live, tool calls and
@@ -106,6 +106,30 @@ Two backends (plan §6.2), selected at runtime in `rusta.toml` or via `--backend
   including `/v1`.
 - **Embedded** (opt-in): in-process llama.cpp via `cargo build --features embedded`.
   Needs cmake and a C++ toolchain; the default artifact stays cmake-free.
+
+## Testing the embedded backend against a real GGUF
+
+The embedded backend's end-to-end tests are `#[ignore]`d because they need a
+model file. Point `RUSTA_TEST_GGUF` at one and run them explicitly:
+
+```sh
+export RUSTA_TEST_GGUF=~/models/qwen3-coder-30b-a3b-q4_k_m.gguf
+cargo test -p rusta-llm --features embedded -- --ignored --nocapture
+```
+
+Three tests run: GGUF load with exact token counts, a non-streaming
+`complete()`, and a streamed completion with deltas and a finish reason. The
+matrix worth covering before trusting a new model or quantization:
+
+| Axis | Values to try |
+| ---- | ------------- |
+| Quantization | `q4_k_m` (the default target), `q5_k_m`, `q8_0` |
+| Context | the GGUF's trained size, and a smaller `[backend.embedded] ctx_size` |
+| Offload | `gpu_layers = 0` (CPU) and `999` (all), if built with `embedded-cuda` |
+| Template | a GGUF carrying chat-template metadata, and one without (ChatML fallback) |
+
+`cargo build --release --features embedded-cuda` adds CUDA offload; it needs
+the CUDA toolkit as well as cmake.
 
 ## Choosing a model (plan §13)
 

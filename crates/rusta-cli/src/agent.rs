@@ -349,7 +349,16 @@ impl App {
         self.gate.reset();
         self.guard.start_task();
         let summary = request_summary(request);
-        let _ = self.session.record(Event::UserMessage {
+        // §6.9 batch boundary: one user request is one `/undo` unit. This
+        // is a scaffold fact, so it is journaled rather than inferred from
+        // whether a git commit happened to land.
+        // §6.5 steps 3–4: what the user named steers ranking. Nothing fed
+        // this before, so the mention half of the spec was unreachable.
+        self.tools
+            .set_mentions(rusta_tools::mentioned_identifiers(request));
+        self.last_request = request.to_owned();
+        self.journal(Event::BatchBoundary);
+        self.journal(Event::UserMessage {
             content: request.to_owned(),
         });
         self.history.push(Message::user(request));
@@ -376,7 +385,7 @@ impl App {
                 return; // aborted or failed — already reported, turn discarded
             };
 
-            let _ = self.session.record(Event::AssistantMessage {
+            self.journal(Event::AssistantMessage {
                 content: text.clone(),
             });
             self.history.push(Message::assistant(text.clone()));
@@ -496,7 +505,7 @@ impl App {
         let message = format!("{}{}", git::COMMIT_PREFIX, summary);
         let sha = git::commit_batch(&self.git, &paths, summary).await;
         if let Some(sha) = &sha {
-            let _ = self.session.record(Event::Commit {
+            self.journal(Event::Commit {
                 sha: sha.clone(),
                 message,
             });
@@ -531,7 +540,7 @@ impl App {
             .compressor
             .compress(std::mem::take(&mut self.history), reserved);
         if let Some(plan) = &compression.summary {
-            let _ = self.session.record(Event::Summary {
+            self.journal(Event::Summary {
                 covers_turns: plan.covers_turns,
                 text: plan.text.clone(),
             });
@@ -561,10 +570,19 @@ impl App {
             .map(|message| estimate_tokens(&message.content))
             .sum();
         if assembled > window {
+            // Tell the user *and* the model. A warning only the human sees
+            // leaves the model to wonder why its next observation is
+            // truncated, and over HTTP the backend may silently drop the
+            // left of the prompt — the system prompt with it.
             self.reporter.line(&format!(
                 "! context overflow: {assembled} estimated tokens against a {window}-token \
                  window. Drop files with /drop, or raise [model] context_window."
             ));
+            messages.push(Message::system(format!(
+                "CONTEXT OVERFLOW: this request is {assembled} estimated tokens against a \
+                 {window}-token window. Earlier material may be missing. Work from what is \
+                 here, narrow your reads, and do not assume you have seen the whole file."
+            )));
         }
         messages
     }
@@ -576,8 +594,15 @@ impl App {
         let mut rx = match self.tools.backend().stream(request).await {
             Ok(rx) => rx,
             Err(err) => {
-                self.reporter.line(&format!("backend error: {err}"));
-                self.fire(PhaseEvent::UserInterrupt);
+                // A transport failure is not a user decision. Firing
+                // `UserInterrupt` journaled `reason: "user interrupt"` for a
+                // dropped connection and regressed Planning/Editing →
+                // Exploring, discarding an approved plan the user still
+                // wants. The turn is abandoned; the phase is left alone so a
+                // retry resumes where it was.
+                self.reporter.line(&format!(
+                    "backend error: {err} — turn abandoned, phase kept"
+                ));
                 return None;
             }
         };
@@ -610,8 +635,11 @@ impl App {
                     }
                     Some(StreamEvent::Finish(_)) => break,
                     Some(StreamEvent::Failed(cause)) => {
-                        self.reporter.line(&format!("\nstream failed: {cause}"));
-                        self.fire(PhaseEvent::UserInterrupt);
+                        // As above: mid-stream transport loss is not a user
+                        // interrupt, and must not discard plan state.
+                        self.reporter.line(&format!(
+                            "\nstream failed: {cause} — turn abandoned, phase kept"
+                        ));
                         return None;
                     }
                     None => break, // channel closed; keep what streamed
@@ -629,7 +657,7 @@ impl App {
     async fn exec_call(&mut self, name: &str, input: &Value) {
         let trip = self.guard.observe_tool_call(name, input);
         self.handle_trip(trip);
-        let _ = self.session.record(Event::ToolCall {
+        self.journal(Event::ToolCall {
             name: name.to_owned(),
             input: input.clone(),
         });
@@ -640,16 +668,28 @@ impl App {
             "error"
         };
         self.reporter.line(&format!("* {name} ({flag})"));
-        let _ = self.session.record(Event::ToolResult {
+        self.journal(Event::ToolResult {
             status: outcome.status,
             summary: outcome.content.clone(),
             truncated: outcome.truncated,
         });
-        // §6.10 audit: successful dispatch results also become `Dispatch`
-        // events, split back out of the labeled-render observation.
-        if name == "dispatch" && outcome.status == Status::Ok {
-            for (label, report) in split_labeled(&outcome.content) {
-                let _ = self.session.record(Event::Dispatch { label, report });
+        // §6.8/§6.10 audit: a dispatch also journals one `Dispatch` event per
+        // sub-coder, carrying its full transcript. The registry hands these
+        // over beside the observation — the transcripts must reach the
+        // session log and must never reach main context, so they are taken
+        // from the side channel rather than parsed back out of the rendered
+        // reports. Failed runs are journaled too: a research thread that
+        // produced nothing is exactly what an audit trail should record.
+        if name == "dispatch" {
+            for (label, report, transcript) in self.tools.take_dispatch_log() {
+                self.journal(Event::Dispatch {
+                    label,
+                    report,
+                    transcript: transcript
+                        .into_iter()
+                        .map(|(role, content)| rusta_core::TranscriptLine { role, content })
+                        .collect(),
+                });
             }
         }
         self.history.push(outcome.observation(name));
@@ -756,7 +796,7 @@ impl App {
             }
         };
         for report in &outcome.reports {
-            let _ = self.session.record(report.session_event());
+            self.journal(report.session_event());
             let trip = self
                 .guard
                 .observe_validation(&report.command, &report.output);
@@ -831,11 +871,29 @@ impl App {
     /// Pushes a synthetic observation into history + session (recorded as a
     /// `ToolCall`/`ToolResult` pair so `/resume` replays it verbatim, §6.10).
     pub(crate) fn push_observation(&mut self, name: &str, content: &str, status: Status) {
-        let _ = self.session.record(Event::ToolCall {
+        self.push_observation_with_input(
+            name,
+            Value::Object(serde_json::Map::new()),
+            content,
+            status,
+        );
+    }
+
+    /// [`Self::push_observation`] with an explicit `ToolCall` input, for the
+    /// synthetic observations whose replay needs their arguments — `/add`
+    /// carries the paths it credited to the ledger.
+    pub(crate) fn push_observation_with_input(
+        &mut self,
+        name: &str,
+        input: Value,
+        content: &str,
+        status: Status,
+    ) {
+        self.journal(Event::ToolCall {
             name: name.to_owned(),
-            input: Value::Object(serde_json::Map::new()),
+            input,
         });
-        let _ = self.session.record(Event::ToolResult {
+        self.journal(Event::ToolResult {
             status,
             summary: content.to_owned(),
             truncated: false,
@@ -853,7 +911,7 @@ impl App {
     fn fire(&mut self, event: PhaseEvent) {
         match self.machine.fire(event) {
             Ok(Some(transition)) => {
-                let _ = self.session.record(Event::StateChange {
+                self.journal(Event::StateChange {
                     from: transition.from,
                     to: transition.to,
                     reason: transition.reason.to_owned(),
@@ -908,29 +966,6 @@ fn marker_for(applied: &AppliedBlock) -> &'static str {
     } else {
         ""
     }
-}
-
-/// Splits a labeled dispatch observation (§6.8 `SUB-CODER "label" REPORT:`)
-/// back into `(label, report)` pairs for the §6.10 `Dispatch` events.
-fn split_labeled(content: &str) -> Vec<(String, String)> {
-    const HEAD: &str = "SUB-CODER \"";
-    let mut out = Vec::new();
-    let mut rest = content;
-    while let Some(start) = rest.find(HEAD) {
-        let after = &rest[start + HEAD.len()..];
-        let Some(end) = after.find("\" REPORT:") else {
-            break;
-        };
-        let label = after[..end].to_owned();
-        let body_start = end + "\" REPORT:".len();
-        let body_and_tail = &after[body_start..];
-        let body_end = body_and_tail
-            .find("\nSUB-CODER \"")
-            .unwrap_or(body_and_tail.len());
-        out.push((label, body_and_tail[..body_end].trim().to_owned()));
-        rest = &body_and_tail[body_end..];
-    }
-    out
 }
 
 #[cfg(test)]
@@ -1007,24 +1042,6 @@ mod tests {
         let summary = request_summary(&long);
         assert!(summary.chars().count() <= 72, "{}", summary.chars().count());
         assert!(summary.ends_with('…'));
-    }
-
-    #[test]
-    fn labeled_reports_split_back_into_dispatch_events() {
-        let content = "SUB-CODER \"auth\" REPORT:\nlogin lives in src/auth.rs:12\n\n\
-                       SUB-CODER \"db\" REPORT:\nmigrations live in db/";
-        let split = split_labeled(content);
-        assert_eq!(
-            split,
-            vec![
-                (
-                    "auth".to_owned(),
-                    "login lives in src/auth.rs:12".to_owned()
-                ),
-                ("db".to_owned(), "migrations live in db/".to_owned()),
-            ]
-        );
-        assert!(split_labeled("no reports here").is_empty());
     }
 }
 

@@ -19,9 +19,11 @@ pub(crate) const MAX_FILE_BYTES: u64 = 1024 * 1024;
 /// Sorted, repo-relative file paths under `root`, skipping `.git`,
 /// `target`, `node_modules` and `dist`.
 ///
-/// Shared with the CLI's `/add` and `/drop` (§6.9): one walker, one ignore
-/// set, so the model's `glob` and the user's `/add` can never disagree
-/// about what is in the repo.
+/// Shared with the CLI's `/add` and `/drop` (§6.9): one walker and one
+/// ignore set, so the two agree about what the repo *contains*. They
+/// deliberately differ on how a pattern is read — `glob` normalizes a
+/// slash-free pattern to `**/pattern`, `/add` keeps shell/Aider path
+/// semantics — which is documented at `walk_matching` in `commands.rs`.
 pub fn walk(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     walk_dir(root, root, &mut out);
@@ -108,11 +110,16 @@ pub(crate) fn grep(root: &Path, input: &Value) -> ToolOutcome {
         let rel = display(&rel);
         for (index, line) in text.lines().enumerate() {
             if regex.is_match(line) {
-                matches.push(format!(
-                    "{rel}:{}: {}",
-                    index + 1,
-                    clip_chars(line, caps::LINE_CHARS)
-                ));
+                // §6.1: a cap that truncated must say so. A silently
+                // clipped line reads as a complete one, and a model
+                // composing a SEARCH block from it would be wrong.
+                let clipped = clip_chars(line, caps::LINE_CHARS);
+                let marker = if clipped.len() < line.len() {
+                    " […]"
+                } else {
+                    ""
+                };
+                matches.push(format!("{rel}:{}: {clipped}{marker}", index + 1));
                 if matches.len() >= caps::GREP_MATCHES {
                     truncated = true;
                     break 'search;

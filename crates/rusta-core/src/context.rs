@@ -41,8 +41,12 @@ pub const MAX_INJECTED_CARDS: usize = 2;
 /// Turns kept verbatim by history compression (§6.6).
 pub const KEEP_TURNS: usize = 3;
 /// Compression trips when the assembled prompt exceeds this fraction of the
-/// context window (§6.6).
-pub const CONTEXT_WINDOW_FRACTION: f64 = 0.6;
+/// context window (§6.6), expressed as `numerator / denominator`.
+///
+/// Integer, not `0.6`: the threshold must round identically on every build,
+/// and a `f64` constant sitting beside the live `window * 3 / 5` was an
+/// edit-one-not-the-other trap — it was referenced only by a doc comment.
+pub const CONTEXT_WINDOW_FRACTION: (u64, u64) = (3, 5);
 /// Total token budget for active loop-mitigation capsules (§6.6).
 pub const CAPSULE_TOKEN_BUDGET: u64 = 180;
 /// At most this many capsules may be active at once (§6.6).
@@ -540,7 +544,7 @@ impl Compressor {
     /// the window (§6.6), computed in integer math — `0.6` is not exact in
     /// binary, and budgets must round consistently.
     pub fn history_budget(&self) -> u64 {
-        self.window_tokens * 3 / 5
+        self.window_tokens * CONTEXT_WINDOW_FRACTION.0 / CONTEXT_WINDOW_FRACTION.1
     }
 
     /// Estimated history tokens plus `reserved` (core prompt, cards, notes)

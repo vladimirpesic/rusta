@@ -42,9 +42,11 @@ pub(crate) enum Mutation<'a> {
 /// write paths"; there were four, and the uncounted one — restoring from the
 /// undo journal — carried a delete as well as a write, reachable by `/undo`
 /// on a resumed session whose log named absolute paths. Hand-enumeration has
-/// now failed twice, so `tests/write_paths.rs` scans this file for raw
-/// mutation calls and fails when one appears outside this function. A new
-/// write path cannot be added unfenced without turning that test red.
+/// now failed twice, so `tests/write_paths.rs` scans this crate's production
+/// source for raw mutation calls and fails when one appears outside this
+/// function. That guard is only as good as its primitive list — it once
+/// covered four and missed five — so it now asserts its own proof of life
+/// and is itself tested by injecting the calls it must catch.
 pub(crate) fn guarded(root: &Path, rel: &Path, what: Mutation<'_>) -> io::Result<()> {
     if !crate::ledger::contains_path(root, rel) {
         return Err(io::Error::new(

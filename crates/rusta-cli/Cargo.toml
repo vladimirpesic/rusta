@@ -16,7 +16,7 @@ name = "rusta"
 path = "src/main.rs"
 
 [features]
-# The `rusta-full` artifact (plan §13): compiles the in-process llama.cpp
+# The embedded build (plan §13): the same `rusta` binary, compiling in-process llama.cpp
 # backend so `[backend] kind = "embedded"` is selectable at runtime. The
 # dispatch feature forwards the same flag (its `BackendKind::Embedded`
 # scheduling arm is feature-gated to keep the default graph lean).

@@ -299,3 +299,184 @@ fn a_tool_fence_after_a_shell_fence_is_a_call_by_design() {
         "the fence after the closed bash block is a call"
     );
 }
+
+// ------------------------------------- 2026-09-15 consolidated-audit findings
+
+/// A3(a): a batch must never claim more entries than the journal holds for
+/// it. Replay drops workspace-escaping paths; counting them here made
+/// `/undo`'s `for _ in 0..batch.entries` loop walk past the batch boundary
+/// and revert a previous, unrelated commit.
+///
+/// A3(b): batch boundaries come from a journaled `BatchBoundary`, not from
+/// whether a git commit happened to land — in no-git mode consecutive
+/// requests used to merge into one batch.
+#[tokio::test]
+async fn undo_batches_survive_resume_without_over_consuming() {
+    use rusta_core::{Event, Session};
+
+    let repo = tempfile::TempDir::new().expect("repo");
+    let outside = tempfile::TempDir::new().expect("outside");
+    std::fs::write(repo.path().join("x.txt"), "X_NEW\n").expect("seed");
+    std::fs::write(repo.path().join("y.txt"), "Y_NEW\n").expect("seed");
+    let log = repo.path().join("s.jsonl");
+    {
+        let mut session = Session::open(&log).expect("open");
+        // Request 1 — one in-repo edit, no commit at all (the no-git path).
+        session.record(Event::BatchBoundary).expect("boundary");
+        session
+            .record_edit("x.txt", true, "X_OLD\n", "X_NEW\n")
+            .expect("edit");
+        // Request 2 — an escaping edit (replay drops it) plus an in-repo one.
+        session.record(Event::BatchBoundary).expect("boundary");
+        session
+            .record_edit(
+                outside.path().join("v.txt").to_str().expect("utf8"),
+                true,
+                "V\n",
+                "V2\n",
+            )
+            .expect("edit");
+        session
+            .record_edit("y.txt", true, "Y_OLD\n", "Y_NEW\n")
+            .expect("edit");
+    }
+
+    let capture = Capture::default();
+    let mut app = App::new(
+        Config::default(),
+        &Overrides::default(),
+        repo.path().to_path_buf(),
+        log,
+        Reporter::new(Box::new(capture.clone())),
+        Mode::Repl,
+    )
+    .expect("app");
+
+    assert_eq!(
+        app.batches.iter().map(|b| b.entries).collect::<Vec<_>>(),
+        vec![1, 1],
+        "two requests, one journal entry each after the escaping edit is dropped"
+    );
+    assert_eq!(app.tools.editor().undo_stack().len(), 2);
+
+    app.handle_line("/undo").await;
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("y.txt")).expect("read"),
+        "Y_OLD\n",
+        "the last batch is reverted"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("x.txt")).expect("read"),
+        "X_NEW\n",
+        "the previous batch must NOT be touched"
+    );
+}
+
+/// A3(c): `/undo` journals a tombstone, so replay cannot resurrect entries
+/// for edits that were already undone. Without it: apply A→B, undo to A,
+/// edit A→C, restart — and the next `/undo` wrote B over C, silently
+/// rewinding the tree to content the user had rejected.
+#[tokio::test]
+async fn a_resumed_session_does_not_resurrect_undone_edits() {
+    use rusta_core::{Event, Session};
+
+    let repo = tempfile::TempDir::new().expect("repo");
+    let file = repo.path().join("f.txt");
+    let log = repo.path().join("s.jsonl");
+    {
+        let mut session = Session::open(&log).expect("open");
+        session.record(Event::BatchBoundary).expect("boundary");
+        session
+            .record_edit("f.txt", true, "A\n", "B\n")
+            .expect("edit");
+        // …the user undid it, which is now journaled.
+        session
+            .record(Event::UndoApplied { entries: 1 })
+            .expect("undo");
+        // …then edited by hand to C.
+    }
+    std::fs::write(&file, "C\n").expect("user edit");
+
+    let capture = Capture::default();
+    let mut app = App::new(
+        Config::default(),
+        &Overrides::default(),
+        repo.path().to_path_buf(),
+        log,
+        Reporter::new(Box::new(capture.clone())),
+        Mode::Repl,
+    )
+    .expect("app");
+
+    assert_eq!(
+        app.tools.editor().undo_stack().len(),
+        0,
+        "the undone entry must not be resurrected"
+    );
+    assert!(app.batches.is_empty(), "nor its batch");
+
+    app.handle_line("/undo").await;
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("read"),
+        "C\n",
+        "the user's own content must survive"
+    );
+    assert!(
+        capture.text().contains("nothing to undo"),
+        "{}",
+        capture.text()
+    );
+}
+
+/// A14: `/add`'s chat-set must survive `/resume`. Replay credits the ledger
+/// only from `read`/`map_drill` results, and `/add` journalled under a name
+/// replay ignored — so the set silently vanished across a restart while the
+/// model's note about it replayed regardless.
+#[tokio::test]
+async fn the_add_chat_set_survives_a_resume() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("src")).expect("dirs");
+    std::fs::write(dir.path().join("src/a.rs"), "// a\n").expect("write");
+    std::fs::write(dir.path().join("src/b.rs"), "// b\n").expect("write");
+    let log = dir.path().join("s.jsonl");
+
+    {
+        let capture = Capture::default();
+        let mut app = App::new(
+            Config::default(),
+            &Overrides::default(),
+            dir.path().to_path_buf(),
+            log.clone(),
+            Reporter::new(Box::new(capture.clone())),
+            Mode::Repl,
+        )
+        .expect("app");
+        app.handle_line("/add src").await;
+        assert_eq!(app.tools.editor().ledger().len(), 2);
+    }
+
+    // A fresh process over the same log.
+    let capture = Capture::default();
+    let resumed = App::new(
+        Config::default(),
+        &Overrides::default(),
+        dir.path().to_path_buf(),
+        log,
+        Reporter::new(Box::new(capture.clone())),
+        Mode::Repl,
+    )
+    .expect("resume");
+
+    let ledger = resumed.tools.editor();
+    assert_eq!(
+        ledger.ledger().len(),
+        2,
+        "the /add chat-set must survive the restart"
+    );
+    for path in ["src/a.rs", "src/b.rs"] {
+        assert!(
+            ledger.ledger().has_read(std::path::Path::new(path)),
+            "{path} missing from the resumed chat-set"
+        );
+    }
+}

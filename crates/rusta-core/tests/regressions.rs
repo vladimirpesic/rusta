@@ -412,3 +412,200 @@ fn the_clip_loop_always_terminates() {
     assert_eq!(out.messages.len(), 6, "clipping never drops messages");
     assert!(out.summary.is_none());
 }
+
+// ------------------------------------- 2026-09-15 consolidated-audit findings
+
+/// A2: a torn tail must be *repaired* on open, not merely tolerated on read.
+///
+/// `record` appends through `O_APPEND`, so without repair the next write
+/// fuses its JSON onto the unterminated remnant. One append is survivable;
+/// the second puts that fused line mid-file and the session refuses to open
+/// for the rest of the repo-day — the exact failure the torn-write erratum
+/// eliminated, re-created by the read-side-only fix for it.
+#[test]
+fn a_torn_tail_is_repaired_so_later_appends_stay_parseable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("s.jsonl");
+    std::fs::write(
+        &path,
+        "{\"type\":\"user_message\",\"content\":\"hi\"}\n{\"type\":\"assistant_message\",\"cont",
+    )
+    .expect("write");
+
+    {
+        let mut session = Session::open(&path).expect("torn tail must open");
+        assert_eq!(session.events().len(), 1, "the partial event is dropped");
+        session
+            .record(Event::UserMessage {
+                content: "second request".to_owned(),
+            })
+            .expect("append 1");
+        session.record(Event::SessionEnd).expect("append 2");
+    }
+
+    // The remnant is gone, so both appends are their own lines.
+    let raw = std::fs::read_to_string(&path).expect("read");
+    assert!(
+        !raw.contains("\"cont{"),
+        "the torn remnant was fused to a later event: {raw}"
+    );
+
+    let session = Session::open(&path).expect("reopen must not be corrupt");
+    assert_eq!(
+        session.events().len(),
+        3,
+        "the surviving event plus both appends: {:?}",
+        session.events()
+    );
+}
+
+/// A2 control: corruption anywhere *other* than the tail is still fatal —
+/// the events after it would replay against the wrong state, so the log must
+/// not be silently truncated at the first bad line.
+#[test]
+fn mid_file_corruption_is_still_rejected_loudly() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("s.jsonl");
+    std::fs::write(
+        &path,
+        "{\"type\":\"user_message\",\"content\":\"a\"}\nnot json at all\n{\"type\":\"session_end\"}\n",
+    )
+    .expect("write");
+
+    let before = std::fs::read_to_string(&path).expect("read");
+    let error = Session::open(&path).expect_err("mid-file corruption is fatal");
+    assert!(error.to_string().contains("line 2"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read"),
+        before,
+        "a mid-file corrupt log must not be truncated"
+    );
+}
+
+/// A2: the diffs sidecar gets the same repair. Its records carry whole file
+/// contents, so a torn write there is likelier than in the log.
+#[test]
+fn a_torn_sidecar_tail_is_repaired_too() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("s.jsonl");
+    {
+        let mut session = Session::open(&path).expect("open");
+        session
+            .record_edit("a.rs", true, "before\n", "after\n")
+            .expect("edit");
+    }
+    let sidecar = path.with_extension("diffs.jsonl");
+    let mut text = std::fs::read_to_string(&sidecar).expect("read");
+    text.push_str("{\"hash\":123,\"cont");
+    std::fs::write(&sidecar, text).expect("write");
+
+    {
+        let mut session = Session::open(&path).expect("open");
+        session
+            .record_edit("b.rs", true, "x\n", "y\n")
+            .expect("append after the torn sidecar tail");
+    }
+    let replayed = Session::open(&path)
+        .expect("reopen")
+        .replay_context()
+        .expect("sidecar must still be in lockstep");
+    assert_eq!(replayed.undo.pending().len(), 2);
+    assert_eq!(replayed.undo.pending()[1].before, "x\n");
+}
+
+/// A6: §6.8 says "the full sub-transcript goes to the session log only".
+/// `Report.transcript` was built and documented as session-log material,
+/// but the §6.10 schema had nowhere to put it and no code path wrote it —
+/// so it was dropped. The event now carries it, and old logs without the
+/// field still replay.
+#[test]
+fn dispatch_events_carry_the_sub_transcript() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("s.jsonl");
+    {
+        let mut session = Session::open(&path).expect("open");
+        session
+            .record(Event::Dispatch {
+                label: "auth".to_owned(),
+                report: "login lives in src/auth.rs:12".to_owned(),
+                transcript: vec![
+                    rusta_core::TranscriptLine {
+                        role: "user".to_owned(),
+                        content: "where is login handled?".to_owned(),
+                    },
+                    rusta_core::TranscriptLine {
+                        role: "assistant".to_owned(),
+                        content: "login lives in src/auth.rs:12".to_owned(),
+                    },
+                ],
+            })
+            .expect("record");
+    }
+    let session = Session::open(&path).expect("reopen");
+    let Some(Event::Dispatch { transcript, .. }) = session.events().first() else {
+        panic!("expected a Dispatch event, got {:?}", session.events());
+    };
+    assert_eq!(
+        transcript.len(),
+        2,
+        "the transcript must survive the round trip"
+    );
+    assert_eq!(transcript[1].content, "login lives in src/auth.rs:12");
+}
+
+/// A6 corollary: a log written before the field existed still opens.
+#[test]
+fn a_dispatch_event_without_a_transcript_still_replays() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("s.jsonl");
+    std::fs::write(
+        &path,
+        "{\"type\":\"dispatch\",\"label\":\"a\",\"report\":\"findings\"}\n",
+    )
+    .expect("write");
+    let session = Session::open(&path).expect("an older log must still open");
+    assert_eq!(session.events().len(), 1);
+}
+
+/// A7: the report already replays inside the `dispatch` ToolResult
+/// observation. Replaying the `Dispatch` event as a second user message
+/// duplicated every report in a resumed context, breaking the byte-for-byte
+/// replay fidelity §6.10 exists to provide.
+#[test]
+fn a_resumed_dispatch_report_appears_exactly_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("s.jsonl");
+    {
+        let mut session = Session::open(&path).expect("open");
+        session
+            .record(Event::ToolCall {
+                name: "dispatch".to_owned(),
+                input: serde_json::json!({}),
+            })
+            .expect("call");
+        session
+            .record(Event::ToolResult {
+                status: Status::Ok,
+                summary: "SUB-CODER \"a\" REPORT:\nfindings".to_owned(),
+                truncated: false,
+            })
+            .expect("result");
+        session
+            .record(Event::Dispatch {
+                label: "a".to_owned(),
+                report: "findings".to_owned(),
+                transcript: Vec::new(),
+            })
+            .expect("dispatch");
+    }
+    let replayed = Session::open(&path)
+        .expect("reopen")
+        .replay_context()
+        .expect("replay");
+    let mentions = replayed
+        .messages
+        .iter()
+        .filter(|message| message.content.contains("SUB-CODER \"a\" REPORT:"))
+        .count();
+    assert_eq!(mentions, 1, "the report must replay once, not twice");
+}

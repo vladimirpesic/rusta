@@ -114,9 +114,45 @@ pub enum Event {
         label: String,
         /// The ≤400-token labeled report.
         report: String,
+        /// The full sub-transcript (§6.8: "goes to the session log only —
+        /// never main context"). Carried here because the schema previously
+        /// had nowhere to put it, so the clause was doc-only: the field was
+        /// built, documented as session-log material, and dropped. Defaults
+        /// to empty so logs written before this event shape still replay.
+        #[serde(default)]
+        transcript: Vec<TranscriptLine>,
+    },
+    /// A user request began — the boundary that separates one `/undo` batch
+    /// from the next (§6.9).
+    ///
+    /// Batch boundaries used to be inferred from `Commit` events, so in
+    /// no-git mode, or after a failed commit, consecutive batches from
+    /// *separate* requests merged into one and a single `/undo` popped all of
+    /// them. A boundary is a scaffold fact, not a git fact.
+    BatchBoundary,
+    /// An applied edit batch was undone (§6.9 `/undo`).
+    ///
+    /// `/undo` used to journal nothing, so replay resurrected entries for
+    /// edits already undone: apply A→B, undo to A, edit A→C, restart, and the
+    /// next `/undo` wrote B over C — silently rewinding the working tree to
+    /// content the user had rejected. Replay honours this as a tombstone.
+    UndoApplied {
+        /// How many journal entries the undo consumed.
+        entries: usize,
     },
     /// Session closed cleanly.
     SessionEnd,
+}
+
+/// One message of a sub-coder transcript, flattened for the session log
+/// (§6.8). Deliberately not `rusta_llm::Message`: the log is a durable wire
+/// format and must not move whenever that type does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptLine {
+    /// `system`, `user` or `assistant`.
+    pub role: String,
+    /// The message text.
+    pub content: String,
 }
 
 /// One sidecar record: full file content keyed by its FNV-1a hash (plan
@@ -205,6 +241,16 @@ impl Session {
         let path = path.into();
         let file =
             owner_only(OpenOptions::new().create(true).append(true).read(true)).open(&path)?;
+        // A log created before the 0600 guard — or under a looser umask —
+        // keeps its permissions for the life of the file, and sessions are
+        // auto-resumed per repo per day, so those are exactly the logs still
+        // in use. `OpenOptions::mode` only applies at creation.
+        restrict_existing(&path);
+        // Repair a torn tail before anything appends to it (see
+        // `repair_torn_tail`): tolerating it on read is not enough.
+        let sidecar_path = path.with_extension("diffs.jsonl");
+        repair_torn_tail::<Event>(&path)?;
+        repair_torn_tail::<DiffRecord>(&sidecar_path)?;
         let events = replay(&path)?;
         Ok(Self {
             path,
@@ -297,14 +343,21 @@ impl Session {
         let mut undo_entries: Vec<UndoEntry> = Vec::new();
         let mut phase = State::Exploring;
         let mut skipped_edits: Vec<String> = Vec::new();
-        let mut pending_call: Option<(String, Option<String>)> = None;
+        let mut pending_call: Option<(String, Option<String>, Vec<String>)> = None;
 
         for event in &self.events {
             match event {
                 Event::SessionStart { .. }
                 | Event::ValidationRun { .. }
                 | Event::Commit { .. }
+                | Event::BatchBoundary
                 | Event::SessionEnd => {}
+                // §6.9 `/undo` tombstone: the entries it consumed are gone
+                // from the working tree, so replay must not resurrect them.
+                Event::UndoApplied { entries } => {
+                    let keep = undo_entries.len().saturating_sub(*entries);
+                    undo_entries.truncate(keep);
+                }
                 Event::UserMessage { content } => messages.push(Message::user(content.clone())),
                 Event::AssistantMessage { content } => {
                     messages.push(Message::assistant(content.clone()));
@@ -318,7 +371,19 @@ impl Session {
                         .get("path")
                         .and_then(|value| value.as_str())
                         .map(str::to_owned);
-                    pending_call = Some((name.clone(), path));
+                    // `/add` credits many files at once, so it carries a
+                    // `paths` array rather than a single `path`.
+                    let paths: Vec<String> = input
+                        .get("paths")
+                        .and_then(|value| value.as_array())
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|item| item.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    pending_call = Some((name.clone(), path, paths));
                 }
                 Event::ToolResult {
                     status,
@@ -328,9 +393,19 @@ impl Session {
                     // An orphan result (torn log) is skipped; a dangling
                     // call without a result never entered the live context
                     // as an observation either.
-                    if let Some((name, path)) = pending_call.take() {
-                        if *status == Status::Ok && matches!(name.as_str(), "read" | "map_drill") {
+                    if let Some((name, path, paths)) = pending_call.take() {
+                        // `/add` credits the ledger directly and journals
+                        // its observation under this name, so replay must
+                        // honour it too — otherwise the chat-set silently
+                        // vanished across a restart while the model was
+                        // still told about it.
+                        if *status == Status::Ok
+                            && matches!(name.as_str(), "read" | "map_drill" | "add")
+                        {
                             if let Some(path) = &path {
+                                ledger.record_read(Path::new(path));
+                            }
+                            for path in &paths {
                                 ledger.record_read(Path::new(path));
                             }
                         }
@@ -392,11 +467,13 @@ impl Session {
                     // byte-for-byte, keepers included.
                     crate::context::Compressor::apply_summary(&mut messages, *covers_turns, text);
                 }
-                Event::Dispatch { label, report } => {
-                    messages.push(Message::user(format!(
-                        "SUB-CODER \"{label}\" REPORT:\n{report}"
-                    )));
-                }
+                // The report already replayed inside the `dispatch`
+                // ToolResult observation above. Replaying it again here
+                // duplicated every report in a resumed context, breaking the
+                // byte-for-byte replay fidelity §6.10 exists to provide.
+                // These events remain the §6.10 audit record of what each
+                // sub-coder returned; they are not a second message source.
+                Event::Dispatch { .. } => {}
             }
         }
         Ok(Reconstructed {
@@ -501,6 +578,50 @@ fn load_sidecar(path: &Path) -> Result<Vec<DiffRecord>, Error> {
 /// `~/.rusta/sessions/<slug>-<UTC date>.jsonl`: failing the whole log for a
 /// half-written tail made `rusta` refuse to start in that repo until the date
 /// rolled over.
+/// Truncates `path` to the end of its last complete, parseable line,
+/// returning the number of bytes discarded.
+///
+/// Forgiving a torn tail on *read* is not enough, and on its own is unsafe.
+/// `record` appends through `O_APPEND`, so the next write fuses its JSON onto
+/// the unterminated remnant. One such append is survivable — the fused line
+/// is still last, so the read-side forgiveness covers it and exactly one
+/// event is silently lost. The **second** append puts that fused line
+/// mid-file, where forgiveness correctly does not apply, and the session
+/// refuses to open for the rest of the repo-day: precisely the failure the
+/// torn-write erratum was written to eliminate, re-created by the fix for it.
+/// Repairing on open is what makes the forgiveness safe.
+///
+/// Only a torn *tail* is removed. A line that fails to parse anywhere else is
+/// left untouched for [`replay`] to reject loudly, because the events after
+/// it would replay against the wrong state.
+fn repair_torn_tail<T: serde::de::DeserializeOwned>(path: &Path) -> Result<u64, Error> {
+    let Ok(file) = File::open(path) else {
+        return Ok(0); // nothing written yet
+    };
+    let total = file.metadata()?.len();
+    let lines: Vec<String> = BufReader::new(file).lines().collect::<Result<_, _>>()?;
+    let Some(bad) = lines
+        .iter()
+        .position(|line| !line.trim().is_empty() && serde_json::from_str::<T>(line).is_err())
+    else {
+        return Ok(0); // every line parses
+    };
+    // Only a torn *tail* is repairable. If anything follows the bad line, the
+    // damage is mid-file: leave the bytes alone so `replay` rejects it loudly
+    // rather than silently discarding the events after it.
+    if bad + 1 != lines.len() {
+        return Ok(0);
+    }
+    // Byte offset just past the last line that parsed. Every line is written
+    // by `writeln!`, so each consumed line is exactly `len + 1` bytes.
+    let valid: u64 = lines[..bad].iter().map(|l| l.len() as u64 + 1).sum();
+    if valid >= total {
+        return Ok(0);
+    }
+    OpenOptions::new().write(true).open(path)?.set_len(valid)?;
+    Ok(total - valid)
+}
+
 fn replay(path: &Path) -> Result<Vec<Event>, Error> {
     let file = File::open(path)?;
     let lines: Vec<String> = BufReader::new(file).lines().collect::<Result<_, _>>()?;

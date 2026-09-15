@@ -48,6 +48,11 @@ const PIECES: &[&str] = &[
     ">>>> REPLACE",
     ">>>>>>>",
     "src/main.rs",
+    // CRLF, which the doc claimed and the alphabet did not carry — so the
+    // "block text is LF-only" invariant was vacuous for generated input.
+    "old line\r\nnew line",
+    "\r\n",
+    "trailing cr\r",
     "main.rs",
     "/etc/passwd",
     "/tmp/escape.txt",
@@ -96,12 +101,25 @@ fn parser_never_panics_on_arbitrary_input() {
     for iteration in 0..5_000 {
         let text = random_response(&mut rng);
         let parsed = parse_response(&text);
-        // Sanity invariant: everything lands in one of the three sinks and
-        // block text is LF-only (CRLF normalized).
-        for block in &parsed.blocks {
-            assert!(!block.original.contains('\r'), "iteration {iteration}");
-            assert!(!block.updated.contains('\r'), "iteration {iteration}");
-        }
+        // Determinism: the same input must parse to the same result. This
+        // is the invariant that actually holds over arbitrary input — and
+        // it is the one that matters, since the apply chain, the undo
+        // journal and session replay all assume a stable parse.
+        //
+        // Note on CRLF: the alphabet now carries `\r\n` (its doc claimed so
+        // for rounds while the pieces were LF-only, making the old "no `\r`
+        // in block text" assertion vacuous). That assertion cannot be
+        // restored even in a weakened form: a content CR immediately before
+        // a line break is textually identical to a CRLF ending, so
+        // `"x\r" + CRLF` correctly normalizes to `"x\r\n"` and any blanket
+        // CR check would fail on correct output. §6.3's CRLF contract is
+        // pinned where it is actually expressible — `crlf_is_normalized`,
+        // over realistic input.
+        let again = parse_response(&text);
+        assert_eq!(
+            parsed, again,
+            "iteration {iteration}: parse is not deterministic"
+        );
     }
 }
 

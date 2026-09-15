@@ -109,7 +109,16 @@ fn add(app: &mut App, pattern: &str) -> Control {
     if matched.len() > 20 {
         note.push_str(&format!(", … and {} more", matched.len() - 20));
     }
-    app.push_observation("session", &note, Status::Ok);
+    // Journaled as an `add` call carrying the credited paths, so `/resume`
+    // rebuilds the same chat-set (§6.10). Under the old `"session"` name
+    // replay credited nothing and the set vanished across a restart, while
+    // the model's note about it replayed regardless.
+    app.push_observation_with_input(
+        "add",
+        serde_json::json!({ "paths": matched }),
+        &note,
+        Status::Ok,
+    );
     app.reporter
         .line(&format!("added {} file(s):", matched.len()));
     for rel in matched.iter().take(20) {
@@ -190,6 +199,12 @@ fn undo(app: &mut App) -> Control {
             }
         }
     }
+    // §6.9: journal the undo so replay cannot resurrect what it removed.
+    // Recording the count actually restored (not `batch.entries`) keeps the
+    // tombstone true even when the journal ran short.
+    app.journal(rusta_core::Event::UndoApplied {
+        entries: restored.len(),
+    });
     app.reporter
         .line(&format!("restored {} file(s)", restored.len()));
     for path in &restored {
@@ -228,7 +243,12 @@ fn map(app: &mut App) -> Control {
             .map(|p| p.display().to_string())
             .collect()
     };
-    let rendered = app.tools.repomap().render_map(&chat, None, &[], &[]);
+    // The same §6.5 mention steering the model's `map_refresh` gets.
+    let mentions = rusta_tools::mentioned_identifiers(&app.last_request);
+    let rendered = app
+        .tools
+        .repomap()
+        .render_map(&chat, None, &mentions, &mentions);
     app.reporter.line(if rendered.is_empty() {
         rusta_tools::EMPTY_MAP
     } else {
@@ -330,19 +350,25 @@ fn skills(app: &mut App, arg: &str) -> Control {
         app.reporter.line("* = user-invocable via /skills <name>");
         return Control::Continue;
     }
-    let Some(card) = app.deck.invocable(arg) else {
+    // Take what the card owns before journaling: `journal` needs `&mut app`
+    // and the card borrows `app.deck`.
+    let Some((card_name, body)) = app.deck.invocable(arg).map(|card| {
+        (
+            card.name().to_owned(),
+            format!("SKILL CARD {}:\n{}", card.name(), card.body()),
+        )
+    }) else {
         app.reporter.line(&format!(
             "no user-invocable card named {arg:?} (see /skills for the deck)"
         ));
         return Control::Continue;
     };
-    let body = format!("SKILL CARD {}:\n{}", card.name(), card.body());
-    let _ = app.session.record(rusta_core::Event::UserMessage {
+    app.journal(rusta_core::Event::UserMessage {
         content: body.clone(),
     });
     app.history.push(rusta_llm::Message::user(body));
     app.reporter
-        .line(&format!("injected skill card {}", card.name()));
+        .line(&format!("injected skill card {card_name}"));
     Control::Continue
 }
 

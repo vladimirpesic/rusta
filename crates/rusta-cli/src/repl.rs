@@ -82,6 +82,13 @@ pub struct App {
     pub auto: Arc<AtomicBool>,
     /// Skill-card cues from the last turn (§6.6 JIT selection).
     pub card_cues: Vec<String>,
+    /// The most recent user request, for §6.5 mention-steered rendering.
+    pub last_request: String,
+    /// Whether a session-log write has already failed. Journaling is
+    /// best-effort by design — a failed append must never abort a turn — but
+    /// it was also *silent*, so a full disk stopped the audit trail with no
+    /// sign until `/resume` came back short. Reported once per session.
+    pub journal_broken: bool,
 }
 
 /// Builds the runtime backend from config + CLI overrides (§6.2: config or
@@ -165,6 +172,7 @@ impl App {
             config.shell.timeout_secs,
             &config.shell.allow,
             &config.shell.deny,
+            &config.shell.env,
         )
         .map_err(|e| format!("rusta.toml [shell]: {e}"))?;
         let mut tools = Tools::new(root.clone(), Arc::new(backend), shell)
@@ -213,11 +221,13 @@ impl App {
             plan_gate,
             auto,
             card_cues: Vec::new(),
+            last_request: String::new(),
+            journal_broken: false,
         };
         if fresh {
             let summary = app.config.summary();
             let backend_line = backend_description(&app.config, overrides);
-            let _ = app.session.record(Event::SessionStart {
+            app.journal(Event::SessionStart {
                 config: summary,
                 backend: backend_line,
             });
@@ -289,9 +299,27 @@ impl App {
         self.auto.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Appends one event to the session log, reporting the first failure.
+    ///
+    /// Journaling never aborts a turn: a broken log costs the audit trail and
+    /// `/resume` fidelity, not the user's work in progress. But it must not
+    /// be invisible, which is what discarding every `Result` made it.
+    pub(crate) fn journal(&mut self, event: rusta_core::Event) {
+        if let Err(err) = self.session.record(event) {
+            if !self.journal_broken {
+                self.journal_broken = true;
+                self.reporter.line(&format!(
+                    "! session log write failed: {err}. The session continues, but this run \
+                     will not fully /resume. Check disk space and permissions on {}.",
+                    self.session.path().display()
+                ));
+            }
+        }
+    }
+
     /// Records `SessionEnd` — the clean close of the log (§6.10).
     pub(crate) fn end_session(&mut self) {
-        let _ = self.session.record(Event::SessionEnd);
+        self.journal(Event::SessionEnd);
     }
 
     /// Dispatches one REPL line: a `/command` (§6.9) or a user request.
@@ -375,15 +403,29 @@ pub enum Control {
 /// commit; trailing edits without a commit form a final journal-only batch.
 fn rebuild_batches(events: &[Event]) -> Vec<Batch> {
     let mut batches: Vec<Batch> = Vec::new();
+    let mut open = false;
     for event in events {
         match event {
+            // A request boundary closes the current batch. Inferring
+            // boundaries from `Commit` merged consecutive batches whenever no
+            // commit landed — no-git mode, or a failed commit — so one
+            // `/undo` popped several requests' work.
+            Event::BatchBoundary => open = false,
             Event::EditApplied { path, .. } => {
-                if batches.is_empty() || batches.last().is_some_and(|b| b.sha.is_some()) {
+                // The same fence replay applies. Replay drops entries whose
+                // path escapes the workspace; counting them here made a batch
+                // claim more entries than the journal held, and `/undo` then
+                // walked past the batch boundary into the previous one.
+                if rusta_edit::confine(Path::new(path)).is_none() {
+                    continue;
+                }
+                if !open {
                     batches.push(Batch {
                         entries: 0,
                         paths: Vec::new(),
                         sha: None,
                     });
+                    open = true;
                 }
                 let batch = batches.last_mut().expect("non-empty by construction");
                 batch.entries += 1;
@@ -395,6 +437,12 @@ fn rebuild_batches(events: &[Event]) -> Vec<Batch> {
                 if let Some(batch) = batches.last_mut() {
                     batch.sha = Some(sha.clone());
                 }
+                open = false;
+            }
+            // `/undo`'s tombstone: the batches it consumed are gone.
+            Event::UndoApplied { .. } => {
+                batches.pop();
+                open = false;
             }
             _ => {}
         }

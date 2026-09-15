@@ -219,12 +219,12 @@ pub fn cap_report(text: &str) -> (String, bool) {
     if estimate_tokens(trimmed) <= REPORT_TOKEN_CAP {
         return (trimmed.to_owned(), false);
     }
-    let budget = REPORT_TOKEN_CAP as usize * 3; // chars per the §6.2 heuristic
+    // The marker costs tokens too. Taking a full cap's worth of text and
+    // *then* appending it shipped ~411-token reports against a 400 cap.
+    const MARKER: &str = "\n[report clipped at 400 tokens]";
+    let budget = (REPORT_TOKEN_CAP.saturating_sub(estimate_tokens(MARKER)) as usize) * 3;
     let head: String = trimmed.chars().take(budget).collect();
-    (
-        format!("{head}\n[report clipped at {REPORT_TOKEN_CAP} tokens]"),
-        true,
-    )
+    (format!("{head}{MARKER}"), true)
 }
 
 #[cfg(test)]
@@ -244,11 +244,19 @@ mod tests {
         let (report, truncated) = cap_report(&text);
         assert!(truncated);
         assert!(report.ends_with("[report clipped at 400 tokens]"));
+        // The cap governs what is *shipped*, marker included. Asserting the
+        // head alone let the marker's own tokens push shipped reports to
+        // ~411 against a 400 cap — the measurement excluded exactly the part
+        // the fix added.
+        assert!(
+            estimate_tokens(&report) <= REPORT_TOKEN_CAP,
+            "shipped report is {} tokens, over the {REPORT_TOKEN_CAP} cap",
+            estimate_tokens(&report)
+        );
         let head = report
             .strip_suffix("\n[report clipped at 400 tokens]")
             .unwrap();
-        assert_eq!(head.chars().count(), 400 * 3);
-        assert!(estimate_tokens(head) <= REPORT_TOKEN_CAP);
+        assert!(!head.is_empty(), "the clip must leave usable evidence");
     }
 
     #[test]

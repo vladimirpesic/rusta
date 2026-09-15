@@ -153,13 +153,29 @@ pub struct ShellPolicy {
     pub timeout: Duration,
     /// Command prefixes that skip the approval prompt (`[shell].allow`).
     pub allow: Vec<String>,
+    /// Environment variable names forwarded into the child on top of
+    /// `PATH`/`HOME`/`LANG` (`[shell].env`).
+    ///
+    /// §6.12 specifies "minimal environment (PATH, HOME, LANG + config
+    /// allow-list)" and the allow-list half had no implementation and no
+    /// config key — `[shell].allow` is command prefixes, a different thing
+    /// with a similar name. A validator needing `RUSTFLAGS`,
+    /// `CARGO_TARGET_DIR` or a proxy variable had no way to receive one.
+    /// Names only: the *value* still comes from the parent environment, so
+    /// this widens what is forwarded, never what is invented.
+    pub env: Vec<String>,
     /// Compiled deny rules with their reason + remedy.
     deny: Vec<(regex::Regex, &'static str, &'static str)>,
 }
 
 impl ShellPolicy {
     /// Compile defaults plus config extras (`[shell]`).
-    pub fn new(timeout_secs: u64, allow: &[String], extra_deny: &[String]) -> Result<Self, Error> {
+    pub fn new(
+        timeout_secs: u64,
+        allow: &[String],
+        extra_deny: &[String],
+        env: &[String],
+    ) -> Result<Self, Error> {
         let mut deny = Vec::with_capacity(DEFAULT_DENY.len() + extra_deny.len());
         for (pattern, reason, remedy) in DEFAULT_DENY {
             deny.push((compile(pattern)?, reason, remedy));
@@ -174,13 +190,18 @@ impl ShellPolicy {
         Ok(Self {
             timeout: Duration::from_secs(timeout_secs.max(1)),
             allow: allow.iter().map(|a| a.trim().to_owned()).collect(),
+            env: env
+                .iter()
+                .map(|name| name.trim().to_owned())
+                .filter(|name| !name.is_empty())
+                .collect(),
             deny,
         })
     }
 
     /// The plan defaults: 60 s timeout, empty allow/deny extensions.
     pub fn standard() -> Result<Self, Error> {
-        Self::new(60, &[], &[])
+        Self::new(60, &[], &[], &[])
     }
 
     /// The static gate: deny-list first (most dangerous), then interactive
@@ -295,7 +316,19 @@ async fn unix_execute(policy: &ShellPolicy, root: &Path, command: &str) -> ToolO
         .env(
             "LANG",
             std::env::var_os("LANG").unwrap_or_else(|| "C.UTF-8".into()),
-        )
+        );
+    // §6.12's config allow-list: named variables are forwarded from the
+    // parent environment when they are set. Never PATH/HOME/LANG again, and
+    // never a value from config — only a name to pass through.
+    for name in &policy.env {
+        if matches!(name.as_str(), "PATH" | "HOME" | "LANG") {
+            continue;
+        }
+        if let Some(value) = std::env::var_os(name) {
+            process.env(name, value);
+        }
+    }
+    process
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -436,8 +469,8 @@ mod tests {
 
     #[test]
     fn allow_prefixes_bypass_approval_at_word_boundaries() {
-        let policy =
-            ShellPolicy::new(60, &["cargo test".to_owned(), "ls".to_owned()], &[]).expect("policy");
+        let policy = ShellPolicy::new(60, &["cargo test".to_owned(), "ls".to_owned()], &[], &[])
+            .expect("policy");
         assert!(policy.approves_prefix("cargo test"));
         assert!(policy.approves_prefix("cargo test -- --nocapture"));
         assert!(!policy.approves_prefix("cargo testx"));
@@ -447,7 +480,7 @@ mod tests {
 
     #[test]
     fn invalid_deny_regex_is_a_config_error() {
-        let err = ShellPolicy::new(60, &[], &["[".to_owned()]).expect_err("invalid regex");
+        let err = ShellPolicy::new(60, &[], &["[".to_owned()], &[]).expect_err("invalid regex");
         assert!(err.to_string().contains("invalid deny regex"));
     }
 }

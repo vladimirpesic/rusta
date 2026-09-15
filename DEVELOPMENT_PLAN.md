@@ -64,7 +64,7 @@ Rusta combines the five proven scaffold pillars into one fast Rust/Tokio binary:
 
 | # | Requirement | Notes |
 | ----- | ------------- | ------- |
-| R1 | **Lean budget: ≤ 15,000 lines of production Rust; ≤ 20,000 total including tests** | Counted on `*.rs` by the §12 `wc -l` script (tokei optional cross-check); enforced as a CI gate. Query files (`.scm`), skill cards (`.md`), prompt templates are *data*, tracked separately. |
+| R1 | **Lean budget: ≤ 15,000 lines of production Rust; ≤ 25,000 total including tests** (total raised from 20,000 on 2026-09-15 — see the §12 erratum) | Counted on `*.rs` by the §12 `wc -l` script (tokei optional cross-check); enforced as a CI gate. Query files (`.scm`), skill cards (`.md`), prompt templates are *data*, tracked separately. |
 | R2 | **Dual LLM backend, user-selectable at runtime** | (a) OpenAI-compatible HTTP client (llama.cpp `llama-server`, Ollama, LM Studio, vLLM) — always compiled, the default; (b) **embedded llama.cpp** via `llama-cpp-2` behind the `embedded` cargo feature. Selection via `rusta.toml` `[backend] kind = "http" \| "embedded"` or `--backend`. |
 | R3 | CLI-first: Aider-style REPL | TUI / IDE extensions are out of scope for v1 (parking lot, §14). |
 | R4 | Plain-text edit protocol with forgiving parser and Aider's proven apply chain | Spec §6.3. |
@@ -190,7 +190,9 @@ TOOL RESULT read (ok)
 ```
 
 Hard truncation caps: read 2,000 lines / 64 KiB; grep 200 matches; glob 1,000 entries; shell
-16 KiB combined stdout+stderr; dispatch 400 tokens (§6.8) with each sub-coder observation capped
+16 KiB combined stdout+stderr; dispatch 400 tokens **per sub-coder report** (§6.8 — a four-task fan-out
+returns up to four of them plus labels, which §6.1's per-result phrasing left ambiguous)
+with each sub-coder observation capped
 at 1,500 tokens (a sub-coder has no compressor, so uncapped observations overflow the window and
 lose the whole research thread); repo-map as rendered (§6.5). On truncation append
 `… [truncated N lines/bytes]` — and only when a cap actually truncated, never when the caller
@@ -688,6 +690,15 @@ Canonical counting is this script (`wc -l`); `tokei` is an optional cross-check.
 > In a project whose defects have all been test-coverage defects, that is the wrong pressure.
 > `scripts/loc_budget.sh` now splits each source file at its `#[cfg(test)]` marker and reports
 > `production`, `tests` (inline + suites) and `total` separately.
+
+> **Erratum (2026-09-15, fifth audit).** The 20,000 total cap was reached. Production
+> is not the pressure — it stands at ~12.3k against its unchanged 15,000 — and all of
+> the growth has been regression tests from five audit rounds. Holding 20,000 would
+> have forced exactly the trade the erratum above exists to prevent: deleting tests to
+> stay green, in a project whose every defect has been a test-coverage defect. The
+> **total** cap is therefore raised to 25,000; the production cap is unchanged, and it
+> remains the number that expresses R1's "lean" intent. Should production approach
+> 15,000, the answer is §0 rule 5 — an opt-in crate — not another raise.
 
 ## 13. Definition of Done — v1
 

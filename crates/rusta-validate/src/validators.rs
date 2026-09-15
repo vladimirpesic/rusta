@@ -348,7 +348,11 @@ impl Report {
         Self {
             command: command.to_owned(),
             exit: 127,
-            output: format!("validator failed to start: {cause}"),
+            output: format!(
+                "validator failed to start: {cause}. Remedy: check the command \
+                 exists on PATH and that [validate].commands names it correctly \
+                 — this is a configuration fault, not something an edit can fix"
+            ),
             timed_out: false,
             limit_secs: timeout.as_secs(),
         }

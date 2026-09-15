@@ -27,7 +27,7 @@ pub use context::{
 };
 pub use error::Error;
 pub use prompt::{CORE_PROMPT_TOKEN_BUDGET, core_prompt, core_prompt_tokens, observation};
-pub use session::{Event, Reconstructed, Session, Status};
+pub use session::{Event, Reconstructed, Session, Status, TranscriptLine};
 pub use state::{
     Machine, PHASE_EVENTS, PhaseEvent, STATES, State, TOOLS, Tool, Transition, corrective_note,
 };
