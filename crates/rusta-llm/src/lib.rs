@@ -1,4 +1,4 @@
-//! Dual LLM backend abstraction for Rusta — development plan §6.2 (R2).
+//! Dual LLM backend abstraction for Rusta — ADR §6.2 (R2).
 //!
 //! Exactly two backends exist, selected at runtime via `rusta.toml` or
 //! `--backend`:
@@ -11,7 +11,7 @@
 //!
 //! The choice is invisible to every layer above: both consume the same
 //! [`ChatRequest`] and emit the same [`StreamEvent`]s through enum dispatch on
-//! [`Backend`] — no trait objects, no async-trait (plan §10). Token estimation
+//! [`Backend`] — no trait objects, no async-trait (ADR §10). Token estimation
 //! lives in `tokens.rs` (heuristic `ceil(chars / 3)`; exact counts when
 //! embedded).
 
@@ -31,7 +31,7 @@ pub use types::{ChatRequest, FinishReason, Message, Role, StreamEvent};
 
 use tokio::sync::mpsc;
 
-/// Runtime-selectable backend — development plan §6.2.
+/// Runtime-selectable backend — ADR §6.2.
 ///
 /// Enum dispatch: a closed set, so the embedded variant (M1.5) is a
 /// compile-checked extension, not a vtable.
@@ -102,7 +102,7 @@ impl Backend {
         }
     }
 
-    /// Non-streaming completion — summaries, sub-coder wrap-ups (plan §6.2).
+    /// Non-streaming completion — summaries, sub-coder wrap-ups (ADR §6.2).
     pub async fn complete(&self, request: ChatRequest) -> Result<String, Error> {
         match self {
             Backend::Http(backend) => backend.complete(request).await,

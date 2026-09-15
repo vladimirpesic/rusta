@@ -1,8 +1,8 @@
-//! Tree-sitter repository map for Rusta — development plan §6.5 (R6).
+//! Tree-sitter repository map for Rusta — ADR §6.5 (R6).
 //!
 //! `rusta-repomap` gives the model AST-level awareness of the whole repository
 //! within a token budget. The pipeline (semantics ported from Aider's
-//! `repomap.py`; the plan's numbers are normative):
+//! `repomap.py`; the ADR's numbers are normative):
 //!
 //! 1. file discovery — git-tracked sources filtered to configured languages
 //!    (`discover`), with an ignore-aware walk fallback outside git repos;

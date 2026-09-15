@@ -1,4 +1,4 @@
-//! Source-file discovery — DEVELOPMENT_PLAN.md §6.5 step 1.
+//! Source-file discovery — ADR.md §6.5 step 1.
 //!
 //! Git-tracked files when a git repo (`git ls-files` — `.gitignore` handled
 //! by git itself); otherwise a recursive walk skipping the built-in ignores.

@@ -21,7 +21,7 @@ tokio.workspace = true
 tokio = { workspace = true, features = ["net"] }
 
 [features]
-# In-process llama.cpp backend (DEVELOPMENT_PLAN.md §6.2, §10). Opt-in: the
+# In-process llama.cpp backend (ADR.md §6.2, §10). Opt-in: the
 # default artifact stays cmake-free; enabling this builds llama.cpp.
 default = []
 embedded = ["dep:llama-cpp-2", "dep:encoding_rs", "llama-cpp-2/sampler"]

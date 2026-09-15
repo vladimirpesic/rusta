@@ -1,4 +1,4 @@
-//! Hand-rolled mock OpenAI-compatible server (plan §9): tokio TCP only — no
+//! Hand-rolled mock OpenAI-compatible server (ADR §9): tokio TCP only — no
 //! heavyweight HTTP servers or mock frameworks in the dependency tree.
 
 use std::sync::Arc;

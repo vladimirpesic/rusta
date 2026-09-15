@@ -1,4 +1,4 @@
-//! The tool-state matrix test — plan §8 M7: every (state × tool) cell with
+//! The tool-state matrix test — ADR §8 M7: every (state × tool) cell with
 //! representative input, asserting both directions — allowed tools execute,
 //! unavailable tools yield the §6.4 corrective note and *physically* do
 //! nothing (file bytes unchanged, no process spawned).

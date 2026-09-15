@@ -1,4 +1,4 @@
-//! Tag extraction — DEVELOPMENT_PLAN.md §6.5 step 2.
+//! Tag extraction — ADR.md §6.5 step 2.
 //!
 //! Parse a source file with its language's grammar, run the embedded tags
 //! query, and turn `@name.definition.*` / `@name.reference.*` captures into

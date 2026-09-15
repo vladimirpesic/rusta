@@ -1,4 +1,4 @@
-//! The sub-coder actor — development plan §6.8 (R9).
+//! The sub-coder actor — ADR §6.8 (R9).
 //!
 //! One actor owns one research task: a fresh context (the `Exploring` core
 //! prompt plus a short sub-coder addendum plus the task), its own turn cap
@@ -48,7 +48,7 @@ pub const OBSERVATION_TOKEN_CAP: u64 = 1_500;
 /// entry points. The returned string is the observation text (§6.1 format,
 /// `TOOL RESULT <name> (ok|error)\n…`) appended to the sub-coder's context.
 ///
-/// Native `async fn` in trait (Rust 2024) — no `async-trait`, per plan §10;
+/// Native `async fn` in trait (Rust 2024) — no `async-trait`, per ADR §10;
 /// implementations are `Send + Sync + 'static` so actors can be spawned.
 pub trait RunTool: Send + Sync + 'static {
     /// Run `name(input)`; the string is the full observation message.

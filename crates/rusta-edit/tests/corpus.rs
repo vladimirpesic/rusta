@@ -1,4 +1,4 @@
-//! Parser fixture corpus — M2 acceptance (DEVELOPMENT_PLAN.md §8): Aider
+//! Parser fixture corpus — M2 acceptance (ADR.md §8): Aider
 //! fixture corpus + malformed-input corpus must parse green. Fixtures are
 //! the real-response shapes small models produce (fenced filenames, chained
 //! dividers, CRLF, flexible marker lengths, shell suggestions, malformed

@@ -1,4 +1,4 @@
-//! Token estimation — development plan §6.2.
+//! Token estimation — ADR §6.2.
 //!
 //! The HTTP backend estimates tokens with the heuristic `ceil(chars / 3)`:
 //! deliberately conservative (English source code averages ~3.3–4 chars/token,

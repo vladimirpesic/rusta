@@ -1,11 +1,11 @@
-//! `rusta` — the CLI host: development plan §6.9 (R3), milestone M8.
+//! `rusta` — the CLI host: ADR §6.9 (R3), milestone M8.
 //!
 //! The library half (`rusta_cli`) carries the whole session machinery so the
 //! e2e acceptance tests can drive scripted sessions without a TTY
 //! ([`App::handle_line`] is the REPL's per-line entry point); `main.rs` is a
 //! thin `clap` shim.
 //!
-//! Layout (plan §5): `config.rs` (§7 `rusta.toml` discovery + schema),
+//! Layout (ADR §5): `config.rs` (§7 `rusta.toml` discovery + schema),
 //! `git.rs` (§6.9 auto-commit/undo), `agent.rs` (§6.1 turn lifecycle),
 //! `commands.rs` (§6.9 slash commands), `repl.rs` (the [`App`] host +
 //! reedline loop), `render.rs` (output surface).

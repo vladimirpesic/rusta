@@ -1,15 +1,15 @@
-//! Embedded llama.cpp backend — development plan §6.2 (R2), milestone M1.5.
+//! Embedded llama.cpp backend — ADR §6.2 (R2), milestone M1.5.
 //!
 //! Compiled only behind the `embedded` cargo feature (`cargo build -p
 //! rusta-llm --features embedded`; needs cmake + a C++ toolchain — the default
 //! artifact stays cmake-free). Every llama.cpp call happens on one dedicated
 //! OS thread: the C API blocks, so inference never touches the async runtime
-//! (plan §6.2). Requests queue through `std::sync::mpsc`, tokens stream back
+//! (ADR §6.2). Requests queue through `std::sync::mpsc`, tokens stream back
 //! over `tokio::sync::mpsc`, and the single inference thread serializes
-//! completions by construction (plan §6.8: one loaded model, one inference
+//! completions by construction (ADR §6.8: one loaded model, one inference
 //! thread).
 //!
-//! Sampling follows plan §6.2: a `LlamaSampler` chain of `temp` (the request's
+//! Sampling follows ADR §6.2: a `LlamaSampler` chain of `temp` (the request's
 //! temperature, §7 default 0.2) → `top_p` (config, default 0.9) → greedy. The
 //! terminal greedy stage makes completions deterministic, which suits code
 //! edits; the chain keeps the documented shape so a stochastic tail (`dist`)
@@ -44,7 +44,7 @@ const DECODE_CHUNK: usize = 512;
 /// Bounded backlog of undelivered stream events.
 const EVENT_CHANNEL_CAPACITY: usize = 128;
 
-/// Embedded backend configuration — development plan §7 `[backend.embedded]`.
+/// Embedded backend configuration — ADR §7 `[backend.embedded]`.
 #[derive(Debug, Clone)]
 pub struct EmbeddedConfig {
     /// Path to the GGUF model file.
@@ -60,7 +60,7 @@ pub struct EmbeddedConfig {
 }
 
 impl EmbeddedConfig {
-    /// Configuration for `model_path` with the plan defaults: context size
+    /// Configuration for `model_path` with the ADR defaults: context size
     /// from GGUF metadata, CPU-only, `top_p` 0.9.
     pub fn new(model_path: impl Into<PathBuf>) -> Self {
         Self {
@@ -98,7 +98,7 @@ fn global_backend() -> Result<Arc<LlamaBackend>, Error> {
         .map_err(|cause| Error::Config { cause })
 }
 
-/// In-process llama.cpp backend — development plan §6.2, milestone M1.5.
+/// In-process llama.cpp backend — ADR §6.2, milestone M1.5.
 ///
 /// All heavy state lives on the inference thread; this type is just a handle
 /// to it, shared behind an `Arc` by the layers above. Dropping it closes the
@@ -134,7 +134,7 @@ struct WorkerEnv {
 }
 
 impl EmbeddedBackend {
-    /// Loads the GGUF and starts the inference thread (plan §6.2).
+    /// Loads the GGUF and starts the inference thread (ADR §6.2).
     ///
     /// # Errors
     /// [`Error::Config`] when llama.cpp or the inference thread cannot start;
@@ -203,7 +203,7 @@ impl EmbeddedBackend {
         u64::from(self.shared.context_window)
     }
 
-    /// Starts a streaming completion; returns the event channel (plan §6.2).
+    /// Starts a streaming completion; returns the event channel (ADR §6.2).
     ///
     /// Queuing failures (worker stopped) surface here; generation failures are
     /// delivered as a final [`StreamEvent::Failed`] — mirroring the HTTP
@@ -217,7 +217,7 @@ impl EmbeddedBackend {
         Ok(receiver)
     }
 
-    /// Non-streaming completion — summaries, sub-coder wrap-ups (plan §6.2).
+    /// Non-streaming completion — summaries, sub-coder wrap-ups (ADR §6.2).
     ///
     /// # Errors
     /// [`Error::Inference`] if generation fails mid-stream.
@@ -268,7 +268,7 @@ fn worker_loop(env: WorkerEnv, jobs: mpsc::Receiver<Job>) {
 }
 
 /// Runs one completion and always emits a terminal event: `Finish` on success,
-/// `Failed` with a remedy on error (plan §6.11).
+/// `Failed` with a remedy on error (ADR §6.11).
 fn run_generation(
     env: &WorkerEnv,
     request: &ChatRequest,

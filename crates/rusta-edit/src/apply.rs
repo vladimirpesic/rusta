@@ -1,5 +1,5 @@
 //! Apply chain, failure feedback, undo journal, and filename resolution —
-//! development plan §6.3 (R4).
+//! ADR §6.3 (R4).
 //!
 //! Port of Aider's *proven* apply sequence, strictly in order:
 //!
@@ -140,7 +140,7 @@ impl UndoStack {
     }
 
     /// Rebuilds a journal from recorded entries, oldest first — the
-    /// `/resume` path (plan §6.10): session replay reconstructs the undo
+    /// `/resume` path (ADR §6.10): session replay reconstructs the undo
     /// stack from the event log and its diffs sidecar.
     pub fn from_entries(entries: Vec<UndoEntry>) -> Self {
         Self { entries }
@@ -259,7 +259,7 @@ impl Editor {
         self.undo.undo_last(&self.root)
     }
 
-    /// Replaces the undo journal wholesale — the `/resume` path (plan §6.10):
+    /// Replaces the undo journal wholesale — the `/resume` path (ADR §6.10):
     /// session replay rebuilds the journal from the `.diffs.jsonl` sidecar and
     /// installs it so `/undo` works on a continued session. Replacing (never
     /// appending) keeps the stack consistent with the replayed events.

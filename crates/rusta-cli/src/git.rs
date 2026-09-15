@@ -1,4 +1,4 @@
-//! Git integration — development plan §6.9.
+//! Git integration — ADR §6.9.
 //!
 //! Auto-commit after each applied edit batch with message
 //! `rusta: <one-line summary of the user request>`; `/undo` reverts the batch

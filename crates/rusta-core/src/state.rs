@@ -1,4 +1,4 @@
-//! Phase-gated state machine — development plan §6.4 (R5).
+//! Phase-gated state machine — ADR §6.4 (R5).
 //!
 //! Four states, six scaffold events, ten canonical tools. The transition
 //! table is a closed, exhaustive `match`: invalid transitions are rejected
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 
-/// The four phases — plan §6.4 state table.
+/// The four phases — ADR §6.4 state table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
@@ -58,7 +58,7 @@ impl State {
         }
     }
 
-    /// What unblocks the next phase — the exit gate (plan §6.4 table).
+    /// What unblocks the next phase — the exit gate (ADR §6.4 table).
     pub fn exit_gate(self) -> &'static str {
         match self {
             State::Exploring => "plan drafted (a change-task needs a short numbered plan)",
@@ -84,7 +84,7 @@ impl fmt::Display for State {
     }
 }
 
-/// The canonical tool registry — exactly ten tools, DECIDED (plan §6.4).
+/// The canonical tool registry — exactly ten tools, DECIDED (ADR §6.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tool {
     /// `read(path, from?, to?)` — numbered file slice.
@@ -201,7 +201,7 @@ impl fmt::Display for Tool {
     }
 }
 
-/// Scaffold events — the only things that can move the machine (plan §6.4).
+/// Scaffold events — the only things that can move the machine (ADR §6.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseEvent {
     /// The model drafted a plan for a change-task (`Exploring → Planning`).

@@ -2,7 +2,7 @@
 //! four parallel tasks with labeled ≤400-token reports, embedded-mode
 //! serialization, the six-turn cap with forced wrap-up, and backend failure
 //! degrading to a labeled failed report. The server is hand-rolled tokio
-//! TCP (plan §9: no heavyweight mock frameworks in the tree) with an
+//! TCP (ADR §9: no heavyweight mock frameworks in the tree) with an
 //! in-flight gauge for concurrency assertions.
 
 use std::sync::Arc;

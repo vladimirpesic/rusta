@@ -1,4 +1,4 @@
-//! Core agent machinery for Rusta — development plan §6.4, §6.6, §6.10 (R5, R7).
+//! Core agent machinery for Rusta — ADR §6.4, §6.6, §6.10 (R5, R7).
 //!
 //! `rusta-core` hosts:
 //!

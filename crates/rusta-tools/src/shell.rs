@@ -14,7 +14,7 @@
 //! for instance), which is why `shell` stays approval-gated and is denied
 //! outright in non-interactive `-c` runs. Interactive *processes* cannot be detected at runtime
 //! without a PTY, so known-interactive commands are denied up front with
-//! the plan's remedy: pass flags for non-interactive mode.
+//! the ADR's remedy: pass flags for non-interactive mode.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -149,7 +149,7 @@ pub enum Verdict {
 /// Compiled §6.12 policy: timeout, allow-listed prefixes, deny regexes.
 #[derive(Debug)]
 pub struct ShellPolicy {
-    /// Execution timeout (plan §7 default: 60 s).
+    /// Execution timeout (ADR §7 default: 60 s).
     pub timeout: Duration,
     /// Command prefixes that skip the approval prompt (`[shell].allow`).
     pub allow: Vec<String>,
@@ -199,7 +199,7 @@ impl ShellPolicy {
         })
     }
 
-    /// The plan defaults: 60 s timeout, empty allow/deny extensions.
+    /// The ADR defaults: 60 s timeout, empty allow/deny extensions.
     pub fn standard() -> Result<Self, Error> {
         Self::new(60, &[], &[], &[])
     }

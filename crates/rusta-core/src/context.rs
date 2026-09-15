@@ -1,4 +1,4 @@
-//! Context manager — development plan §6.6 (R7): purity + JIT + compression.
+//! Context manager — ADR §6.6 (R7): purity + JIT + compression.
 //!
 //! Three subsystems, none of them resident in the core prompt:
 //!
@@ -77,7 +77,7 @@ pub const VALIDATOR_REPEAT_TRIP: u32 = 2;
 // JIT skill cards
 // ---------------------------------------------------------------------------
 
-/// Card category — little-coder's `type` axis (plan §6.6).
+/// Card category — little-coder's `type` axis (ADR §6.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CardKind {
     /// Guidance for calling a specific tool well.
@@ -113,7 +113,7 @@ impl CardKind {
 
 /// One JIT skill card: front-matter metadata plus a short imperative body.
 ///
-/// Bodies are data, versioned under `skills/` (plan §5), and are the only
+/// Bodies are data, versioned under `skills/` (ADR §5), and are the only
 /// part of a card that costs context when injected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillCard {
@@ -354,7 +354,7 @@ fn trigger_matches(trigger: &str, cue: &str) -> bool {
         .any(|word| word == trigger)
 }
 
-/// The starter deck (plan §6.6), embedded so it ships with the binary.
+/// The starter deck (ADR §6.6), embedded so it ships with the binary.
 static SHIPPED_CARDS: [&str; 4] = [
     include_str!("../../../skills/edit-recovery.md"),
     include_str!("../../../skills/read-large-files.md"),
@@ -374,7 +374,7 @@ pub struct CardDeck {
 impl CardDeck {
     /// The starter deck, compiled into the binary.
     ///
-    /// Cards are Rusta's own data (plan §5 ships them beside the crates), so
+    /// Cards are Rusta's own data (ADR §5 ships them beside the crates), so
     /// they must travel with the binary. Reading them from the *target*
     /// repository instead meant the shipped deck only ever loaded when Rusta
     /// was run on Rusta, and that a user repo with an unrelated `skills/`
@@ -844,7 +844,7 @@ fn edit_block_path(content: &str) -> Option<&str> {
 // ---------------------------------------------------------------------------
 
 /// One mitigation capsule: a single imperative line naming the exact next
-/// action (SmallCTL's proven set, adapted per plan §6.6).
+/// action (SmallCTL's proven set, adapted per ADR §6.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capsule {
     /// Stable capsule name (detector-facing identity).
@@ -923,7 +923,7 @@ pub struct Escalation {
 }
 
 /// The loop guard — FAMA-lite's four detectors, capsule state, and the
-/// escalation latch (plan §6.6). Observations come in from the agent loop
+/// escalation latch (ADR §6.6). Observations come in from the agent loop
 /// as things happen; the guard is task-scoped and in-memory (it is not
 /// journaled: `/resume` starts detectors fresh, which is the safe side).
 #[derive(Debug, Clone, PartialEq, Eq)]

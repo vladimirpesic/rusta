@@ -1,4 +1,4 @@
-//! Error taxonomy for `rusta-core` — development plan §6.11.
+//! Error taxonomy for `rusta-core` — ADR §6.11.
 
 /// Errors surfaced by the core crate.
 #[derive(Debug, thiserror::Error)]
@@ -25,7 +25,7 @@ pub enum Error {
         event: String,
     },
     /// A JIT skill card could not be loaded; the remedy is in the message
-    /// (plan §6.6 — cards fail loudly at load, never silently at injection).
+    /// (ADR §6.6 — cards fail loudly at load, never silently at injection).
     #[error("skill card {path}: {cause}")]
     SkillCard {
         /// The offending card file.

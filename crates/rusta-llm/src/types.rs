@@ -1,4 +1,4 @@
-//! Wire types shared by both backends — development plan §6.2.
+//! Wire types shared by both backends — ADR §6.2.
 
 use serde::{Deserialize, Serialize};
 
@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
-    /// System message: core prompt, capsules, skill cards (plan §6.6).
+    /// System message: core prompt, capsules, skill cards (ADR §6.6).
     System,
-    /// User input and tool observations (plan §6.1 observation contract).
+    /// User input and tool observations (ADR §6.1 observation contract).
     User,
     /// Model output.
     Assistant,
@@ -59,17 +59,17 @@ impl Message {
     }
 }
 
-/// One completion request — identical for both backends (plan §6.2).
+/// One completion request — identical for both backends (ADR §6.2).
 ///
-/// Rusta never sends `tools`/`functions` request parameters (DECIDED, plan §6.1);
+/// Rusta never sends `tools`/`functions` request parameters (DECIDED, ADR §6.1);
 /// native `tool_calls` in *responses* are passed through, never requested.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatRequest {
     /// Conversation so far.
     pub messages: Vec<Message>,
-    /// Sampling budget; plan §7 default 4096.
+    /// Sampling budget; ADR §7 default 4096.
     pub max_tokens: u32,
-    /// Sampling temperature; plan §7 default 0.2.
+    /// Sampling temperature; ADR §7 default 0.2.
     pub temperature: f32,
     /// Stop sequences; empty by default.
     pub stop: Vec<String>,
@@ -130,7 +130,7 @@ pub enum StreamEvent {
     /// Incremental assistant text.
     Delta(String),
     /// A fully assembled native tool call — OpenAI `tool_calls` passthrough
-    /// (plan §6.1). Emitted after the last fragment, before [`StreamEvent::Finish`].
+    /// (ADR §6.1). Emitted after the last fragment, before [`StreamEvent::Finish`].
     ToolCall {
         /// Server-assigned call id, when present.
         id: Option<String>,
@@ -142,7 +142,7 @@ pub enum StreamEvent {
     /// The stream ended normally; always the last successful event.
     Finish(FinishReason),
     /// The stream failed after partial output; the text carries a remedy
-    /// (plan §6.11). Always the final event.
+    /// (ADR §6.11). Always the final event.
     Failed(String),
 }
 

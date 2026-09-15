@@ -2,7 +2,7 @@
 //!
 //! `dispatch` input is either a single `task` string or `tasks` — an array
 //! of `{label, task}` objects, at most four, each with a distinct label.
-//! Tasks are independent (a flat parallel fan-out — the "DAG" of the plan's
+//! Tasks are independent (a flat parallel fan-out — the "DAG" of the ADR's
 //! crate sketch): every actor starts immediately and the joined reports come
 //! back in input order, so the observation is deterministic regardless of
 //! completion order.

@@ -1,5 +1,5 @@
 //! Language registry — file-extension mapping and grammar/query loading
-//! (DEVELOPMENT_PLAN.md §6.5 step 2, dependency set §10).
+//! (ADR.md §6.5 step 2, dependency set §10).
 //!
 //! Seven languages, seven grammar crates: the exact core/grammar matrix from
 //! the workspace pinning (see the root `Cargo.toml` note). Grammars expose a
@@ -105,7 +105,7 @@ mod tests {
     }
 
     /// Grammar-drift guard: every embedded query must compile against its
-    /// pinned grammar crate (DEVELOPMENT_PLAN.md §13).
+    /// pinned grammar crate (ADR.md §13).
     #[test]
     fn every_tags_query_compiles_against_its_grammar() {
         for lang in [

@@ -34,7 +34,7 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
-      - name: LoC budget gate (R1, plan §12)
+      - name: LoC budget gate (R1, ADR §12)
         run: bash scripts/loc_budget.sh
 
   embedded:

@@ -1,6 +1,6 @@
 # Tag queries
 
-Tree-sitter `.scm` tag queries for the repo map (DEVELOPMENT_PLAN.md §6.5, step 2).
+Tree-sitter `.scm` tag queries for the repo map (ADR.md §6.5, step 2).
 Files are copied **verbatim** from the local Aider reference tree
 (`/home/vladimir/develop/refs/aider/aider/queries/`) — the
 `tree-sitter-language-pack` variants for c, cpp, go, javascript, python, rust,
@@ -16,7 +16,7 @@ Python bindings), while `#not-eq?` / `#not-match?` predicates are evaluated
 automatically by the tree-sitter 0.25 query cursor.
 
 Each query is compile-tested against its pinned grammar crate in
-`src/lang.rs` — the grammar-drift guard (DEVELOPMENT_PLAN.md §13).
+`src/lang.rs` — the grammar-drift guard (ADR.md §13).
 
 Data files in this directory are reported separately by
 `scripts/loc_budget.sh` and never counted against the LoC budget.

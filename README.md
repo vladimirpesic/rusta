@@ -3,11 +3,13 @@
 A lean, lightweight, all-encompassing AI coding-agent harness for small, locally
 hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 
-> **Status: pre-alpha.** Development is driven milestone-by-milestone by
-> [`DEVELOPMENT_PLAN.md`](DEVELOPMENT_PLAN.md) (v1.2) — the single source of truth.
-> **v1 is milestone-complete: M0–M8 all green**, plus the 2026-09-14 third-audit
-> remediation (clippy `-D warnings` clean, `cargo doc` 0 warnings; counts below
-> are produced by `scripts/loc_budget.sh` and `cargo test --workspace`).
+> **Status: pre-alpha.** The architecture, its rationale and its audit history live in
+> [`ADR.md`](ADR.md) (v1.0) — the single source of truth.
+> **v1 is milestone-complete: M0–M8 all green**, through six audit-and-remediation rounds
+> (fmt clean, clippy `-D warnings` 0 on both feature graphs, `cargo doc` 0 warnings; counts
+> below are produced by `scripts/loc_budget.sh` and `cargo test --workspace`).
+> Pre-alpha is meant literally: every completion the scaffold has processed so far was
+> hand-written by a test, so it has not yet met a real small model — see ADR §17.
 > The subsystem trail: **M0 — workspace skeleton** (8 crates, CI, LoC-budget gate), **M1 —
 > `HttpBackend`** (SSE streaming, 3-attempt retry/backoff, 404 `base_url` hints, native
 > `tool_calls` passthrough, mock-server e2e) plus **JSONL session persistence** (§6.10),
@@ -88,7 +90,7 @@ last batch (file + commit). Sessions are append-only JSONL under
 
 Small local models are not bad at coding — they are bad at managing scaffolds built
 for frontier models. Rusta combines five proven scaffold pillars (Aider, little-coder,
-Observer, smallcode, SmallCTL — see plan §3) into one harness: forgiving plain-text
+Observer, smallcode, SmallCTL — see ADR §3) into one harness: forgiving plain-text
 SEARCH/REPLACE edits, tree-sitter repo-map context compression, a phase-gated state
 machine, isolated sub-coder dispatch, and a sub-500-token core prompt.
 
@@ -99,7 +101,7 @@ cargo build --release
 cargo run -p rusta-cli -- --version
 ```
 
-Two backends (plan §6.2), selected at runtime in `rusta.toml` or via `--backend`:
+Two backends (ADR §6.2), selected at runtime in `rusta.toml` or via `--backend`:
 
 - **HTTP** (default, always compiled): any OpenAI-compatible server — llama.cpp
   `llama-server`, Ollama, LM Studio, vLLM. `base_url` must be the full API root
@@ -131,7 +133,7 @@ matrix worth covering before trusting a new model or quantization:
 `cargo build --release --features embedded-cuda` adds CUDA offload; it needs
 the CUDA toolkit as well as cmake.
 
-## Choosing a model (plan §13)
+## Choosing a model (ADR §13)
 
 Rusta targets 8B–35B coding models. Pick by the VRAM you actually have — a model
 that spills to system RAM will dominate your turn latency far more than the

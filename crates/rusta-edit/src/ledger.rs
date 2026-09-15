@@ -1,4 +1,4 @@
-//! Read-before-edit ledger — development plan §6.3 (R4).
+//! Read-before-edit ledger — ADR §6.3 (R4).
 //!
 //! Every mutation (`edit`/`write` tools, applied SEARCH/REPLACE blocks)
 //! requires its file to have been read during the session (via `read` or
@@ -42,7 +42,7 @@ impl Ledger {
         confine(path).is_some_and(|rel| self.entries.contains(&rel))
     }
 
-    /// Removes `path` from the session read-set — `/drop` (plan §6.9). True
+    /// Removes `path` from the session read-set — `/drop` (ADR §6.9). True
     /// when the file was present. Auto-inject re-protects a later edit of the
     /// dropped file, so dropping is always safe.
     pub fn drop_read(&mut self, path: &Path) -> bool {

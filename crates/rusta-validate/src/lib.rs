@@ -1,4 +1,4 @@
-//! Auto-validation for Rusta — development plan §6.7 (R8), the Reflexion gate.
+//! Auto-validation for Rusta — ADR §6.7 (R8), the Reflexion gate.
 //!
 //! `rusta-validate` runs the project's configured validators (e.g.
 //! `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`,

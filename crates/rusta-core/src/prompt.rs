@@ -1,10 +1,10 @@
-//! Core prompt compiler — development plan §6.6 (R7), milestone M3.
+//! Core prompt compiler — ADR §6.6 (R7), milestone M3.
 //!
 //! The core system prompt is a CI invariant: **under 500 estimated tokens**
 //! in every phase ([`CORE_PROMPT_TOKEN_BUDGET`]). Its only dynamic part is
 //! the state line — persona, tool one-liners, call syntax, edit example,
 //! output rules, and git footer are constant, and everything else a model
-//! might need is injected JIT or not at all (plan §6.6). Token counts use
+//! might need is injected JIT or not at all (ADR §6.6). Token counts use
 //! rusta-llm's conservative `ceil(chars / 3)` estimator, so the measured
 //! invariant is stricter than any real tokenizer.
 //!

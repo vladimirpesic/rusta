@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# R1 enforcement gate — DEVELOPMENT_PLAN.md §12.
+# R1 enforcement gate — ADR.md §12.
 # Production budget: ≤ 15,000 lines; total (including tests): ≤ 25,000 lines.
 #
 # The total cap was 20,000 and was reached by the fifth remediation round.

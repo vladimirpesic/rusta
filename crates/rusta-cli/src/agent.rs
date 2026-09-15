@@ -1,4 +1,4 @@
-//! The agent turn lifecycle — development plan §6.1, wired end-to-end (M8).
+//! The agent turn lifecycle — ADR §6.1, wired end-to-end (M8).
 //!
 //! One *user request* spans model turns until a completion carries no
 //! actionable item (its prose is the answer) or the §6.1 turn cap forces a

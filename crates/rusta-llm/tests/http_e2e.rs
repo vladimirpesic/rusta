@@ -1,7 +1,7 @@
 //! M1 acceptance tests: the HTTP backend end-to-end against the hand-rolled
 //! mock SSE server — token stream e2e, retry/backoff with a flaky mock, the
 //! 404 `base_url` hint, `tool_calls` passthrough, and non-streaming completion
-//! (development plan §8, §9).
+//! (ADR §8, §9).
 
 mod mock_server;
 

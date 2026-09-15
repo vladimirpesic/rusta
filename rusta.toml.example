@@ -1,4 +1,4 @@
-# Rusta configuration example — DEVELOPMENT_PLAN.md §7 (normative schema).
+# Rusta configuration example — ADR.md §7 (normative schema).
 # Discovery order: cwd → parents → ~/.rusta/. Copy to `rusta.toml` and adjust.
 
 [backend]

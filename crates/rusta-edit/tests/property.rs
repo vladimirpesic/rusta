@@ -1,4 +1,4 @@
-//! Property test (M2 acceptance, DEVELOPMENT_PLAN.md §8): the parser never
+//! Property test (M2 acceptance, ADR.md §8): the parser never
 //! panics on arbitrary input, and the full engine (apply chain + file IO +
 //! undo) never panics on arbitrary blocks against arbitrary files.
 //!

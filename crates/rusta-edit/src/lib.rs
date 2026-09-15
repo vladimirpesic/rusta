@@ -1,4 +1,4 @@
-//! Forgiving plain-text edit protocol for Rusta — development plan §6.3 (R4).
+//! Forgiving plain-text edit protocol for Rusta — ADR §6.3 (R4).
 //!
 //! `rusta-edit` owns every file mutation. Edits are plain-text Aider-style
 //! SEARCH/REPLACE blocks — never JSON. The crate provides:

@@ -1,4 +1,4 @@
-//! The REPL host — development plan §6.9 (R3).
+//! The REPL host — ADR §6.9 (R3).
 //!
 //! [`App`] owns one session's live state: the phase machine, the tool
 //! registry, the context-manager pieces (§6.6), the validation gate (§6.7),

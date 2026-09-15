@@ -1,5 +1,5 @@
 //! `rusta` binary entry point — a thin shim over [`rusta_cli::run`] so the
-//! whole CLI is testable as a library (plan §9).
+//! whole CLI is testable as a library (ADR §9).
 
 use clap::Parser;
 

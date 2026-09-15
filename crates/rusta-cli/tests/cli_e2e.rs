@@ -1,5 +1,5 @@
 //! §8 M8 acceptance tests — scripted sessions on a mock OpenAI-compatible
-//! streaming server (plan §9: hand-rolled tokio TCP, no mock frameworks).
+//! streaming server (ADR §9: hand-rolled tokio TCP, no mock frameworks).
 //!
 //! Session 1 is the milestone's headline arc: plan → approval → read → edit
 //! batch → auto-commit → validator failure → Reflexion repair → second batch

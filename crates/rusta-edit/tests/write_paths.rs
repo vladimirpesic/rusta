@@ -1,4 +1,4 @@
-//! The structural guard for DEVELOPMENT_PLAN.md §6.12 confinement.
+//! The structural guard for ADR.md §6.12 confinement.
 //!
 //! The second audit fenced "three write paths"; there were four, and the
 //! uncounted one (`UndoStack::undo_last`) carried a delete as well as a

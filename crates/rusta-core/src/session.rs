@@ -1,6 +1,6 @@
-//! Append-only JSONL session persistence — development plan §6.10.
+//! Append-only JSONL session persistence — ADR §6.10.
 //!
-//! One JSON object per line, tagged `{"type": ...}` per the plan's event
+//! One JSON object per line, tagged `{"type": ...}` per the ADR's event
 //! schema. The log stays small: full before/after text of edits goes to the
 //! `<stem>.diffs.jsonl` sidecar (two records per edit, keyed by FNV-1a
 //! hash), not here. Appends are flushed immediately, so a crash loses at
@@ -20,17 +20,17 @@ use crate::error::Error;
 use crate::prompt;
 use crate::state::{self, State};
 
-/// Outcome of a tool execution (plan §6.10 `ToolResult.status`).
+/// Outcome of a tool execution (ADR §6.10 `ToolResult.status`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     /// The tool succeeded (possibly with truncation).
     Ok,
-    /// The tool failed; the summary carries a remedy (plan §6.11).
+    /// The tool failed; the summary carries a remedy (ADR §6.11).
     Error,
 }
 
-/// One session event — plan §6.10 schema, verbatim.
+/// One session event — ADR §6.10 schema, verbatim.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
@@ -236,7 +236,7 @@ pub struct Session {
 
 impl Session {
     /// Opens (creating if needed) the JSONL log at `path` and replays any
-    /// existing events — the basis of `/resume` (plan §6.10).
+    /// existing events — the basis of `/resume` (ADR §6.10).
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, Error> {
         let path = path.into();
         let file =
@@ -333,7 +333,7 @@ impl Session {
     }
 
     /// Reconstructs the live session state from the recorded events — the
-    /// `/resume` path (plan §6.10): the message history as the model last
+    /// `/resume` path (ADR §6.10): the message history as the model last
     /// saw it, the read-before-edit ledger, the undo journal (rebuilt from
     /// the sidecar), and the final phase.
     pub fn replay_context(&self) -> Result<Reconstructed, Error> {
@@ -486,7 +486,7 @@ impl Session {
     }
 }
 
-/// Everything `/resume` rebuilds from a recorded session (plan §6.10).
+/// Everything `/resume` rebuilds from a recorded session (ADR §6.10).
 #[derive(Debug, PartialEq)]
 pub struct Reconstructed {
     /// Message history as the model last saw it.
@@ -566,7 +566,7 @@ fn load_sidecar(path: &Path) -> Result<Vec<DiffRecord>, Error> {
 }
 
 /// Parses an existing JSONL log, rejecting corrupt lines with a line-numbered
-/// remedy (plan §6.11).
+/// remedy (ADR §6.11).
 ///
 /// A torn **final** line is forgiven and dropped: `writeln!` + `flush` is not
 /// atomic, so a crash, a SIGKILL, or ENOSPC mid-append leaves a partial

@@ -1,11 +1,11 @@
-//! OpenAI-compatible HTTP backend — development plan §6.2.
+//! OpenAI-compatible HTTP backend — ADR §6.2.
 //!
 //! `POST {base_url}/chat/completions` with `stream: true`; SSE parsed from a
 //! byte stream. Retries: 3 attempts, exponential backoff 250 ms doubling to a
 //! 2 s cap, connection errors and 5xx only. A 404 produces a `base_url`
 //! remedy hint; other 4xx surface clipped server detail. Native `tool_calls`
 //! deltas are assembled into complete calls. `tools`/`functions` request
-//! parameters are never sent (DECIDED, plan §6.1).
+//! parameters are never sent (DECIDED, ADR §6.1).
 
 use std::cmp::min;
 use std::time::Duration;
@@ -17,18 +17,18 @@ use tokio::sync::mpsc;
 use crate::error::{Error, clip_lines};
 use crate::types::{ChatRequest, FinishReason, Message, StreamEvent};
 
-/// Attempts per request (plan §6.2).
+/// Attempts per request (ADR §6.2).
 const RETRY_ATTEMPTS: u32 = 3;
 /// Base retry backoff; doubles per attempt up to [`MAX_BACKOFF`].
 const DEFAULT_BACKOFF: Duration = Duration::from_millis(250);
-/// Backoff ceiling (plan §6.2: 250 ms → 2 s).
+/// Backoff ceiling (ADR §6.2: 250 ms → 2 s).
 const MAX_BACKOFF: Duration = Duration::from_secs(2);
 /// Upper bound on concurrently assembled native `tool_calls` (§6.1). The
 /// index arrives from the server, so it bounds an allocation, not a policy;
 /// no real completion carries anywhere near this many.
 const MAX_TOOL_CALLS: usize = 64;
 
-/// Lines of server text kept in [`Error::Http`] messages (plan §6.11).
+/// Lines of server text kept in [`Error::Http`] messages (ADR §6.11).
 const SERVER_MESSAGE_LINES: usize = 10;
 /// Cap on establishing a connection.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -116,21 +116,21 @@ struct CompletionMessage {
 
 // ------------------------------------------------------------- configuration
 
-/// HTTP backend configuration — mirrors `rusta.toml` `[backend]`/`[model]` (plan §7).
+/// HTTP backend configuration — mirrors `rusta.toml` `[backend]`/`[model]` (ADR §7).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HttpConfig {
-    /// Full API root including `/v1` (plan §6.2), e.g. `http://127.0.0.1:8080/v1`.
+    /// Full API root including `/v1` (ADR §6.2), e.g. `http://127.0.0.1:8080/v1`.
     pub base_url: String,
     /// Model name sent in the request body.
     pub model: String,
     /// Context window in tokens (configured for HTTP; exact when embedded).
     pub context_window: u32,
-    /// Sampling budget per completion (plan §7 default 4096).
+    /// Sampling budget per completion (ADR §7 default 4096).
     pub max_tokens: u32,
-    /// Sampling temperature (plan §7 default 0.2).
+    /// Sampling temperature (ADR §7 default 0.2).
     pub temperature: f32,
     /// Environment variable holding the API key; read once at construction,
-    /// never persisted (plan §7).
+    /// never persisted (ADR §7).
     pub api_key_env: Option<String>,
 }
 
@@ -149,7 +149,7 @@ impl Default for HttpConfig {
 
 // ------------------------------------------------------------------- backend
 
-/// The OpenAI-compatible streaming client (plan §6.2).
+/// The OpenAI-compatible streaming client (ADR §6.2).
 #[derive(Debug)]
 pub struct HttpBackend {
     url_root: String,
@@ -159,7 +159,7 @@ pub struct HttpBackend {
     backoff: Duration,
 }
 
-/// Accumulates streamed `tool_calls` fragments for one call (plan §6.2).
+/// Accumulates streamed `tool_calls` fragments for one call (ADR §6.2).
 #[derive(Debug, Default, Clone)]
 struct ToolCallAccumulator {
     id: Option<String>,
@@ -217,7 +217,7 @@ impl HttpBackend {
         u64::from(self.config.context_window)
     }
 
-    /// Heuristic token count for `text` (plan §6.2: `ceil(chars / 3)`).
+    /// Heuristic token count for `text` (ADR §6.2: `ceil(chars / 3)`).
     pub fn count_tokens(&self, text: &str) -> u64 {
         crate::tokens::estimate_tokens(text)
     }
@@ -239,7 +239,7 @@ impl HttpBackend {
 
     /// POSTs with retry: 3 attempts, exponential backoff (250 ms doubling to a
     /// 2 s cap) on connection errors and 5xx only; 404 yields a `base_url`
-    /// remedy; other 4xx surface clipped detail (plan §6.2, §6.11).
+    /// remedy; other 4xx surface clipped detail (ADR §6.2, §6.11).
     ///
     /// The retry scope is deliberate: only *establishment* failures
     /// (`err.is_connect()`) replay — the request provably never reached the
@@ -296,7 +296,7 @@ impl HttpBackend {
         })
     }
 
-    /// Starts a streaming completion; returns the event channel (plan §6.2).
+    /// Starts a streaming completion; returns the event channel (ADR §6.2).
     ///
     /// Establishment failures (connection refused, 5xx×3, 404, other 4xx) are
     /// returned here. Failures *after* the stream has begun are delivered as a
@@ -311,7 +311,7 @@ impl HttpBackend {
         Ok(rx)
     }
 
-    /// Non-streaming completion — summaries and sub-coder wrap-ups (plan §6.2).
+    /// Non-streaming completion — summaries and sub-coder wrap-ups (ADR §6.2).
     pub async fn complete(&self, request: ChatRequest) -> Result<String, Error> {
         let body = self.request_body(&request, false);
         let response = self.post_with_retry(&body).await?;
@@ -332,7 +332,7 @@ impl HttpBackend {
 // ------------------------------------------------------------------ SSE pump
 
 /// Consumes the response stream, forwarding events to `tx`; on failure sends a
-/// final [`StreamEvent::Failed`] with a remedy text (plan §6.11).
+/// final [`StreamEvent::Failed`] with a remedy text (ADR §6.11).
 async fn pump_stream(response: reqwest::Response, mut tx: mpsc::Sender<StreamEvent>) {
     if let Err(error) = pump_events(response, &mut tx).await {
         let _ = tx.send(StreamEvent::Failed(error.to_string())).await;

@@ -1,7 +1,7 @@
-//! Single-pass SEARCH/REPLACE parser — development plan §6.3 (R4).
+//! Single-pass SEARCH/REPLACE parser — ADR §6.3 (R4).
 //!
 //! Semantics borrowed from Aider's `find_original_update_blocks`
-//! (reference §3) with the plan's modifications:
+//! (reference §3) with the ADR's modifications:
 //!
 //! * markers are matched on `.trim()`ed lines and forgive run lengths
 //!   5–9 (`<<<<<<<` … `<<<<<<<<<`) plus a stray trailing `>` on HEAD —
@@ -214,8 +214,8 @@ pub fn parse_response(text: &str) -> ParsedResponse {
 
     // Missing final UPDATED at end-of-stream still commits (§6.3 rule 4).
     //
-    // Aider rejects this case outright; the plan deliberately forgives it
-    // (§0 rule 3 — the plan wins). Forgiving it safely means one extra
+    // Aider rejects this case outright; the ADR deliberately forgives it
+    // (§0 rule 2 — the ADR wins). Forgiving it safely means one extra
     // guard: the usual reason the marker is "missing" is that the model
     // omitted the newline before it, so the marker is sitting at the end of
     // the last REPLACE line. Committing that verbatim writes
@@ -327,7 +327,7 @@ fn collect_shell_block(lines: &[&str], i: usize) -> (String, usize) {
 }
 
 /// Candidate filenames from up to three lines above the HEAD marker at
-/// `head`, **nearest first**. Fence lines are skipped (plan §6.3 rule 3);
+/// `head`, **nearest first**. Fence lines are skipped (ADR §6.3 rule 3);
 /// the scan stops at the first non-fence line (Aider semantics — this keeps
 /// prose mentions two lines up from hijacking resolution). Blank lines are
 /// also skipped: a blank between filename and HEAD is a classic small-model

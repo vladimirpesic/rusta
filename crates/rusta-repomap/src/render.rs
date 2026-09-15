@@ -1,4 +1,4 @@
-//! Budget-fitted rendering — DEVELOPMENT_PLAN.md §6.5 steps 5–6.
+//! Budget-fitted rendering — ADR.md §6.5 steps 5–6.
 //!
 //! Definitions render in rank order, grouped by file, chat files excluded
 //! (their content is already in context). Each shown region is the

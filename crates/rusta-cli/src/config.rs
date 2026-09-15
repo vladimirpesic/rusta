@@ -1,4 +1,4 @@
-//! `rusta.toml` configuration — development plan §7.
+//! `rusta.toml` configuration — ADR §7.
 //!
 //! Discovery: `rusta.toml` in the cwd, then every parent, then `~/.rusta/`.
 //! The first file found wins; every section has a built-in default, so an

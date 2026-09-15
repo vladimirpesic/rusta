@@ -1,4 +1,4 @@
-//! In-memory tag cache — DEVELOPMENT_PLAN.md §6.5 step 7.
+//! In-memory tag cache — ADR.md §6.5 step 7.
 //!
 //! `(path, mtime, size, query_version) → Vec<Tag>`. Restarts re-scan (no
 //! persistence in v1); an mtime or size bump invalidates the entry, and a

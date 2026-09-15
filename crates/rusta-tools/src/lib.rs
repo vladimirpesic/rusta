@@ -1,8 +1,8 @@
-//! Phase-gated tool registry for Rusta — development plan §6.4 (R5).
+//! Phase-gated tool registry for Rusta — ADR §6.4 (R5).
 //!
 //! `rusta-tools` implements the ten canonical tools — `read`, `grep`, `glob`,
 //! `map_refresh`, `map_drill`, `dispatch`, `ask`, `edit`, `write`, `shell` —
-//! exactly as specified in the plan's tool reference (input keys, behavior,
+//! exactly as specified in the ADR's tool reference (input keys, behavior,
 //! §6.1 result caps). The registry filters itself by state: `edit`/`write`
 //! handlers are unreachable in read-only states and `dispatch` is
 //! unreachable in `Verifying` — by construction via the §6.4 state table,

@@ -21,7 +21,7 @@ use serde_json::Value;
 use crate::ask::Responder;
 use crate::shell::{Approver, ShellPolicy};
 
-/// Observation caps — development plan §6.1, normative.
+/// Observation caps — ADR §6.1, normative.
 pub mod caps {
     /// `read`: maximum lines per slice.
     pub const READ_LINES: usize = 2_000;

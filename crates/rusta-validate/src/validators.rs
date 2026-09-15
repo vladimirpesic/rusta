@@ -1,4 +1,4 @@
-//! Validator execution and Reflexion feedback — development plan §6.7 (R8).
+//! Validator execution and Reflexion feedback — ADR §6.7 (R8).
 //!
 //! The pieces, in agent-loop order:
 //!
@@ -18,7 +18,7 @@
 //!
 //! Nothing here ever aborts the agent: an unstartable, timing-out, or
 //! garbage-printing validator becomes a failing report with an actionable
-//! message (plan §6.11 — errors surfaced to the model must contain a remedy).
+//! message (ADR §6.11 — errors surfaced to the model must contain a remedy).
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -67,7 +67,7 @@ pub enum Error {
     },
 }
 
-/// The `[validate]` configuration table (plan §7) — commands run in order
+/// The `[validate]` configuration table (ADR §7) — commands run in order
 /// after each applied edit batch, plus a per-command wall-clock limit.
 ///
 /// An absent table deserializes to no validators, and validation is then
@@ -186,7 +186,7 @@ async fn run_one(command: &str, cwd: &Path, timeout: Duration) -> Report {
 }
 
 /// Exit code with the session contract's Unix convention: negative means
-/// killed by signal (plan §6.10).
+/// killed by signal (ADR §6.10).
 fn exit_code(status: &std::process::ExitStatus) -> i32 {
     if let Some(code) = status.code() {
         return code;
@@ -700,7 +700,7 @@ pub enum Verdict {
 
 impl Verdict {
     /// The phase-machine event this verdict wires into the Verifying exit
-    /// gate (plan §6.4 table): green passes, every failure returns to
+    /// gate (ADR §6.4 table): green passes, every failure returns to
     /// Editing — repairs and surfaces differ only in audience.
     pub fn event(&self) -> PhaseEvent {
         match self {

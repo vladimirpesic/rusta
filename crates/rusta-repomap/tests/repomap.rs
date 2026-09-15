@@ -1,4 +1,4 @@
-//! M4 acceptance (DEVELOPMENT_PLAN.md §8): golden snapshot maps on 3 sample
+//! M4 acceptance (ADR.md §8): golden snapshot maps on 3 sample
 //! repos; token-fitting never exceeds budget; cache hit path tested with
 //! mtime bumps; plus `map_drill` span/window behavior. Sample repos are
 //! built in tempdirs (no git → the ignore-aware walk path) and snapshots

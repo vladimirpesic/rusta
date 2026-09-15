@@ -1,4 +1,4 @@
-//! Sub-coder dispatch for Rusta — development plan §6.8 (R9).
+//! Sub-coder dispatch for Rusta — ADR §6.8 (R9).
 //!
 //! `rusta-dispatch` spawns isolated, read-only sub-coders over Tokio. Each
 //! research task runs in a fresh context (core prompt + task, own turn cap of

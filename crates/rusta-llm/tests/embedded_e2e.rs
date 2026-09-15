@@ -1,8 +1,8 @@
-//! Real-GGUF e2e tests for the embedded backend — development plan §9.
+//! Real-GGUF e2e tests for the embedded backend — ADR §9.
 //!
 //! `#[ignore]`d: they need a real model file selected via the `RUSTA_TEST_GGUF`
 //! environment variable, so default runs never depend on model availability
-//! (plan §9: embedded tests are `#[cfg(feature = "embedded")]` + `#[ignore]`,
+//! (ADR §9: embedded tests are `#[cfg(feature = "embedded")]` + `#[ignore]`,
 //! so CI default runs never need cmake). Run with:
 //!
 //! ```text

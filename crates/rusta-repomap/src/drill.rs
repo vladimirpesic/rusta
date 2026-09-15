@@ -1,4 +1,4 @@
-//! `map_drill` — DEVELOPMENT_PLAN.md §6.5 step 8 (tool reference §6.4).
+//! `map_drill` — ADR.md §6.5 step 8 (tool reference §6.4).
 //!
 //! Returns one definition's full span (`path` + `name`) or a line window
 //! (`path` + `from`/`to`, 1-based inclusive) as a compact text block.

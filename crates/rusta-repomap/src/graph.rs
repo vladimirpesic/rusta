@@ -4,7 +4,7 @@
 //! times by a file `r` contributes edges `r → definer` of weight
 //! `mul · √n_r` — Aider's damping, so heavier use pulls rank *toward* the
 //! definer (see the §6.5 step 3 erratum; dividing inverted the signal) —
-//! with the plan's boost/suppression rules; identifiers
+//! with the ADR's boost/suppression rules; identifiers
 //! defined but never referenced keep their files rankable through a 0.1
 //! self-edge. Ranking is power-iteration PageRank (damping 0.85,
 //! personalization `100/N` baseline plus boosts, dangling mass redistributed
@@ -122,7 +122,7 @@ pub(crate) fn rank_files(
     //
     // Weight is Aider's `use_mul * sqrt(n_r)` (repomap.py): more references
     // pull rank *toward* the definer, damped by the square root so that
-    // high-frequency (low-value) identifiers cannot dominate. The plan's
+    // high-frequency (low-value) identifiers cannot dominate. The ADR's
     // original `mul / (|D| · n_r)` inverted that signal — see the §6.5
     // step 3 erratum note. Chat files get Aider's ×50 referencer boost: what
     // the session is already working on is the strongest steering signal
