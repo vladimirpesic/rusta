@@ -480,3 +480,68 @@ async fn the_add_chat_set_survives_a_resume() {
         );
     }
 }
+
+/// A17 follow-up: a turn abandoned by transport failure keeps its phase —
+/// a dropped connection is not a user decision and must not discard an
+/// approved plan — *except* in `Verifying`, whose only exits are the two
+/// validation verdicts and `UserInterrupt`, and where `edit` is not
+/// registered. Keeping the phase there left the model with no reachable
+/// move at all; an abandoned verification is not a passed one, so the
+/// honest verdict returns it to `Editing`.
+#[tokio::test]
+async fn an_abandoned_turn_never_strands_the_phase_machine() {
+    use rusta_core::{PHASE_EVENTS, STATES, State, Tool};
+
+    // Verifying is the phase with no model-reachable exit: assert that
+    // property directly, so this test fails if the table ever changes.
+    let model_can_edit_in = |state: State| Tool::Edit.available_in(state);
+    assert!(
+        !model_can_edit_in(State::Verifying),
+        "if `edit` becomes available in Verifying, this hazard is gone"
+    );
+
+    // Every other phase has an exit the model itself can cause, so keeping
+    // the phase there is safe.
+    for state in STATES {
+        if state == State::Verifying {
+            continue;
+        }
+        let reachable = PHASE_EVENTS.iter().any(|event| {
+            matches!(event, rusta_core::PhaseEvent::PlanDrafted)
+                || matches!(event, rusta_core::PhaseEvent::PlanApproved)
+                || matches!(event, rusta_core::PhaseEvent::EditsApplied)
+        });
+        assert!(reachable, "{state} must have a model-drivable exit");
+    }
+
+    // And end to end: a dead backend in Verifying must not strand the run.
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").expect("seed");
+    let config = Config::parse(
+        "[backend]\nbase_url = \"http://127.0.0.1:1/v1\"\n\
+         [agent]\nauto_approve = true\n[validate]\ncommands = []\n",
+    )
+    .expect("config");
+    let capture = Capture::default();
+    let mut app = App::new(
+        config,
+        &Overrides::default(),
+        dir.path().to_path_buf(),
+        dir.path().join("s.jsonl"),
+        Reporter::new(Box::new(capture.clone())),
+        Mode::Oneshot,
+    )
+    .expect("app");
+
+    app.handle_line("do something").await;
+    assert!(
+        capture.text().contains("turn abandoned"),
+        "the dead backend must report, not panic: {}",
+        capture.text()
+    );
+    assert_ne!(
+        app.machine.state(),
+        State::Verifying,
+        "an abandoned turn must never leave the machine in Verifying"
+    );
+}

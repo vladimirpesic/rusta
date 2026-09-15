@@ -1,5 +1,6 @@
 //! The `read` tool — §6.4: numbered file slice, capped per §6.1.
 
+use std::io::BufRead as _;
 use std::path::Path;
 
 use serde_json::Value;
@@ -24,20 +25,14 @@ fn run(root: &Path, input: &Value) -> Result<ToolOutcome, ToolOutcome> {
         }
     }
 
-    // Bounded read: the §6.1 caps govern what is *returned*, but the file
-    // was loaded whole first, so a multi-gigabyte file in the repo meant a
-    // multi-gigabyte allocation to hand back 64 KiB. Read a bounded prefix —
-    // generous enough that the line/byte caps below still decide the slice.
-    const READ_PREFIX_BYTES: u64 = (caps::READ_BYTES as u64) * 8;
-    let bytes = match std::fs::File::open(root.join(&rel)) {
-        Ok(file) => {
-            use std::io::Read as _;
-            let mut bytes = Vec::new();
-            if let Err(err) = file.take(READ_PREFIX_BYTES).read_to_end(&mut bytes) {
-                return Err(ToolOutcome::error(format!("{raw}: {err}")));
-            }
-            bytes
-        }
+    // Streamed, not buffered whole. Loading the file first meant a
+    // multi-gigabyte allocation to hand back 64 KiB; reading a fixed prefix
+    // instead was worse — a window past the prefix silently returned the
+    // wrong lines with `status: Ok`, which is exactly the input a SEARCH
+    // block gets anchored on. Streaming bounds memory *and* serves any
+    // window, because only the requested slice is ever retained.
+    let file = match std::fs::File::open(root.join(&rel)) {
+        Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             return Err(ToolOutcome::error(format!(
                 "{raw}: no such file — check the path (glob can find it)"
@@ -45,35 +40,69 @@ fn run(root: &Path, input: &Value) -> Result<ToolOutcome, ToolOutcome> {
         }
         Err(err) => return Err(ToolOutcome::error(format!("{raw}: {err}"))),
     };
-    if bytes.contains(&0) {
-        return Err(ToolOutcome::error(format!(
-            "{raw}: binary file (contains NUL bytes); read handles text files only"
-        )));
+    let mut reader = std::io::BufReader::new(file);
+
+    let mut shown: Vec<String> = Vec::new();
+    let mut bytes_used = 0usize;
+    let mut last_line = from.saturating_sub(1); // 1-based last included line
+    let mut total_lines = 0usize;
+    let mut hit_cap = false;
+    let mut raw_line: Vec<u8> = Vec::new();
+    loop {
+        raw_line.clear();
+        // `read_until` returns 0 only at EOF, and a final line without a
+        // trailing newline still yields bytes — matching `str::lines`, which
+        // `split(b'\n')` would not (it invents a trailing empty line).
+        let read = match reader.read_until(b'\n', &mut raw_line) {
+            Ok(read) => read,
+            Err(err) => return Err(ToolOutcome::error(format!("{raw}: {err}"))),
+        };
+        if read == 0 {
+            break;
+        }
+        if raw_line.contains(&0) {
+            return Err(ToolOutcome::error(format!(
+                "{raw}: binary file (contains NUL bytes); read handles text files only"
+            )));
+        }
+        total_lines += 1;
+        let number = total_lines;
+        if let Some(to) = to {
+            if number > to {
+                // Past the window. Keep counting so a cap-truncation report
+                // can name how many lines it withheld, but retain nothing.
+                continue;
+            }
+        }
+        if number < from || hit_cap {
+            continue;
+        }
+        // Strip the line ending the way `str::lines` does.
+        let mut text: &[u8] = &raw_line;
+        if text.last() == Some(&b'\n') {
+            text = &text[..text.len() - 1];
+        }
+        if text.last() == Some(&b'\r') {
+            text = &text[..text.len() - 1];
+        }
+        let numbered = format!("{number:>4}| {}", String::from_utf8_lossy(text));
+        bytes_used += numbered.len() + 1;
+        if shown.len() >= caps::READ_LINES || bytes_used > caps::READ_BYTES {
+            hit_cap = true;
+            continue;
+        }
+        shown.push(numbered);
+        last_line = number;
     }
 
-    let text = String::from_utf8_lossy(&bytes);
-    let lines: Vec<&str> = text.lines().collect();
-    if lines.is_empty() {
+    if total_lines == 0 {
         let mut outcome = ToolOutcome::ok(format!("{raw}: (empty file)"));
         outcome.read_credit = Some(rel.display().to_string());
         return Ok(outcome);
     }
-
-    let from = from.min(lines.len());
-    // The requested window, before caps: `to` omitted means "to EOF".
-    let requested_to = to.unwrap_or(lines.len()).min(lines.len());
-    let mut shown: Vec<String> = Vec::new();
-    let mut bytes_used = 0usize;
-    let mut last_line = from.saturating_sub(1); // 1-based last included line
-    for (index, line) in lines.iter().enumerate().take(requested_to).skip(from - 1) {
-        let numbered = format!("{:>4}| {line}", index + 1);
-        bytes_used += numbered.len() + 1;
-        if shown.len() >= caps::READ_LINES || bytes_used > caps::READ_BYTES {
-            break;
-        }
-        shown.push(numbered);
-        last_line = index + 1;
-    }
+    // The window the caller actually asked for, clamped to the file.
+    let from = from.min(total_lines);
+    let requested_to = to.unwrap_or(total_lines).min(total_lines);
 
     // Truncated means *a §6.1 cap cut the slice short* — not that the caller
     // asked for a window. Reporting a deliberate window as cap-truncated

@@ -503,3 +503,110 @@ async fn read_tools_refuse_a_symlink_out_of_the_repo() {
     assert_eq!(fine.status, rusta_core::Status::Ok);
     assert!(fine.content.contains("ordinary"), "{}", fine.content);
 }
+
+/// A20 follow-up: `read` must bound memory *and* serve any window.
+///
+/// Buffering the whole file meant a multi-gigabyte allocation to return
+/// 64 KiB; the first fix read a fixed 512 KiB prefix instead, which was
+/// worse — `read(from: 30000)` on a larger file returned line 19830 with
+/// `status: Ok`, i.e. silently wrong content, which is exactly what a SEARCH
+/// block gets anchored on. Streaming retains only the requested slice.
+#[tokio::test]
+async fn read_serves_windows_past_any_internal_buffer() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // ~1.1 MB, well past the 512 KiB prefix the first fix used.
+    let big: String = (1..=40_000)
+        .map(|i| format!("line {i} padding_padding\n"))
+        .collect();
+    std::fs::write(dir.path().join("big.rs"), &big).expect("write");
+    let tools = registry(dir.path(), 60);
+
+    for (from, to) in [(1usize, 5usize), (30_000, 30_005), (39_996, 40_000)] {
+        let out = tools
+            .exec(
+                rusta_core::State::Exploring,
+                "read",
+                &json!({"path": "big.rs", "from": from, "to": to}),
+            )
+            .await;
+        assert_eq!(out.status, rusta_core::Status::Ok, "{from}..{to}");
+        let first = out.content.lines().nth(1).unwrap_or_default();
+        assert!(
+            first.contains(&format!("line {from} ")),
+            "read {from}..{to} returned {first:?} — the window must be the one asked for"
+        );
+        assert!(!out.truncated, "a requested window is not a cap truncation");
+    }
+
+    // Memory stays bounded: reading a whole large file returns one capped
+    // slice, not the file.
+    let whole = tools
+        .exec(
+            rusta_core::State::Exploring,
+            "read",
+            &json!({"path": "big.rs"}),
+        )
+        .await;
+    assert!(whole.truncated, "the 2,000-line cap must trip");
+    assert!(
+        whole.content.len() <= 64 * 1024 + 512,
+        "returned {} bytes",
+        whole.content.len()
+    );
+    assert!(
+        whole.content.contains("38000 more lines"),
+        "the withheld count must be accurate: {}",
+        whole.content.lines().next_back().unwrap_or_default()
+    );
+}
+
+/// A20 follow-up: the streaming rewrite must keep `str::lines` semantics —
+/// a trailing newline is not an extra empty line, a file without one still
+/// yields its last line, CRLF endings are stripped, and an empty file is
+/// still reported as empty.
+#[tokio::test]
+async fn read_line_semantics_survive_the_streaming_rewrite() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("trailing.txt"), "a\nb\n").expect("write");
+    std::fs::write(dir.path().join("bare.txt"), "a\nb").expect("write");
+    std::fs::write(dir.path().join("crlf.txt"), "a\r\nb\r\n").expect("write");
+    std::fs::write(dir.path().join("empty.txt"), "").expect("write");
+    std::fs::write(dir.path().join("binary.bin"), [0x41, 0x00, 0x42]).expect("write");
+    let tools = registry(dir.path(), 60);
+
+    let read = async |name: &str| {
+        tools
+            .exec(
+                rusta_core::State::Exploring,
+                "read",
+                &json!({ "path": name }),
+            )
+            .await
+    };
+
+    let trailing = read("trailing.txt").await;
+    assert!(
+        trailing.content.ends_with("   2| b"),
+        "{}",
+        trailing.content
+    );
+    assert!(
+        trailing.content.starts_with("trailing.txt:1-2"),
+        "a trailing newline must not invent a third line: {}",
+        trailing.content
+    );
+
+    let bare = read("bare.txt").await;
+    assert!(bare.content.ends_with("   2| b"), "{}", bare.content);
+
+    let crlf = read("crlf.txt").await;
+    assert!(!crlf.content.contains('\r'), "CRLF must be stripped");
+    assert!(crlf.content.ends_with("   2| b"), "{}", crlf.content);
+
+    let empty = read("empty.txt").await;
+    assert!(empty.content.contains("(empty file)"), "{}", empty.content);
+
+    let binary = read("binary.bin").await;
+    assert_eq!(binary.status, rusta_core::Status::Error);
+    assert!(binary.content.contains("binary file"), "{}", binary.content);
+}

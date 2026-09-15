@@ -146,10 +146,11 @@ pub struct ShellSection {
     pub allow: Vec<String>,
     /// Extra deny regexes extending the §6.12 table.
     pub deny: Vec<String>,
-    /// Environment variable *names* forwarded into `shell` and validator
-    /// subprocesses on top of `PATH`/`HOME`/`LANG` — §6.12's "minimal
-    /// environment (… + config allow-list)". Values come from the parent
-    /// process, never from this file.
+    /// Environment variable *names* the `shell` tool forwards on top of
+    /// `PATH`/`HOME`/`LANG` — §6.12's "minimal environment (… + config
+    /// allow-list)". `shell` is the only subprocess Rusta runs with a
+    /// cleared environment; validators inherit the parent's already. Values
+    /// always come from the parent process, never from this file.
     pub env: Vec<String>,
 }
 

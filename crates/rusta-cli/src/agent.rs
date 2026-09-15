@@ -485,12 +485,17 @@ impl App {
         let entries: Vec<UndoEntry> =
             self.tools.editor().undo_stack().pending()[undo_before..].to_vec();
         for entry in &entries {
-            let _ = self.session.record_edit(
+            // The edit journal is what `/undo` restores from, so a silent
+            // failure here costs more than any other dropped write.
+            let recorded = self.session.record_edit(
                 &entry.path.display().to_string(),
                 entry.existed,
                 &entry.before,
                 &entry.after,
             );
+            if let Err(err) = recorded {
+                self.report_journal_failure(&err);
+            }
         }
         // §6.4 exit gate: the batch is applied → Verifying.
         self.fire(PhaseEvent::EditsApplied);
@@ -598,11 +603,11 @@ impl App {
                 // `UserInterrupt` journaled `reason: "user interrupt"` for a
                 // dropped connection and regressed Planning/Editing →
                 // Exploring, discarding an approved plan the user still
-                // wants. The turn is abandoned; the phase is left alone so a
-                // retry resumes where it was.
-                self.reporter.line(&format!(
-                    "backend error: {err} — turn abandoned, phase kept"
-                ));
+                // wants. See `abandon_turn` for why the phase is kept —
+                // and for the one phase where keeping it is not safe.
+                self.reporter
+                    .line(&format!("backend error: {err} — turn abandoned"));
+                self.abandon_turn();
                 return None;
             }
         };
@@ -636,10 +641,10 @@ impl App {
                     Some(StreamEvent::Finish(_)) => break,
                     Some(StreamEvent::Failed(cause)) => {
                         // As above: mid-stream transport loss is not a user
-                        // interrupt, and must not discard plan state.
-                        self.reporter.line(&format!(
-                            "\nstream failed: {cause} — turn abandoned, phase kept"
-                        ));
+                        // interrupt and must not discard plan state.
+                        self.reporter
+                            .line(&format!("\nstream failed: {cause} — turn abandoned"));
+                        self.abandon_turn();
                         return None;
                     }
                     None => break, // channel closed; keep what streamed
@@ -903,6 +908,22 @@ impl App {
         self.card_cues.push(name.to_owned());
         if status == Status::Error {
             self.card_cues.extend(rusta_core::error_cues(name, content));
+        }
+    }
+
+    /// A turn abandoned by transport failure, not by the user.
+    ///
+    /// The phase is kept — firing `UserInterrupt` for a dropped connection
+    /// journaled a network fault as a user decision and discarded an
+    /// approved plan. The one exception is `Verifying`: its only exits are
+    /// the two validation verdicts and `UserInterrupt`, and `edit` is not
+    /// registered there, so a kept phase would leave the model with no
+    /// reachable move at all. An abandoned verification is not a passed one
+    /// (§6.7 opens the gate only on green), so `ValidationFailed` is the
+    /// honest verdict and returns to `Editing`, where work can continue.
+    fn abandon_turn(&mut self) {
+        if self.machine.state() == State::Verifying {
+            self.fire(PhaseEvent::ValidationFailed);
         }
     }
 

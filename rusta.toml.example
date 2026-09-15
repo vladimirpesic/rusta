@@ -31,6 +31,8 @@ commands = ["cargo check --workspace", "cargo clippy --workspace -- -D warnings"
 timeout_secs = 60
 allow = []                # extra allow-listed command prefixes
 deny = []                 # extra deny regexes (§6.12)
-# Environment variable *names* forwarded to shell/validator subprocesses on
-# top of PATH/HOME/LANG (§6.12). Values come from your environment, not here.
+# Environment variable *names* the `shell` tool forwards on top of
+# PATH/HOME/LANG (§6.12) — it is the only subprocess Rusta runs with a
+# cleared environment. Validators inherit yours already. Values always come
+# from your environment, never from this file.
 env = []                  # e.g. ["RUSTFLAGS", "CARGO_TARGET_DIR"]

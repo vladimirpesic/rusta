@@ -306,15 +306,22 @@ impl App {
     /// be invisible, which is what discarding every `Result` made it.
     pub(crate) fn journal(&mut self, event: rusta_core::Event) {
         if let Err(err) = self.session.record(event) {
-            if !self.journal_broken {
-                self.journal_broken = true;
-                self.reporter.line(&format!(
-                    "! session log write failed: {err}. The session continues, but this run \
-                     will not fully /resume. Check disk space and permissions on {}.",
-                    self.session.path().display()
-                ));
-            }
+            self.report_journal_failure(&err);
         }
+    }
+
+    /// Reports the first session-log write failure of the run, once.
+    pub(crate) fn report_journal_failure(&mut self, err: &rusta_core::Error) {
+        if self.journal_broken {
+            return;
+        }
+        self.journal_broken = true;
+        self.reporter.line(&format!(
+            "! session log write failed: {err}. The session continues, but this run will \
+             not fully /resume — and /undo depth may be short. Check disk space and \
+             permissions on {}.",
+            self.session.path().display()
+        ));
     }
 
     /// Records `SessionEnd` — the clean close of the log (§6.10).
