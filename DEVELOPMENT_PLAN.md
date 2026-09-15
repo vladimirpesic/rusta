@@ -690,7 +690,6 @@ Canonical counting is this script (`wc -l`); `tokei` is an optional cross-check.
 > In a project whose defects have all been test-coverage defects, that is the wrong pressure.
 > `scripts/loc_budget.sh` now splits each source file at its `#[cfg(test)]` marker and reports
 > `production`, `tests` (inline + suites) and `total` separately.
-
 > **Erratum (2026-09-15, fifth audit).** The 20,000 total cap was reached. Production
 > is not the pressure — it stands at ~12.3k against its unchanged 15,000 — and all of
 > the growth has been regression tests from five audit rounds. Holding 20,000 would
