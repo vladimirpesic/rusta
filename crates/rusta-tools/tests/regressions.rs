@@ -504,6 +504,122 @@ async fn read_tools_refuse_a_symlink_out_of_the_repo() {
     assert!(fine.content.contains("ordinary"), "{}", fine.content);
 }
 
+/// A26/A32 (round 8): the A10 fence reached `read` and `map_drill` and
+/// stopped there. §6.12's read-side revision names *three* tools, and the
+/// test that should have caught the gap was named for all of them while
+/// exercising one — the §16.2 rule ("check every consumer") applied to two
+/// of the three consumers the spec itself lists.
+///
+/// This walks every read-side tool that returns file *content*, so a fourth
+/// one cannot be added unfenced without turning this red. `glob` is absent
+/// deliberately: it returns paths, not content.
+#[tokio::test]
+async fn every_read_side_tool_refuses_a_symlink_out_of_the_repo() {
+    let repo = tempfile::tempdir().expect("repo");
+    let outside = tempfile::tempdir().expect("outside");
+    std::fs::write(outside.path().join("secrets.txt"), "API_KEY=hunter2\n").expect("seed");
+    std::fs::write(
+        outside.path().join("secret.rs"),
+        "pub fn leaked_secret_fn() {}\n",
+    )
+    .expect("seed");
+    std::fs::create_dir_all(repo.path().join("src")).expect("src");
+    // Two shapes: a bare file symlink, and one that tree-sitter will parse.
+    std::os::unix::fs::symlink(
+        outside.path().join("secrets.txt"),
+        repo.path().join("link.txt"),
+    )
+    .expect("symlink");
+    std::os::unix::fs::symlink(
+        outside.path().join("secret.rs"),
+        repo.path().join("src/linked.rs"),
+    )
+    .expect("symlink");
+    std::fs::write(repo.path().join("src/ok.rs"), "pub fn normal() {}\n").expect("seed");
+
+    let tools = registry(repo.path(), 60);
+
+    // `read` — fenced since A10.
+    let read = tools
+        .exec(
+            rusta_core::State::Exploring,
+            "read",
+            &json!({"path": "link.txt"}),
+        )
+        .await;
+    assert!(
+        !read.content.contains("hunter2"),
+        "read leaked outside-repo content: {}",
+        read.content
+    );
+
+    // `map_drill` — fenced since A10.
+    let drill = tools
+        .exec(
+            rusta_core::State::Exploring,
+            "map_drill",
+            &json!({"path": "src/linked.rs", "from": 1, "to": 1}),
+        )
+        .await;
+    assert!(
+        !drill.content.contains("leaked_secret_fn"),
+        "map_drill leaked outside-repo content: {}",
+        drill.content
+    );
+
+    // A26: `grep` walked the symlink and read straight through it.
+    let grep = tools
+        .exec(
+            rusta_core::State::Exploring,
+            "grep",
+            // Grep for the key *name*, assert the *value* never appears:
+            // a no-match message echoes the pattern back, so asserting on
+            // the pattern itself would match the message and pass either way.
+            &json!({"pattern": "API_KEY"}),
+        )
+        .await;
+    assert!(
+        !grep.content.contains("hunter2"),
+        "grep leaked outside-repo content: {}",
+        grep.content
+    );
+
+    // A32: the repo map extracted tags from the symlink target and rendered
+    // its source lines. Extraction leaks identifier names even when the
+    // render read is fenced, so the fence has to sit before extraction.
+    let map = tools
+        .exec(rusta_core::State::Exploring, "map_refresh", &json!({}))
+        .await;
+    assert!(
+        !map.content.contains("leaked_secret_fn"),
+        "map_refresh leaked outside-repo content: {}",
+        map.content
+    );
+
+    // Over-fencing is the real risk of this fix: ordinary in-repo files must
+    // still be found by every one of them.
+    let ok = tools
+        .exec(
+            rusta_core::State::Exploring,
+            "grep",
+            &json!({"pattern": "normal"}),
+        )
+        .await;
+    assert!(
+        ok.content.contains("src/ok.rs"),
+        "grep stopped finding in-repo content: {}",
+        ok.content
+    );
+    let map_ok = tools
+        .exec(rusta_core::State::Exploring, "map_refresh", &json!({}))
+        .await;
+    assert!(
+        map_ok.content.contains("normal"),
+        "map_refresh stopped rendering in-repo files: {}",
+        map_ok.content
+    );
+}
+
 /// A20 follow-up: `read` must bound memory *and* serve any window.
 ///
 /// Buffering the whole file meant a multi-gigabyte allocation to return

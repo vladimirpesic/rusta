@@ -99,6 +99,15 @@ impl RepoMap {
             let Some(lang) = lang::Lang::from_path(&abs) else {
                 continue;
             };
+            // A32 (§6.12, read side): a tracked symlink pointing out of the
+            // workspace had its target extracted and rendered. The fence
+            // sits *before* extraction, not at the render read: tags carry
+            // identifier names out even when the source lines are withheld,
+            // and both `chat` and discovered files funnel through here — the
+            // one place every input to the map passes.
+            if !discover::within_root(&self.root, rel) {
+                continue;
+            }
             match self.cache.get_or_extract(&abs, rel, lang) {
                 Some([]) => {
                     bare.insert(rel.clone());

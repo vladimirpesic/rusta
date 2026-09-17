@@ -93,6 +93,21 @@ pub(crate) fn grep(root: &Path, input: &Value) -> ToolOutcome {
                 continue;
             }
         }
+        // A26 (§6.12, read side): `read` and `map_drill` resolve through
+        // `safe_rel_in`; `grep` walked straight through an in-repo symlink
+        // pointing out of the workspace and returned the target's content
+        // as a successful observation — also reachable from a sub-coder,
+        // so it crossed the §6.8 isolation boundary too.
+        //
+        // Skipping silently is right *here* and wrong for `read`: a `grep`
+        // sweep names no path, so there is no model belief to correct.
+        //
+        // Cost, measured on a 5,000-file repo: 72 ms -> 99 ms, i.e. ~5.4 us
+        // per file. It runs only for files that already passed the glob
+        // filter, and sits beside a `metadata` + `read` of the same file.
+        if !rusta_edit::contains_path(root, &rel) {
+            continue;
+        }
         let abs = root.join(&rel);
         let Ok(meta) = fs::metadata(&abs) else {
             continue;

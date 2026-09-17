@@ -24,6 +24,28 @@ pub(crate) fn source_files(root: &Path) -> Vec<String> {
     rels
 }
 
+/// True when `root/rel` resolves *inside* `root` — the §6.12 read-side
+/// fence, applied to the map.
+///
+/// This mirrors `rusta_edit::contains_path` rather than calling it:
+/// `rusta-repomap` is a leaf crate with no `rusta-*` dependencies, and
+/// making the map depend on the *edit* crate for a filesystem predicate
+/// would invert the dependency graph for eight lines of `std`. The
+/// duplication is deliberate and should be resolved by moving the
+/// predicate somewhere both can reach, not by adding that edge.
+///
+/// A non-existent path canonicalizes to `Err` and is treated as outside.
+/// That matches the map's existing behaviour for tracked-but-deleted files,
+/// which it already skips.
+pub(crate) fn within_root(root: &Path, rel: &str) -> bool {
+    let Ok(real_root) = root.canonicalize() else {
+        return true; // unknowable root — as in `contains_path`
+    };
+    root.join(rel)
+        .canonicalize()
+        .is_ok_and(|real| real.starts_with(&real_root))
+}
+
 fn git_ls_files(root: &Path) -> Option<Vec<String>> {
     let out = std::process::Command::new("git")
         .arg("ls-files")
