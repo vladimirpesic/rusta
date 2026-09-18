@@ -135,6 +135,15 @@ not. The approval gate still stands in front of all of these — but `/auto` ski
 **Fix:** either extend the table to the spellings above, or amend §6.12 to describe the
 table's real scope. The current text promises more than the code delivers.
 
+**Status: RESOLVED** (wave 2) — **both**, because neither alone is honest. The table now tests
+the three spellings of "outside" (absolute, `~`/`$HOME`, `../` traversal) instead of enumerating
+system directories, and tests the *final* argument for `cp`/`mv` so reading from outside into the
+repo stays allowed. §6.12 now states what a regex table over a Turing-complete shell can and
+cannot guarantee: a filter against a confused model, not an adversarial boundary. Pinned by a
+33-command corpus asserting **both** directions — 21 must-deny and 12 must-allow, because
+widening a deny list breaks legitimate commands and a shell tool that cries wolf gets `/auto`-ed
+past.
+
 ### A28 — Silent truncation when a stream ends without `finish_reason` or `[DONE]`
 
 *Origin: KIMI F-03 · `crates/rusta-llm/src/http.rs:411-431`*
@@ -151,6 +160,11 @@ error only if you never find out.
 
 **Fix:** track whether `[DONE]` or a `finish_reason` was seen; emit `Failed` (or a distinct
 `FinishReason`) otherwise.
+
+**Status: RESOLVED** (wave 2). Deliberately narrow: a server that omits `[DONE]` but sends a
+`finish_reason` is still believed, so only the genuinely ambiguous case fails. Both directions
+pinned. With the check disabled the test reports the defect verbatim — `[Delta("partial ans"),
+Finish(Stop)]`.
 
 ### A29 — A partial `/undo` failure destroys the rest of the batch and still reverts the commit
 
@@ -174,6 +188,12 @@ stays self-consistent. The on-disk state does not.
 **Fix:** restore before popping (or re-push on failure), and make the commit revert conditional
 on a complete restore.
 
+**Status: RESOLVED** (wave 2), all three composing mistakes: `undo_last` pops the journal entry
+only after the restore succeeds; the batch stays on the stack reduced to what is still
+unrestored; and the commit revert is skipped entirely on a partial restore. A retry after fixing
+the disk now finishes the undo. Pinned by a test that injects a real write failure (`0o444`) and
+fails loudly rather than skipping if the injection does not take.
+
 ### A30 — No test exercises `StreamEvent::Failed` or a truncated stream
 
 *Origin: KIMI F-05 · `crates/rusta-llm/tests/`*
@@ -182,6 +202,9 @@ Across `mock_server.rs`, `http_e2e.rs` and `embedded_e2e.rs`, the only occurrenc
 a `panic!` arm in `embedded_e2e.rs:72` — an assertion that it does *not* happen. No test produces
 a mid-stream failure, a malformed chunk, or a stream that ends early. A28's behaviour and A31's
 bound both ship on paths nothing has ever run.
+
+**Status: RESOLVED** (wave 2). Three `Step::Fragments` tests now drive the failure path: a cut
+stream, a `finish_reason` without `[DONE]`, and an out-of-range `tool_calls` index.
 
 ### A31 — The A8 fix has no regression test, and ADR §16.4 claims otherwise
 
@@ -195,6 +218,13 @@ implementation and its own comment.
 ADR §16.4 states: *"All 25 findings were resolved and each is pinned by a regression test."*
 That sentence is false, and it is load-bearing — it is the sentence a future reader would rely on
 to skip re-verification. This is the §16.6 rule 3 failure applied to the project's own record.
+
+**Status: RESOLVED** (wave 2). The bound is now pinned by
+`an_out_of_range_tool_call_index_is_rejected_not_allocated`, and ADR §16.4's claim is corrected
+to say that "pinned by a test" is a claim to check rather than a conclusion. Proving this guard
+by reverting it was declined deliberately: doing so would attempt the 309 GB allocation it
+exists to prevent, so the test was instead shown to discriminate on the index value (63 passes
+clean, 4294967295 fails).
 
 ### A32 — The map renderer follows symlinks out of the repository
 

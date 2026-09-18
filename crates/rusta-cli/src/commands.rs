@@ -184,21 +184,54 @@ fn drop_files(app: &mut App, pattern: &str) -> Control {
 /// `/undo` (§6.9): restore the last batch's files from the journal, then
 /// revert its commit — only if that commit is still exactly `HEAD`.
 fn undo(app: &mut App) -> Control {
-    let Some(batch) = app.batches.pop() else {
+    // A29: the batch is *not* popped until the restore is known to have
+    // finished. Popping first meant a mid-batch disk failure left the tree
+    // half-restored, the batch gone from the stack, and the commit reverted
+    // anyway — tree and history disagreeing, with the next `/undo` reporting
+    // "nothing to undo".
+    let Some(batch) = app.batches.last().cloned() else {
         app.reporter.line("nothing to undo");
         return Control::Continue;
     };
     let mut restored: Vec<String> = Vec::new();
+    let mut disk_failure: Option<String> = None;
     for _ in 0..batch.entries {
         match app.tools.editor().undo_last() {
             Ok(Some(entry)) => restored.push(entry.path.display().to_string()),
-            Ok(None) => break,
+            Ok(None) => break, // journal ran short: nothing further to restore
             Err(err) => {
-                app.reporter.line(&format!("undo failed on disk: {err}"));
+                disk_failure = Some(err.to_string());
                 break;
             }
         }
     }
+
+    // A29: a disk failure is recoverable now — `undo_last` leaves the
+    // unrestored entries on the journal — so keep the batch (minus what was
+    // restored) and leave the commit alone. Reverting it here is what made
+    // the inconsistency permanent.
+    if let Some(err) = disk_failure {
+        if let Some(head) = app.batches.last_mut() {
+            head.entries = head.entries.saturating_sub(restored.len());
+        }
+        app.journal(rusta_core::Event::UndoApplied {
+            entries: restored.len(),
+        });
+        app.reporter.line(&format!(
+            "undo failed on disk after {} of {} file(s): {err}",
+            restored.len(),
+            batch.entries
+        ));
+        for path in &restored {
+            app.reporter.line(&format!("  {path}"));
+        }
+        app.reporter.line(
+            "the commit was kept and the remaining files are still journaled — \
+             fix the disk error and run /undo again to finish",
+        );
+        return Control::Continue;
+    }
+    app.batches.pop();
     // §6.9: journal the undo so replay cannot resurrect what it removed.
     // Recording the count actually restored (not `batch.entries`) keeps the
     // tombstone true even when the journal ran short.

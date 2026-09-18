@@ -122,8 +122,13 @@ impl UndoStack {
     /// `root`. Undoing a created file removes it (a leftover parent
     /// directory is harmless and kept). Returns `Ok(None)` when the journal
     /// is empty.
+    /// A29: the entry is popped only *after* the restore succeeds. Popping
+    /// first meant a failed write (full disk, read-only mount, lost
+    /// permission) destroyed the record of what to restore — the `?` below
+    /// returns after the pop — so the file stayed modified with no way back.
+    /// Leaving it on the stack makes the failure retryable.
     pub fn undo_last(&mut self, root: &Path) -> io::Result<Option<UndoEntry>> {
-        let Some(entry) = self.entries.pop() else {
+        let Some(entry) = self.entries.last() else {
             return Ok(None);
         };
         // Fenced like every other mutation (§6.12). This path was the one
@@ -136,7 +141,7 @@ impl UndoStack {
             Mutation::Remove
         };
         guarded(root, &entry.path, what)?;
-        Ok(Some(entry))
+        Ok(self.entries.pop())
     }
 
     /// Rebuilds a journal from recorded entries, oldest first — the

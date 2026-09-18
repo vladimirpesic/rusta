@@ -545,3 +545,112 @@ async fn an_abandoned_turn_never_strands_the_phase_machine() {
         "an abandoned turn must never leave the machine in Verifying"
     );
 }
+
+/// A29 (round 8): a disk failure part-way through `/undo` left the tree
+/// half-restored, destroyed the journal entries for the rest of the batch,
+/// popped the batch off the stack, and reverted the commit anyway — so the
+/// working tree and git history disagreed and the next `/undo` answered
+/// "nothing to undo". Three separate mistakes composing into an
+/// unrecoverable state.
+///
+/// The failure is injected by making the target file read-only, which is the
+/// reason this path shipped untested: it cannot be reached by scripting the
+/// REPL alone. Note the test fails *loudly* rather than skipping if the
+/// injection does not take (running as root, where mode bits are advisory) —
+/// a test that quietly no-ops is the §16.1 shape this project keeps finding.
+#[tokio::test]
+async fn a_failed_undo_keeps_the_batch_the_journal_and_the_commit() {
+    use rusta_core::{Event, Session};
+
+    let repo = tempfile::TempDir::new().expect("repo");
+    let a = repo.path().join("a.txt");
+    let b = repo.path().join("b.txt");
+    std::fs::write(&a, "A_NEW\n").expect("seed");
+    std::fs::write(&b, "B_NEW\n").expect("seed");
+    let log = repo.path().join("s.jsonl");
+    {
+        let mut session = Session::open(&log).expect("open");
+        session.record(Event::BatchBoundary).expect("boundary");
+        session
+            .record_edit("a.txt", true, "A_OLD\n", "A_NEW\n")
+            .expect("edit");
+        session
+            .record_edit("b.txt", true, "B_OLD\n", "B_NEW\n")
+            .expect("edit");
+        // A commit for the batch: the point is that it must survive.
+        session
+            .record(Event::Commit {
+                sha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_owned(),
+                message: "rusta: two files".to_owned(),
+            })
+            .expect("commit");
+    }
+
+    let capture = Capture::default();
+    let mut app = App::new(
+        Config::default(),
+        &Overrides::default(),
+        repo.path().to_path_buf(),
+        log,
+        Reporter::new(Box::new(capture.clone())),
+        Mode::Repl,
+    )
+    .expect("app");
+    assert_eq!(
+        app.batches.iter().map(|b| b.entries).collect::<Vec<_>>(),
+        vec![2],
+        "one batch holding both edits"
+    );
+
+    // Undo is LIFO, so `b.txt` restores first and `a.txt` is the one that
+    // must fail. 0o444 makes the write fail with EACCES for a normal user.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&a, std::fs::Permissions::from_mode(0o444)).expect("chmod");
+
+    app.handle_line("/undo").await;
+    let shown = capture.text();
+
+    assert_eq!(
+        std::fs::read_to_string(&b).expect("read b"),
+        "B_OLD\n",
+        "the entry that could be restored was restored"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&a).expect("read a"),
+        "A_NEW\n",
+        "the read-only file must NOT have been restored — if this fails the \
+         injection did not take (are you running as root?), and the rest of \
+         this test proves nothing"
+    );
+    assert!(
+        shown.contains("undo failed on disk after 1 of 2"),
+        "the partial failure must be reported honestly: {shown}"
+    );
+    assert!(
+        !shown.contains("reverted commit"),
+        "the commit must be kept when the restore did not finish: {shown}"
+    );
+    assert_eq!(
+        app.batches.iter().map(|b| b.entries).collect::<Vec<_>>(),
+        vec![1],
+        "the batch stays on the stack, reduced to what is still unrestored"
+    );
+    assert_eq!(
+        app.tools.editor().undo_stack().len(),
+        1,
+        "the unrestored journal entry must survive the failed write"
+    );
+
+    // …and the whole point: once the disk problem is fixed, a retry finishes.
+    std::fs::set_permissions(&a, std::fs::Permissions::from_mode(0o644)).expect("chmod back");
+    app.handle_line("/undo").await;
+    assert_eq!(
+        std::fs::read_to_string(&a).expect("read a"),
+        "A_OLD\n",
+        "the retry completes the undo the disk error interrupted"
+    );
+    assert!(
+        app.batches.is_empty(),
+        "the batch is consumed once it is fully restored"
+    );
+}

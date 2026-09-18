@@ -346,6 +346,12 @@ async fn pump_events(
     let mut buffer: Vec<u8> = Vec::new();
     let mut tools: Vec<ToolCallAccumulator> = Vec::new();
     let mut finish: Option<FinishReason> = None;
+    // A28: an SSE stream has two legitimate terminators — a `finish_reason`
+    // on a choice, or `data: [DONE]`. Seeing neither means the connection
+    // ended mid-generation. Tracking this is the whole fix: without it the
+    // `unwrap_or(Stop)` below reported a dropped connection as a clean stop,
+    // and the agent committed the partial text as the turn's answer.
+    let mut saw_done = false;
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| Error::StreamFailed {
@@ -361,6 +367,7 @@ async fn pump_events(
                 continue; // comment / keep-alive (`: ping`)
             };
             if data == "[DONE]" {
+                saw_done = true;
                 continue;
             }
             let parsed: StreamChunk =
@@ -425,6 +432,27 @@ async fn pump_events(
         {
             return Ok(());
         }
+    }
+    // A28: truncation is reported, never rounded up to a clean stop. The
+    // check precedes the tool-call flush above only in intent — a stream cut
+    // mid-generation may also have left a tool call half-assembled, and the
+    // consumer discards the whole turn either way (`abandon_turn`).
+    //
+    // Deliberately narrow: a server that omits `[DONE]` but does send a
+    // `finish_reason` is still treated as complete, because it said so. Only
+    // the case where *neither* terminator arrived is a failure, which is the
+    // one genuinely indistinguishable from a dropped connection.
+    if finish.is_none() && !saw_done {
+        let _ = tx
+            .send(StreamEvent::Failed(
+                "the server closed the stream without a finish reason or \
+                 [DONE] — the reply is truncated, not complete; retry the \
+                 request, and check the server's logs for an out-of-memory \
+                 or context-overflow kill"
+                    .to_owned(),
+            ))
+            .await;
+        return Ok(());
     }
     let _ = tx
         .send(StreamEvent::Finish(finish.unwrap_or(FinishReason::Stop)))

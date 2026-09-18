@@ -221,3 +221,104 @@ async fn completes_non_streaming() {
         .expect("completion");
     assert_eq!(output, "sum: 42");
 }
+
+// ------------------------------------------- 2026-09-17 round-8 findings
+
+/// A28/A30: a server that closes mid-stream without a `finish_reason` and
+/// without `[DONE]` used to be reported as a clean `Finish(Stop)`, and the
+/// agent committed the partial text as the turn's answer — truncated output
+/// indistinguishable from a complete reply, which is what a SEARCH block
+/// then gets anchored on.
+///
+/// A30 is the other half: before this, *no* test in the crate produced a
+/// `StreamEvent::Failed` at all, so the whole failure path shipped unrun.
+#[tokio::test]
+async fn a_stream_cut_without_a_terminator_fails_instead_of_finishing() {
+    let server = MockServer::start(|_| {
+        // Raw fragments so the response ends exactly here: content arrived,
+        // then the connection closed. No finish_reason, no [DONE].
+        Step::Fragments(vec![
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"partial ans\"}}]}\n\n".to_vec(),
+        ])
+    });
+    let events = collect(
+        backend(server.port)
+            .stream(request())
+            .await
+            .expect("stream opens"),
+    )
+    .await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Failed(cause) if cause.contains("truncated"))),
+        "a cut stream must report failure with a remedy: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, StreamEvent::Finish(_))),
+        "a cut stream must not also report a clean finish: {events:?}"
+    );
+}
+
+/// The A28 check is deliberately narrow: a server that omits `[DONE]` but
+/// *does* send a `finish_reason` has said the reply is complete, and is
+/// believed. Without this the fix would break every such server — the
+/// over-fencing risk of A28.
+#[tokio::test]
+async fn a_finish_reason_without_done_is_still_a_clean_finish() {
+    let server = MockServer::start(|_| {
+        Step::Fragments(vec![
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n".to_vec(),
+            b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_vec(),
+        ])
+    });
+    let events = collect(
+        backend(server.port)
+            .stream(request())
+            .await
+            .expect("stream opens"),
+    )
+    .await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Finish(FinishReason::Stop))),
+        "finish_reason alone must still finish cleanly: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, StreamEvent::Failed(_))),
+        "a server that reported a finish reason must not be failed: {events:?}"
+    );
+}
+
+/// A31: the A8 remediation bounded a wire-supplied `tool_calls` index at 64
+/// — `"index": 4294967295` had asked for a ~309 GB contiguous allocation,
+/// an abort rather than a recoverable error. The bound shipped correct and
+/// *untested*, while ADR §16.4 claimed every prior finding was pinned by a
+/// regression test. This is that test.
+#[tokio::test]
+async fn an_out_of_range_tool_call_index_is_rejected_not_allocated() {
+    let server = MockServer::start(|_| {
+        Step::Fragments(vec![
+            b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":4294967295,\
+              \"id\":\"x\",\"function\":{\"name\":\"read\",\"arguments\":\"{}\"}}]}}]}\n\n"
+                .to_vec(),
+        ])
+    });
+    let events = collect(
+        backend(server.port)
+            .stream(request())
+            .await
+            .expect("stream opens"),
+    )
+    .await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Failed(cause) if cause.contains("limit"))),
+        "an out-of-range index must be a recoverable error: {events:?}"
+    );
+}

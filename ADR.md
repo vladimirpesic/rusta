@@ -654,9 +654,26 @@ are wrapped and truncated to 10 lines, with a §6.6 capsule appended when a dete
 `shell` runs only in `Editing`/`Verifying`, only after interactive approval (y / n / `a` = always
 this session; `/auto` implies `a`; non-interactive `-c` denies by default).
 
-Deny-list (regexes, config-extendable): `rm -rf /`, `sudo`, `git push --force`, `dd`, `mkfs`,
-fork bombs, `curl … | sh`, `shutdown`, `reboot`, and any write outside the repo root — 9 defaults,
-with config extensions surfacing compile errors. Execution: cwd = repo root; timeout 60 s
+Deny-list (regexes, config-extendable): `rm -rf /` and `rm -rf ~`, `sudo`, `git push --force`,
+`dd`, `mkfs`, fork bombs, `curl … | sh`, `shutdown`, `reboot`, `cd` out of the repo, and writes
+whose target is outside the repo root — redirects, `tee`, and `cp`/`mv`/`ln`/`install`/`rsync`
+destinations — with config extensions surfacing compile errors.
+
+> **What "writes outside the repo root" means here, precisely (revised 2026-09-18).** The table
+> tests the three spellings of "outside" — absolute (`/…`), home (`~`, `$HOME`, `${HOME}`), and
+> `../` traversal anywhere in the path — rather than enumerating system directories, which had
+> missed `/tmp/../etc/x`. For `cp`/`mv` it tests the *final* argument, the destination, so
+> reading from outside into the repo stays allowed.
+>
+> **It is a filter against a confused model, not an adversarial boundary, and cannot be made
+> into one.** `sh -c` is Turing-complete, so deciding whether a command writes outside the repo
+> is undecidable: `X=~/f; echo hi > $X`, `eval 'rm -rf ~'` and `python -c "open('/etc/x','w')"`
+> defeat any pattern list. v1.1–v1.0 stated the rule as though the table enforced it, and round
+> 8 (A27) found it implemented for a fraction of the spellings. The rule is now stated as what
+> it is: a pre-execution heuristic that catches the realistic failure — an 8B model that lost
+> track of its cwd — while approval remains the actual control point. Real confinement for
+> *mutations* is structural and lives in §6.3's `guarded` funnel; the shell is the one surface
+> that fence does not cover, which is why `/auto` + `shell` carries the §17 warning it does. Execution: cwd = repo root; timeout 60 s
 (config); output capped per §6.1 and drained incrementally; no PTY — interactive commands are
 detected and denied with the remedy "pass flags for non-interactive mode"; minimal environment
 via `env_clear` + `PATH`/`HOME`/`LANG` plus the `[shell] env` allow-list.
@@ -921,7 +938,10 @@ working, not a cycle spinning.
 
 ### 16.4 Findings and resolutions
 
-All 25 findings were resolved and each is pinned by a regression test. Condensed:
+All 25 findings were resolved. Most are pinned by a regression test; round 8 found that claim
+stated without qualification and false in at least one case — the A8 index bound shipped correct
+and untested (round 8's A31, recorded in `AUDIT_REPORT.md`), which is exactly the sentence a later reader would rely on to skip
+re-verification. Treat "pinned by a test" as a claim to check, not a conclusion. Condensed:
 
 | # | Severity | Finding | Resolution |
 | --- | --- | --- | --- |

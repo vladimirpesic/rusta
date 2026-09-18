@@ -61,12 +61,40 @@ impl Approver for DenyAll {
 
 /// The §6.12 default deny table: (regex, why, remedy). Config entries in
 /// `[shell].deny` extend it; `[shell].allow` prefixes bypass approval.
+///
+/// **What this table is, precisely.** It is a pre-execution filter against a
+/// *confused* model, not a hostile one. `sh -c` is Turing-complete, so
+/// deciding whether a command writes outside the repo is undecidable in
+/// general: `X=~/f; echo hi > $X`, `eval 'rm -rf ~'` and
+/// `python -c "open('/etc/x','w')"` all defeat any pattern list, and no
+/// addition to this table changes that. The realistic failure it catches is
+/// an 8B model emitting `rm -rf ~` because it lost track of its cwd.
+///
+/// Real confinement for *mutations* lives elsewhere and is structural: every
+/// file write funnels through `rusta_edit`'s `guarded`, fenced by
+/// `contains_path`. The shell is the one surface where that fence does not
+/// apply, which is why approval (§6.12) — not this table — is the control
+/// point. `/auto` skips approval, and under `/auto` this table is all that
+/// is left; that is the case it is tuned for.
+///
+/// "Outside the repo" has exactly three spellings, and every rule below that
+/// concerns a write target tests all three rather than enumerating system
+/// directories: absolute (`/…`), home (`~`, `$HOME`, `${HOME}`), and parent
+/// traversal (`../` anywhere in the path — `/tmp/../etc/x` is the escape the
+/// old directory list missed).
 pub const DEFAULT_DENY: [(&str, &str, &str); 12] = [
     (
         // Includes the `/*` glob form, which is the one that actually
         // destroys a machine.
         r#"\brm\s+[^|;&]*\s+["']?/["']?(\*|\s|$)"#,
         "rm targets the filesystem root",
+        "delete specific paths inside the repo instead",
+    ),
+    (
+        // `rm -rf ~`, `rm -rf $HOME`, `rm -rf ~/.config` — the spelling a
+        // model reaches for when it thinks it is cleaning up after itself.
+        r#"\brm\s+[^|;&]*["']?(~|\$\{?HOME\}?)(\s|/|$|["'])"#,
+        "rm targets the home directory",
         "delete specific paths inside the repo instead",
     ),
     (
@@ -105,24 +133,27 @@ pub const DEFAULT_DENY: [(&str, &str, &str); 12] = [
         "download to a file, inspect it, then run it",
     ),
     (
-        r#"(>>?\s*["']?/|tee\s+(-a\s+)?["']?/)"#,
-        "writes outside the repo root",
+        // One rule, all three spellings of "outside": `> /etc/x`, `> ~/f`,
+        // `> $HOME/f`, `>> ../x`, `tee -a ~/out`. Previously two rules that
+        // between them covered only `/` and a *leading* `../`.
+        r#"(>>?|tee\s+(-a\s+)?)\s*["']?(/|~|\$\{?HOME\}?|[^\s|;&"']*\.\./)"#,
+        "redirects a write outside the repo root",
         "write inside the repo root only",
     ),
     (
-        r#"(>>?\s*["']?\.\./|tee\s+(-a\s+)?["']?\.\./)"#,
-        "writes above the repo root",
-        "write inside the repo root only",
-    ),
-    (
-        // Absolute destination: cwd is the repo root, so it is outside.
-        r#"\b(cp|mv|ln|install|rsync)\b[^|;&]*\s["']?/(?:etc|usr|bin|sbin|boot|lib|opt|var|root|sys|proc|dev)\b"#,
-        "writes to a system directory outside the repo",
+        // The *destination* is the final argument, so test that rather than
+        // every argument: `cp ../shared/f ./` reads from outside and writes
+        // inside, which is fine, while `cp f ../outside` is not. Testing
+        // every argument would deny the first; enumerating system
+        // directories (the rule this replaces) missed
+        // `mv f /tmp/../etc/cron.d/x`.
+        r#"\b(cp|mv|ln|install|rsync)\b[^|;&]*\s["']?(/|~|\$\{?HOME\}?|[^\s|;&"']*\.\./)[^\s|;&]*["']?\s*$"#,
+        "copies or moves to a destination outside the repo root",
         "write inside the repo root only",
     ),
     (
         // `cd` out defeats every cwd-relative check after it.
-        r#"\bcd\s+["']?(/|\.\./|~)"#,
+        r#"\bcd\s+["']?(/|\.\./|~|\$\{?HOME\}?)"#,
         "changes directory outside the repo root",
         "stay inside the repo; use repo-relative paths",
     ),
