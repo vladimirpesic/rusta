@@ -150,6 +150,23 @@ const CASES: &[Case] = &[
         commands: &[],
         notes: 0,
     },
+    // A1's shape, added in round 8: the model ran the REPLACE text straight
+    // onto the UPDATED marker. Aider rejects this outright; §6.3 rule 4
+    // forgives it *after* stripping the marker, because forgiving it without
+    // the strip wrote `>>>>>>> REPLACE` into the user's source and
+    // auto-committed it. The corpus held no fixture of this shape, so when
+    // the strip was disabled as a probe neither corpus test noticed — only
+    // the dedicated unit test did.
+    Case {
+        file: "16_glued_marker.md",
+        blocks: &[(
+            &["src/main.rs"],
+            "fn main() {\n    println!(\"old\");\n}\n",
+            "fn main() {\n    println!(\"new\");\n}\n",
+        )],
+        commands: &[],
+        notes: 1,
+    },
 ];
 
 #[test]
@@ -315,4 +332,116 @@ fn well_formed_blocks_are_unaffected_by_the_marker_strip() {
     let parsed = rusta_edit::parse_response(generics);
     assert_eq!(parsed.blocks[0].updated, "Vec<Vec<u8>>\n");
     assert!(parsed.notes.is_empty());
+}
+
+/// Fixtures whose blocks cannot be exercised by seeding the named file with
+/// the SEARCH text verbatim, and why. Keeping the reasons here rather than
+/// silently filtering is the point: an unexplained exclusion is how a corpus
+/// quietly stops covering what it claims to.
+const NOT_SEED_APPLIABLE: &[(&str, &str)] = &[
+    (
+        "12_dotdotdots.md",
+        "`...` elision: SEARCH stands in for a larger file, so seeding it \
+         verbatim is not the case under test",
+    ),
+    (
+        "13_malformed_missing_divider.md",
+        "no blocks — degrades to prose plus a corrective note",
+    ),
+    ("14_prose_only.md", "no blocks"),
+];
+
+/// A41 (round 8): ADR §9 states each corpus fixture carries "an expected
+/// parse **and** an expected apply result". Only the parse half existed —
+/// `parser_corpus_is_green` never touched `Editor`, so the apply chain was
+/// covered by hand-written unit fixtures alone and never by the real
+/// small-model response shapes this corpus exists to hold.
+///
+/// The expectation is derived rather than hand-written: seed each named file
+/// with the first block's SEARCH, apply the fixture text through the real
+/// chain, and require the file to end as the last block's REPLACE. That is
+/// not tautological — it runs `prep`, fence stripping, whitespace
+/// flexibility, CRLF normalization and the marker strip, which is precisely
+/// where this crate's defects have lived (a glued `>>>>>>> REPLACE` in the
+/// committed text would fail here, and did not fail the parse-only test).
+#[test]
+fn corpus_fixtures_apply_as_well_as_parse() {
+    let mut exercised = 0usize;
+    for case in CASES {
+        if let Some((_, why)) = NOT_SEED_APPLIABLE.iter().find(|(f, _)| *f == case.file) {
+            assert!(!why.is_empty());
+            continue;
+        }
+        if case.blocks.is_empty() {
+            continue;
+        }
+        let text = std::fs::read_to_string(format!("{CORPUS_DIR}/{}", case.file))
+            .unwrap_or_else(|e| panic!("read fixture {}: {e}", case.file));
+
+        let repo = tempfile::tempdir().expect("repo");
+        let mut editor = rusta_edit::Editor::new(repo.path());
+
+        // A fixture's blocks touch disjoint regions of one file (both
+        // multi-block fixtures are that shape, not a chain), so the file
+        // before is every SEARCH concatenated in order and the file after is
+        // every REPLACE. For a single block this is just seed = SEARCH,
+        // expect = REPLACE; for an empty SEARCH it is a create, so nothing
+        // is seeded.
+        let mut before: std::collections::BTreeMap<&str, String> = Default::default();
+        let mut after: std::collections::BTreeMap<&str, String> = Default::default();
+        // A block with no candidates is a §6.3 continuation: it reuses the
+        // previous block's filename. Carrying it forward here is the same
+        // rule the parser applies, and without it the chained-divider
+        // fixture seeds only its first region and the rest cannot match.
+        let mut current: Option<&str> = None;
+        for (candidates, original, updated) in case.blocks {
+            if let Some(path) = candidates.first() {
+                current = Some(path);
+            }
+            let Some(path) = current else {
+                continue;
+            };
+            before.entry(path).or_default().push_str(original);
+            after.entry(path).or_default().push_str(updated);
+        }
+        for (path, seed) in &before {
+            if seed.is_empty() {
+                continue; // create-file block
+            }
+            let abs = repo.path().join(path);
+            if let Some(parent) = abs.parent() {
+                std::fs::create_dir_all(parent).expect("parent");
+            }
+            std::fs::write(&abs, seed).expect("seed");
+            editor.record_read(path);
+        }
+
+        let report = editor.apply_response(&text);
+        assert!(
+            report.failed.is_empty(),
+            "{}: every block in a well-formed fixture must apply: {:?}",
+            case.file,
+            report.failed
+        );
+        assert_eq!(
+            report.applied.len(),
+            case.blocks.len(),
+            "{}: applied count must match the parsed block count",
+            case.file
+        );
+        for (path, expected) in &after {
+            let on_disk = std::fs::read_to_string(repo.path().join(path))
+                .unwrap_or_else(|e| panic!("{}: read {path} after apply: {e}", case.file));
+            assert_eq!(
+                on_disk, *expected,
+                "{}: {path} must end as the fixture's REPLACE text",
+                case.file
+            );
+        }
+        exercised += 1;
+    }
+    assert!(
+        exercised >= 10,
+        "the apply pass must actually exercise the corpus, not skip it: {exercised} fixtures"
+    );
 }

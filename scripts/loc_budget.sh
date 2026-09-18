@@ -21,13 +21,23 @@
 # marker: everything above is production, everything from it down is test.
 set -euo pipefail
 
+# A48: §12 says the budget is "counted on `*.rs`" with no `crates/` boundary,
+# but the scan only ever looked there — a workspace-root `tests/`, `benches/`
+# or `examples/` escaped R1 entirely. Harmless when found (root `tests/` holds
+# only the `.md` edit corpus), but a gate whose scope is narrower than its
+# contract is the shape §12's own erratum was written about.
+ROOTS="crates"
+for extra in tests benches examples; do
+  [ -d "$extra" ] && ROOTS="$ROOTS $extra"
+done
+
 split_counts() {
   # `xargs` may split a long file list across several awk invocations, each
   # printing its own totals — so sum the partial lines rather than reading
   # only the first. (At ~50 files this never splits today; a gate that
   # silently undercounts as the workspace grows is exactly the failure mode
   # §12's erratum was written about.)
-  find crates -name '*.rs' -not -path '*/tests/*' -not -name 'tests.rs' -type f -print0 |
+  find $ROOTS -name '*.rs' -not -path '*/tests/*' -not -name 'tests.rs' -type f -print0 |
     xargs -0 awk '
       FNR == 1 { in_test = 0 }
       !in_test && /^[[:space:]]*#\[cfg\((all\()?test/ { in_test = 1 }
@@ -38,7 +48,7 @@ split_counts() {
 }
 
 read -r PROD INLINE_TESTS < <(split_counts)
-SUITE_TESTS=$(find crates \( -path '*/tests/*' -o -name 'tests.rs' \) -name '*.rs' -type f -exec cat {} + | wc -l)
+SUITE_TESTS=$(find $ROOTS \( -path '*/tests/*' -o -name 'tests.rs' \) -name '*.rs' -type f -exec cat {} + | wc -l)
 TESTS=$((INLINE_TESTS + SUITE_TESTS))
 TOTAL=$((PROD + TESTS))
 

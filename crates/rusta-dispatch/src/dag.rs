@@ -74,7 +74,14 @@ impl TaskSet {
     pub fn from_input(input: &Value) -> Result<Self, TaskSetError> {
         let obj = input.as_object().ok_or(TaskSetError::Malformed)?;
         match (obj.get("task"), obj.get("tasks")) {
-            (Some(Value::String(brief)), None) => Ok(Self::single(brief.clone())),
+            // A37: the array form rejects an empty or whitespace-only brief
+            // (`from_items` below); the single-task form did not, so
+            // `{"task": ""}` spawned a sub-coder with nothing to research —
+            // six turns and a backend round trip to produce an empty report.
+            (Some(Value::String(brief)), None) if !brief.trim().is_empty() => {
+                Ok(Self::single(brief.trim()))
+            }
+            (Some(Value::String(_)), None) => Err(TaskSetError::EmptyTask),
             (None, Some(Value::Array(items))) => Self::from_items(items),
             _ => Err(TaskSetError::Malformed),
         }
@@ -314,6 +321,36 @@ mod tests {
             text,
             "SUB-CODER \"auth\" REPORT:\nRESEARCH FAILED: boom\n\n\
              SUB-CODER \"db\" REPORT:\nmigrations live in db/migrate"
+        );
+    }
+}
+
+#[cfg(test)]
+mod round8_regressions {
+    use super::*;
+    use serde_json::json;
+
+    /// A37: the `tasks` array form rejects an empty brief; the single-task
+    /// form did not, so `{"task": ""}` spawned a sub-coder with nothing to
+    /// research — a full six-turn budget and a backend round trip to produce
+    /// an empty report.
+    #[test]
+    fn an_empty_single_task_is_rejected_like_the_array_form() {
+        for empty in ["", "   ", "\n\t "] {
+            assert!(
+                matches!(
+                    TaskSet::from_input(&json!({ "task": empty })),
+                    Err(TaskSetError::EmptyTask)
+                ),
+                "empty single task {empty:?} must be rejected"
+            );
+        }
+        let ok = TaskSet::from_input(&json!({"task": "  find the config loader  "}))
+            .expect("a real brief still parses");
+        assert_eq!(
+            ok.tasks()[0].brief,
+            "find the config loader",
+            "and is trimmed"
         );
     }
 }

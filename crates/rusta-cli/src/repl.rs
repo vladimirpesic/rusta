@@ -225,7 +225,7 @@ impl App {
             journal_broken: false,
         };
         if fresh {
-            let summary = app.config.summary();
+            let summary = app.config.summary(overrides);
             let backend_line = backend_description(&app.config, overrides);
             app.journal(Event::SessionStart {
                 config: summary,

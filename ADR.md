@@ -137,7 +137,8 @@ essential goes into a *separate* opt-in crate — never the core (§0 rule 4).
 ```text
 rusta/
 ├── ADR.md                   ← this document (single source of truth)
-├── Cargo.toml               ← workspace; features: embedded, embedded-cuda (opt-in)
+├── Cargo.toml               ← workspace manifest (no features of its own; `embedded`
+│                             and `embedded-cuda` live on rusta-llm/-dispatch/-cli)
 ├── rusta.toml.example       ← both backend configs documented
 ├── scripts/loc_budget.sh    ← R1 enforcement gate (§12)
 ├── crates/
@@ -721,6 +722,7 @@ max_tokens = 1024
 
 [validate]
 commands = ["cargo check --workspace", "cargo clippy --workspace -- -D warnings", "cargo test --workspace"]
+timeout_secs = 600        # per-command wall clock (§6.7)
 
 [shell]
 timeout_secs = 60
@@ -749,10 +751,14 @@ tests, LoC gate). Condensed; the per-milestone evidence trails live in the git h
 
 ## 9. Testing Strategy
 
-- **Parser corpus** (`crates/rusta-edit/tests/edit_corpus/`): golden SEARCH/REPLACE fixtures —
-  clean, fenced, missing markers, chained DIVIDER, `...` elisions, DeepSeek-style fenced
-  filenames, duplicate matches, empty-SEARCH new files — each with an expected parse **and** an
-  expected apply result; plus a malformed corpus asserting degradation to prose + corrective note.
+- **Parser corpus** (workspace-root `tests/edit_corpus/`): golden SEARCH/REPLACE fixtures —
+  clean, fenced, missing markers, glued markers, chained DIVIDER, `...` elisions, DeepSeek-style
+  fenced filenames, empty-SEARCH new files — each with an expected parse, **and** an expected
+  apply result for every fixture that represents an applicable edit (the exceptions are listed
+  in the test with their reasons: `...` elision, and the two fixtures that parse to no blocks).
+  The apply expectation is derived, not hand-written: seed the named file with the fixture's
+  SEARCH text, run the fixture through the real chain, require the file to end as its REPLACE.
+  Plus a malformed corpus asserting degradation to prose + corrective note.
 - **Tool-call corpus:** fenced single, JSON array form, native `tool_calls` passthrough, unknown
   name, malformed JSON → corrective note.
 - **HTTP e2e** uses a hand-rolled mock SSE server (tokio + std `TcpListener` + manual SSE chunks)

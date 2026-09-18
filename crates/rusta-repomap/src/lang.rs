@@ -67,7 +67,12 @@ impl Lang {
             Self::Rust => include_str!("../queries/rust-tags.scm"),
             Self::Python => include_str!("../queries/python-tags.scm"),
             Self::Javascript => include_str!("../queries/javascript-tags.scm"),
-            // TSX shares TypeScript's tags query (Aider does the same).
+            // TSX reuses the TypeScript tags query. Aider does *not* do
+            // this — its query packs hold `typescript-tags.scm` and no TSX
+            // query, and `repomap.py` never mentions tsx, so `.tsx` yields
+            // no tags there at all. Reusing the TS query is a deliberate
+            // superset and breaks no ADR rule; the old comment credited it
+            // to the reference, which was simply false (A52).
             Self::Typescript | Self::Tsx => include_str!("../queries/typescript-tags.scm"),
             Self::Go => include_str!("../queries/go-tags.scm"),
             Self::C => include_str!("../queries/c-tags.scm"),

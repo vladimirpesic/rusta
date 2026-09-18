@@ -23,6 +23,12 @@ allow = [
 confidence-threshold = 0.93
 
 [bans]
+# A51: stays a warning deliberately. Five crates are duplicated transitively
+# today (getrandom, itertools, shlex, syn, windows-sys — the classic syn 1/2
+# split among them), none of them ours to unify, so "deny" would fail CI on
+# day one and buy nothing. The audit's supporting measurement ("no duplicate
+# name+version pairs") counted something that is unique by definition in a
+# lockfile; the real figure is above, and it is why this line reads "warn".
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"

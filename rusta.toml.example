@@ -26,6 +26,7 @@ max_tokens = 1024
 
 [validate]
 commands = ["cargo check --workspace", "cargo clippy --workspace -- -D warnings", "cargo test --workspace"]
+timeout_secs = 600        # per-command wall clock; a killed validator becomes a failing report
 
 [shell]
 timeout_secs = 60

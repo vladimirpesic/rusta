@@ -34,6 +34,14 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+      # A50: ADR §17 reports "cargo doc 0 warnings" as a gate and ~650 doc
+      # comments cite ADR sections, but nothing enforced it — doc warnings
+      # could drift indefinitely between manual runs.
+      - name: Docs
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       - name: LoC budget gate (R1, ADR §12)
         run: bash scripts/loc_budget.sh
 

@@ -330,8 +330,10 @@ async fn execute(policy: &ShellPolicy, root: &Path, command: &str) -> ToolOutcom
 
 /// `sh -c` with cwd = repo root, stdin closed, minimal environment, output
 /// piped (no PTY), a hard timeout, and §6.1 output caps. `kill_on_drop`
-/// plus the timeout's drop of the `wait_with_output` future guarantees the
-/// child is killed even when the timeout fires mid-read.
+/// plus the timeout's drop of the output-collecting future guarantees the
+/// child is killed even when the timeout fires mid-read. (That future is
+/// built here rather than `wait_with_output`, which buffers without bound;
+/// the comment named the removed implementation until A53.)
 #[cfg(unix)]
 async fn unix_execute(policy: &ShellPolicy, root: &Path, command: &str) -> ToolOutcome {
     use std::process::Stdio;

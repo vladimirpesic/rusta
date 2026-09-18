@@ -1,6 +1,6 @@
 //! Phase-gated state machine — ADR §6.4 (R5).
 //!
-//! Four states, six scaffold events, ten canonical tools. The transition
+//! Four states, seven scaffold events, ten canonical tools. The transition
 //! table is a closed, exhaustive `match`: invalid transitions are rejected
 //! loudly (never silently ignored), and mutation tools are simply not
 //! registered in read-only states — `fs::write` is unreachable there by
@@ -522,9 +522,12 @@ mod tests {
         assert_eq!(note, corrective_note(State::Exploring, Tool::Shell));
     }
 
-    /// Plan §8 M3 acceptance: the full transition table, all 24
-    /// `(State × PhaseEvent)` cells pinned — every legal edge, the one
-    /// legal no-op, and all sixteen illegal combinations. If a new event
+    /// ADR §8 M3 acceptance: the full transition table, all 28
+    /// `(State × PhaseEvent)` cells pinned — nine legal edges, the one
+    /// legal no-op, and all eighteen illegal combinations. (24/16 was the
+    /// count before `LoopEscalated` became a seventh event; the table and
+    /// its assertions were correct throughout, only the prose was stale —
+    /// in the file whose whole contract is exactness.) If a new event
     /// or state is added, this test forces a conscious table update.
     #[test]
     fn transition_table_is_exhaustive_and_pinned() {

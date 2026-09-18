@@ -1120,15 +1120,42 @@ impl LoopGuard {
                 break;
             }
             let candidate = format!("{note}\n- {}", active.capsule.text);
-            if estimate_tokens(&candidate) > CAPSULE_TOKEN_BUDGET && included > 0 {
-                break; // budget reached: keep what fits, never an empty note
+            if estimate_tokens(&candidate) > CAPSULE_TOKEN_BUDGET {
+                if included > 0 {
+                    break; // budget reached: keep what fits
+                }
+                // A38: `&& included > 0` meant a *first* capsule over budget
+                // shipped regardless, so §6.6's ≤ 180-token guarantee had a
+                // hole. Skipping it instead would be worse — a loop-mitigation
+                // note that silently fails to ship is an inert safeguard,
+                // the §16.1 shape. So it ships, clipped, and says so, which
+                // is the §6.1 discipline applied here.
+                note = clip_to_tokens(&candidate, CAPSULE_TOKEN_BUDGET);
+                included += 1;
+                break;
             }
             note = candidate;
             included += 1;
         }
         (included > 0).then(|| Message::system(note))
     }
+}
 
+/// Clip `text` to `budget` estimated tokens, char-boundary safe, with a
+/// marker that is charged against the budget rather than appended past it
+/// (§6.1). Used only for the pathological single-capsule case in
+/// [`LoopGuard::capsule_note`].
+fn clip_to_tokens(text: &str, budget: u64) -> String {
+    const MARKER: &str = " […]";
+    if estimate_tokens(text) <= budget {
+        return text.to_owned();
+    }
+    let chars = (budget.saturating_sub(estimate_tokens(MARKER)) as usize) * 3;
+    let head: String = text.chars().take(chars).collect();
+    format!("{head}{MARKER}")
+}
+
+impl LoopGuard {
     /// The latched escalation directive, if any and not yet acknowledged
     /// (§6.6): regress `Editing → Planning` and notify the user.
     pub fn escalation(&self) -> Option<Escalation> {
@@ -1215,6 +1242,38 @@ fn canonical_json(value: &Value) -> String {
             format!("[{}]", items.join(","))
         }
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod round8_capsule_budget {
+    use super::*;
+
+    /// A38: the budget guard was `> CAPSULE_TOKEN_BUDGET && included > 0`,
+    /// so a *first* capsule over 180 tokens shipped regardless and §6.6's
+    /// guarantee had a hole. Latent — the shipped deck's longest text is
+    /// ~25 tokens — which is exactly why the existing test could not see it:
+    /// it exercised only the shipped set.
+    ///
+    /// Skipping an oversized capsule instead of clipping it would trade this
+    /// for a worse defect: a loop-mitigation note that silently fails to
+    /// ship is an inert safeguard (§16.1).
+    #[test]
+    fn an_oversized_first_capsule_is_clipped_not_shipped_over_budget() {
+        let long = "X".repeat(CAPSULE_TOKEN_BUDGET as usize * 3 * 4);
+        let clipped = clip_to_tokens(&format!("LOOP MITIGATION:\n- {long}"), CAPSULE_TOKEN_BUDGET);
+        assert!(
+            estimate_tokens(&clipped) <= CAPSULE_TOKEN_BUDGET,
+            "a clipped capsule note is {} tokens against a {CAPSULE_TOKEN_BUDGET} cap",
+            estimate_tokens(&clipped)
+        );
+        assert!(
+            clipped.ends_with("[…]"),
+            "and says it was clipped: {clipped}"
+        );
+        // Under budget, untouched.
+        let small = "LOOP MITIGATION:\n- emit one edit block";
+        assert_eq!(clip_to_tokens(small, CAPSULE_TOKEN_BUDGET), small);
     }
 }
 

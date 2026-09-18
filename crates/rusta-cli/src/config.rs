@@ -237,10 +237,16 @@ impl Config {
     }
 
     /// One-line summary for the `SessionStart` event (§6.10) — no secrets.
-    pub fn summary(&self) -> String {
+    ///
+    /// A45: this reported the *file's* `[backend].kind` while the adjacent
+    /// `backend` field on the same event honoured `--backend`, so one
+    /// `SessionStart` could journal `backend=http` beside an embedded
+    /// backend. `overrides` is threaded through so the journal records what
+    /// actually ran.
+    pub fn summary(&self, overrides: &Overrides) -> String {
         format!(
             "backend={} model_ctx={} max_turns={} auto_approve={} validators={} shell_timeout={}s",
-            self.backend.kind,
+            self.backend_kind(overrides),
             self.model.context_window,
             self.agent.max_turns,
             self.agent.auto_approve,
@@ -323,6 +329,35 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let day = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
     let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
     (if month <= 2 { y + 1 } else { y }, month, day)
+}
+
+#[cfg(test)]
+mod round8_regressions {
+    use super::*;
+
+    /// A45: the `SessionStart` event journaled the *file's* `[backend].kind`
+    /// while its own adjacent `backend` field honoured `--backend`, so one
+    /// event could record `backend=http` beside an embedded backend — a
+    /// session log that disagrees with itself about what ran.
+    #[test]
+    fn session_start_summary_honours_the_backend_override() {
+        let config = Config::default();
+        assert!(
+            config
+                .summary(&Overrides::default())
+                .contains("backend=http"),
+            "the default is the file's value"
+        );
+        let overrides = Overrides {
+            backend_kind: Some("embedded".to_owned()),
+            ..Overrides::default()
+        };
+        assert!(
+            config.summary(&overrides).contains("backend=embedded"),
+            "the journal must record the backend that actually ran: {}",
+            config.summary(&overrides)
+        );
+    }
 }
 
 #[cfg(test)]
