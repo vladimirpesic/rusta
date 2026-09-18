@@ -1,11 +1,18 @@
 # Rusta — Architecture Decision Record
 
 **Project:** Rusta — a lean AI coding-agent harness for small, locally hosted coding LLMs (8B–35B parameters).
-**ADR version:** 1.0 · **Date:** 2026-09-15 · **Status:** Accepted — v1 milestone-complete (M0–M8), six audit rounds remediated, **pre-alpha** (see §17).
+**ADR version:** 1.1 · **Date:** 2026-09-18 · **Status:** Accepted — v1 milestone-complete (M0–M8), eight audit rounds remediated, **pre-alpha** (see §17).
 
 **Supersedes** the former `DEVELOPMENT_PLAN.md` v1.2 (the normative build specification, §0–§15
-plus its 2026-09-13/14/15 errata) and `AUDIT_REPORT.md` (the consolidated findings of six review
-rounds). Both are folded into this document and deleted; this is now the single source of truth.
+plus its 2026-09-13/14/15 errata) and every standalone audit report this project has produced —
+the round 1–6 `AUDIT_REPORT.md`, the round-7 report, and the two round-8 external reviews. All are
+folded into §16 and deleted; this is the single source of truth.
+
+*Why they are deleted rather than kept beside this document:* round 8 found that one of its two
+"independent" reports was a verbatim copy of the round-7 report still sitting in the repository,
+carried forward as if it were new evidence (§16.8). Standalone reports accumulate, drift from the
+code, and get re-read as current. The findings and the reasoning live here; the reproductions live
+in the git history of the commits that fixed them.
 
 ## The numbering contract
 
@@ -778,6 +785,10 @@ tests, LoC gate). Condensed; the per-milestone evidence trails live in the git h
 
 - **Invariant tests:** core prompt < 500 tokens; skill cards ≤ 120 tokens; forbidden-unsafe lint;
   the §12 LoC gate.
+- **CI gates** (`.github/workflows/ci.yml`): fmt, clippy `-D warnings`, tests, `cargo doc` with
+  `RUSTDOCFLAGS: -D warnings`, and the §12 budget — plus a second job running tests and clippy on
+  the `embedded` feature graph. The doc step was added in round 8: §17 had reported it as a gate
+  for three rounds while nothing enforced it, so doc warnings could drift between manual runs.
 
 ## 10. Dependencies (every entry must earn its place; minimal feature sets)
 
@@ -878,7 +889,7 @@ Every row ships and is tested.
 
 ---
 
-## 16. Audit Record — six review rounds
+## 16. Audit Record — eight review rounds
 
 Six full line-by-line audits were run against this specification and the §3 references. Rounds
 1–4 were in-repo; round 5 added two independent external reviews by other LLMs; round 6 was a
@@ -896,6 +907,11 @@ Every round found the same three shapes:
 3. **A test green on an input production never supplies** — a hand-fed trigger cue, a 17-line
    fixture, a budget that never binds, an exhaustively pinned table with an out-of-band path
    around it.
+4. **A document describing behaviour the code does not have** — named by round 8, which found
+   twelve instances, including two miscounts in `state.rs` (the file whose whole contract is
+   exactness) and a false completeness claim in §16.4 below. This shape is the most dangerous of
+   the four, because the others are found by reading code while this one is what persuades a
+   reader not to.
 
 Each round fixed its instances; each round's fix introduced new ones. Four of round 5's High and
 Medium findings were defects **in round 4's remediation**. The measured rate is roughly one
@@ -946,7 +962,7 @@ working, not a cycle spinning.
 
 All 25 findings were resolved. Most are pinned by a regression test; round 8 found that claim
 stated without qualification and false in at least one case — the A8 index bound shipped correct
-and untested (round 8's A31, recorded in `AUDIT_REPORT.md`), which is exactly the sentence a later reader would rely on to skip
+and untested (round 8's A31, §16.8), which is exactly the sentence a later reader would rely on to skip
 re-verification. Treat "pinned by a test" as a claim to check, not a conclusion. Condensed:
 
 | # | Severity | Finding | Resolution |
@@ -1000,39 +1016,150 @@ These bind every future change (§0 rule 8):
    started being dropped from it.
 3. **Reject "the guard says so" as evidence.** Verify by execution, never by reading a guard's
    self-description — including this document's.
+4. **A fix's scope is the spec's own list, not the case that prompted it.** Round 5 fenced the
+   read side against symlinks and reached two of the three tools §6.12 names; round 8 found the
+   third leaking (A26). Where the spec enumerates, check the enumeration.
+5. **Prefer a change the compiler can check over one that relies on memory.** A43 turned a
+   two-meaning `bool` into an outcome enum, and the compiler then listed every consumer — rule 2
+   done by construction.
+6. **A claim in this document is a claim to verify, not a conclusion to rely on.** §16.4 said all
+   25 prior findings were pinned by regression tests; one was not. Treat prose here as evidence
+   of intent only.
+
+### 16.7 Round 7 — a standalone in-repo QA audit
+
+A full workspace audit (2026-09-17) covering all eight crates, cross-crate wiring, the manifest
+and the CI gates, with a comparative pass against the five §3 references. **Verdict: PASS at the
+project's own claim level**, no High or Medium findings, gates re-executed live rather than cited
+from this document. Its structural observations were: complexity concentration (three files carry
+29% of production LoC — `context.rs`, `apply.rs`, `agent.rs`); validator heuristics
+(`is_diagnostic`, `zero_tests`, `first_diagnostic`) tuned by hand with no real tool-output
+fixtures; the embedded backend compile-tested only; and hand-rolled boundary logic
+(`trim_partial_utf8`, `civil_from_days`) correct but fragile under later "cleanups".
+
+Round 8 showed this verdict was wrong, and how it was wrong is the reason the round is recorded
+rather than discarded — see §16.8.
+
+### 16.8 Round 8 — two external reviews, one of them a duplicate
+
+Two reports arrived (2026-09-17), presented as independent audits by other LLMs.
+
+**One was not an independent review.** It was byte-identical to round 7's own report, already in
+this repository's git history, differing by six blank lines and one code-fence label. It
+contributed no new information, and its "no new High or Medium findings" verdict was carried
+forward unexamined.
+
+**The other reproduced its claims** — `file:line` plus a reproduction for each — and was
+substantially correct. Every citation checked resolved to real code saying what was claimed;
+nothing in either report was fabricated.
+
+**This is §16.3 repeating exactly.** In round 5 one reviewer read guards' self-descriptions and
+passed the project while the other reproduced its findings and did not. The same split recurred,
+and the reproducing reviewer was right again: the round-7/duplicate report's claim that "every
+specified cap and fence that this audit could exercise by execution held" was false at that
+commit, and a five-line probe showed it.
+
+**Findings: 1 High, 6 Medium, 21 Low, plus one found during remediation.** All resolved in four
+waves, each fix written after a failing test and then proved by reverting it.
+
+| # | Sev | Finding | Resolution |
+| --- | --- | --- | --- |
+| A26 | High | `grep` read through an in-repo symlink pointing out of the workspace — the A10 fence reached `read` and `map_drill` and stopped there, though §6.12 names three tools. Reachable from sub-coders, so it crossed the §6.8 isolation boundary | Fenced via `contains_path`; one test now walks every read-side tool |
+| A27 | Med | The deny table implemented a fraction of its own "any write outside the repo root": `rm -rf ~`, `> ~/f`, `tee ~/out`, `mv f /tmp/../etc/x`, `cp f ../outside` all passed | Table tests the three spellings of "outside" and, for `cp`/`mv`, the *destination* argument; §6.12 rewritten to state what a regex table over a Turing-complete shell can guarantee |
+| A28 | Med | A stream closed without `finish_reason` or `[DONE]` was reported as a clean `Finish(Stop)`, and the agent committed the partial text as the turn's answer | Both terminators tracked; neither seen ⇒ `Failed` with a remedy. Narrow by design: a `finish_reason` alone is still believed |
+| A29 | Med | A mid-batch `/undo` disk failure destroyed the remaining journal entries, popped the batch, and reverted the commit anyway — tree and history inconsistent, unrecoverable | Pop after the write succeeds; batch kept, reduced; commit revert skipped on partial restore, so a retry finishes |
+| A30 | Med | No test anywhere produced a `StreamEvent::Failed` or a truncated stream | Three `Step::Fragments` tests drive the failure path |
+| A31 | Med | The A8 index bound shipped correct and untested while §16.4 claimed all 25 prior findings were pinned | Test added; §16.4 corrected |
+| A32 | Med | The repo map rendered files through symlinks out of the repo; extraction leaks identifier names even when the render read is fenced | Fenced *before* extraction — the one loop every input to the map passes |
+| A33–A54 | Low | Twenty-one further findings: a fabricated `read` range past EOF (A35) and `map_drill` answering such a window with content from a *different* region (A54, found while fixing A34); non-ASCII filenames silently dropped in git repos (A33); a clip marker not charged against its cap (A36); CRLF asymmetry between the two edit syntaxes (A42); ` ```toolbox ` consumed as a tool fence (A44); `/undo` explaining a failed revert as "HEAD moved on" (A43); and twelve documentation defects (A39–A41, A45–A53) | All resolved; see the per-finding commits `cc911ac`, `9f673f1`, `f6dae18`, `0bde1b2` |
+
+**What round 8 added to the method.** A54 is the sharpest lesson: A34 reported an obviously broken
+`path:1-0` header on an empty file, and fixing it revealed the same clamp turning a past-EOF window
+into a *different* window and answering it — `drill(a.rs, from: 10, to: 12)` on three lines
+returned line 3, ledger credit included. **The plausible-looking defect outlived the obviously
+broken one**, which is the general case of round 6's `read` regression.
+
+Two process results worth keeping. First, A41's fix (making the corpus apply, not merely parse)
+was validated by disabling §6.3's marker strip: *both* corpus tests stayed green, because the
+corpus held no fixture of that shape. A fixture was added, and the test now fails showing the
+marker written to disk. Second, A37 and A38 were listed in the report but omitted from the
+remediation plan, and were caught only by checking that every finding was accounted for — the
+first version of that check was itself unreliable and reported them resolved.
+
+**Not carried forward:** the reproducing report also raised 47 explicitly quarantined risks
+(R-01–R-47) and six further Low findings that round 8 did not verify. They were never confirmed
+and are not recorded as findings here. The substantive leads among them: an unbounded SSE buffer;
+`map_drill` reading whole files while `read` streams; blocking sync I/O on tokio workers;
+detached dispatch tasks that are not cancelled; cap markers appended past the cap in three more
+places; and Ctrl-C not being listened for during a running `dispatch`.
 
 ## 17. Current Status & Known Limitations
 
-**Status at ADR v1.0 (2026-09-15).**
+**Status at 2026-09-18, after the round-8 remediation (§16.8).**
 
 | Gate | Result |
 | --- | --- |
-| `cargo fmt` | clean |
-| `cargo clippy --all-targets -D warnings` | 0 issues, both feature graphs |
-| `cargo doc` | 0 warnings |
-| `cargo test --workspace` | **292 passed, 0 failed** (304 with `rusta-cli/embedded`; 3 GGUF tests `#[ignore]`d) |
-| `scripts/loc_budget.sh` | production **12,337** / 15,000 · tests 8,603 · total **20,940** / 25,000 |
+| `cargo fmt --all --check` | clean |
+| `cargo clippy --workspace --all-targets -D warnings` | 0 diagnostics, both feature graphs |
+| `cargo doc --workspace --no-deps` | 0 warnings — **now enforced in CI** with `RUSTDOCFLAGS: -D warnings` (it was reported as a gate here while nothing checked it) |
+| `cargo test --workspace` | **308 passed, 0 failed** (320 with `rusta-cli/embedded`; 3 GGUF tests `#[ignore]`d) |
+| `scripts/loc_budget.sh` | production **12,638** / 15,000 · tests 9,527 · total **22,165** / 25,000 |
 
-**Rusta is pre-alpha and is not production-ready.** The gates above are real, but they do not
-support a stronger claim, for these reasons:
+**Rusta is pre-alpha and is not production-ready.** The gates above are real and do not support a
+stronger claim.
 
-1. **Zero real-model exposure.** *Every completion this system has ever processed was
-   hand-written.* All 292 tests are mock-driven; the GGUF tests are `#[ignore]`d for want of a
-   model file. The scaffold has never met a real small model's output distribution — which is the
-   one thing it exists to handle. This is the single largest gap, and no amount of further
-   self-audit closes it.
-2. **`/auto` + `shell` is genuinely dangerous.** §6.12 is accurately self-described as a guard
-   rail, not a sandbox: the deny-list is a regex table, and the TOCTOU window between path check
-   and use is real.
-3. **No external users**, so no exposure to the inputs, repositories and configurations that
+### 17.1 Real-model exposure: no longer zero, still minimal
+
+Earlier revisions of this section stated that *every completion this system had ever processed was
+hand-written*. That stopped being true on 2026-09-15, and the claim is corrected here rather than
+left standing.
+
+Rusta was run against a local Ollama server (`qwen2.5-coder:7b`, `num_ctx` 16384, CPU-only) on a
+scratch repository containing a one-line bug. It completed the full arc unaided —
+`Exploring → Planning → Editing → Verifying → Exploring`, a SEARCH/REPLACE edit applied, a
+`rusta:` auto-commit, validators green — and the session journaled 23 events including
+`batch_boundary`, `edit_applied`, `commit` and `validation_run`.
+
+Two findings came out of that single run, both in the area §16.1 predicts:
+
+- The model's first tool call passed `{"from": "fn sum_even"}` — an identifier where §6.4
+  specifies a line number. The error path worked and it self-corrected on the next turn, but
+  `map_drill` already accepts a `name`, so `read` accepting one would have saved a turn.
+- It emitted its edit inside a ` ```edit ` fence, a form no fixture contains and the spec does not
+  describe. §6.3's forgiveness absorbed it and the apply succeeded.
+
+**This is one model, one trivial bug, one run.** It refutes "zero exposure" and nothing more. The
+scaffold has still not met a real small model's output distribution across the shapes it exists to
+handle, and the corpus does not yet contain a single real completion. That remains the largest
+gap, and no amount of further self-audit closes it.
+
+### 17.2 Standing limitations
+
+1. **`/auto` + `shell` is genuinely dangerous.** §6.12 is a pre-execution filter against a
+   confused model, not a sandbox: the deny table is a regex list over a Turing-complete shell, and
+   the TOCTOU window between path check and use is real. Round 8 widened the table and, more
+   importantly, made §6.12 say what it can and cannot guarantee.
+2. **No external users**, so no exposure to the repositories, configurations and inputs that
    production would supply.
+3. **The embedded backend has never produced a token under CI.** The GGUF tests need a model file
+   and stay `#[ignore]`d.
+4. **Validator heuristics have no real-output fixtures** (§16.7 F2). `is_diagnostic`,
+   `zero_tests` and `first_diagnostic` are tuned by hand against imagined `cargo`/`clippy` output.
+   This needs no model to fix and is the cheapest hardening outstanding.
+5. **47 quarantined risks from round 8 remain unverified** (§16.8). They are leads, not findings.
+6. **Remediation introduces defects at a measured ~1 per 150–600 changed lines.** Round 8's four
+   waves changed roughly 1,400 production lines; the commits are deliberately separable so a
+   bisect is cheap.
 
-**The recommended path forward**, in order: run against a real `llama-server`; turn the resulting
-real completions into corpus fixtures (they are the inputs the mocks are standing in for); keep
-commissioning independent review, which §16.3 shows finds what in-repo passes do not.
+**The recommended path forward**, in order: run against a real `llama-server` across varied tasks
+and turn the completions into corpus fixtures — they are the inputs the mocks stand in for; add
+real validator-output fixtures; cache a small GGUF in CI; and keep commissioning independent
+review, which §16.3 and §16.8 both show finds what in-repo passes do not. When commissioning it,
+hand the reviewer §16.6 and check that what arrives is a review and not a copy of the last one.
 
 ---
 
-*This ADR supersedes the former `DEVELOPMENT_PLAN.md` v1.2 and `AUDIT_REPORT.md`, both deleted on
-2026-09-15. Section numbers §0–§15 are preserved verbatim because ~650 in-code citations depend
-on them; see the numbering contract at the top of this document.*
+*This ADR supersedes the former `DEVELOPMENT_PLAN.md` v1.2 (deleted 2026-09-15) and every
+standalone audit report (deleted 2026-09-18), whose findings are recorded in §16. Section numbers
+§0–§15 are preserved verbatim because ~650 in-code citations depend on them; see the numbering
+contract at the top of this document.*

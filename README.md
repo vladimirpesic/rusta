@@ -4,12 +4,13 @@ A lean, lightweight, all-encompassing AI coding-agent harness for small, locally
 hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 
 > **Status: pre-alpha.** The architecture, its rationale and its audit history live in
-> [`ADR.md`](ADR.md) (v1.0) — the single source of truth.
-> **v1 is milestone-complete: M0–M8 all green**, through six audit-and-remediation rounds
+> [`ADR.md`](ADR.md) (v1.1) — the single source of truth.
+> **v1 is milestone-complete: M0–M8 all green**, through eight audit-and-remediation rounds
 > (fmt clean, clippy `-D warnings` 0 on both feature graphs, `cargo doc` 0 warnings; counts
 > below are produced by `scripts/loc_budget.sh` and `cargo test --workspace`).
-> Pre-alpha is meant literally: every completion the scaffold has processed so far was
-> hand-written by a test, so it has not yet met a real small model — see ADR §17.
+> Pre-alpha is meant literally. Rusta has now completed one real end-to-end run against a local
+> Ollama model (`qwen2.5-coder:7b`) — plan, edit, auto-commit, validators green — but that is one
+> model, one trivial bug, one run; the test corpus still contains no real completion. See ADR §17.
 > The subsystem trail: **M0 — workspace skeleton** (8 crates, CI, LoC-budget gate), **M1 —
 > `HttpBackend`** (SSE streaming, 3-attempt retry/backoff, 404 `base_url` hints, native
 > `tool_calls` passthrough, mock-server e2e) plus **JSONL session persistence** (§6.10),
