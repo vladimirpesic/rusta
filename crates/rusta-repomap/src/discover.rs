@@ -47,8 +47,15 @@ pub(crate) fn within_root(root: &Path, rel: &str) -> bool {
 }
 
 fn git_ls_files(root: &Path) -> Option<Vec<String>> {
+    // A33: plain `ls-files` C-quotes any non-ASCII path (`core.quotepath`
+    // defaults on), so `src/café.rs` arrived as the literal
+    // `"src/caf\303\251.rs"`, matched no file on disk, and vanished from the
+    // map with no warning — while the non-git walk fallback handled the same
+    // name fine, so git and non-git repos disagreed about what the repo
+    // contains. `-z` turns off quoting entirely and NUL-separates, which
+    // also makes paths containing newlines unambiguous.
     let out = std::process::Command::new("git")
-        .arg("ls-files")
+        .args(["ls-files", "-z"])
         .current_dir(root)
         .output()
         .ok()?;
@@ -56,9 +63,10 @@ fn git_ls_files(root: &Path) -> Option<Vec<String>> {
         return None;
     }
     Some(
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(str::to_string)
+        out.stdout
+            .split(|&byte| byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(|path| String::from_utf8_lossy(path).into_owned())
             .collect(),
     )
 }

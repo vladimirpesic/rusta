@@ -197,6 +197,9 @@ pub(crate) fn drill(root: &Path, input: &Value) -> ToolOutcome {
         Err(DrillError::BadWindow { from, to }) => ToolOutcome::error(format!(
             "window must satisfy 1 <= from <= to (got {from}..{to})"
         )),
+        Err(DrillError::PastEof { path, from, lines }) => ToolOutcome::error(format!(
+            "{path} has {lines} line(s); the window starting at {from} is past the end — read a window inside the file, or use map_drill with a definition name"
+        )),
         Err(DrillError::Unreadable(path)) => ToolOutcome::error(format!(
             "{path}: unsupported language or unreadable file — use read for raw lines"
         )),

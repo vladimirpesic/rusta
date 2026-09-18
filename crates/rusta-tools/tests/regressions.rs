@@ -798,3 +798,177 @@ fn deny_table_covers_every_spelling_of_outside_the_repo() {
         assert!(!deny(command), "must be allowed: {command}");
     }
 }
+
+/// A35 / A34 (round 8): both `read` and `map_drill` answered a window past
+/// the end of a file with `status: Ok` and a header describing something
+/// that did not exist.
+///
+/// `read` fabricated the range outright — three-line file, `from: 10` →
+/// `a.rs:3-9` over an empty body, where neither 3 nor 9 meant anything.
+/// `map_drill` was worse, and this was found while fixing A34 rather than by
+/// the audit: it *clamped* the window into the file and returned
+/// `a.rs:3-3\nthree\n` — real content from a region the caller never asked
+/// for, credited to the read-before-edit ledger, so the model believes it
+/// has seen lines 10-12. That is the round-6 `read` regression again;
+/// silently wrong content is worse than the error it replaced, because a
+/// SEARCH block gets anchored on it.
+///
+/// The empty-file case is the same bug at zero length: the drill header read
+/// `e.rs:1-0`, a range naming no line at all.
+#[tokio::test]
+async fn a_window_past_the_end_of_a_file_is_an_error_not_a_fabricated_range() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("a.rs"), "one\ntwo\nthree\n").expect("seed");
+    std::fs::write(dir.path().join("e.rs"), "").expect("seed");
+    let tools = registry(dir.path(), 60);
+
+    let read_past = tools
+        .exec(
+            rusta_core::State::Exploring,
+            "read",
+            &json!({"path": "a.rs", "from": 10, "to": 12}),
+        )
+        .await;
+    assert_eq!(read_past.status, rusta_core::Status::Error);
+    assert!(
+        read_past.content.contains("past the end") && read_past.content.contains("3 line(s)"),
+        "the error must name the real length (§6.11 remedy): {}",
+        read_past.content
+    );
+
+    let drill_past = tools
+        .exec(
+            rusta_core::State::Exploring,
+            "map_drill",
+            &json!({"path": "a.rs", "from": 10, "to": 12}),
+        )
+        .await;
+    assert_eq!(drill_past.status, rusta_core::Status::Error);
+    assert!(
+        !drill_past.content.contains("three"),
+        "content from a region the caller never asked for must never be returned: {}",
+        drill_past.content
+    );
+
+    let drill_empty = tools
+        .exec(
+            rusta_core::State::Exploring,
+            "map_drill",
+            &json!({"path": "e.rs", "from": 1, "to": 5}),
+        )
+        .await;
+    assert_eq!(drill_empty.status, rusta_core::Status::Error);
+    assert!(
+        !drill_empty.content.contains("1-0") && !drill_empty.content.contains("e.rs:1-1"),
+        "an empty file must not be described by a range: {}",
+        drill_empty.content
+    );
+
+    // Partial overlap is a success, not an error — the caller did ask for
+    // line 2. Over-rejecting here would break every "read to the end of the
+    // file" window a model writes.
+    for (tool, expect) in [("read", "a.rs:2-3"), ("map_drill", "a.rs:2-3")] {
+        let out = tools
+            .exec(
+                rusta_core::State::Exploring,
+                tool,
+                &json!({"path": "a.rs", "from": 2, "to": 100}),
+            )
+            .await;
+        assert_eq!(
+            out.status,
+            rusta_core::Status::Ok,
+            "{tool}: {}",
+            out.content
+        );
+        assert!(
+            out.content.contains(expect) && out.content.contains("three"),
+            "{tool} must serve the overlapping part and say so: {}",
+            out.content
+        );
+    }
+}
+
+/// A33 (round 8): `git ls-files` C-quotes non-ASCII paths, so `src/café.rs`
+/// arrived as the literal `"src/caf\303\251.rs"`, matched nothing on disk,
+/// and vanished from the map with no warning — while the non-git walk
+/// fallback handled the same name fine, so a repo's map changed depending on
+/// whether it was a git repo.
+#[tokio::test]
+async fn non_ascii_filenames_survive_git_discovery() {
+    let repo = tempfile::tempdir().expect("repo");
+    std::fs::create_dir_all(repo.path().join("src")).expect("src");
+    std::fs::write(
+        repo.path().join("src/café.rs"),
+        "pub fn cafe_definition() {}\n",
+    )
+    .expect("seed");
+    std::fs::write(repo.path().join("src/plain.rs"), "pub fn plain() {}\n").expect("seed");
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "-A"],
+        vec![
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=c",
+            "commit",
+            "-qm",
+            "init",
+        ],
+    ] {
+        std::process::Command::new("git")
+            .args(&args)
+            .current_dir(repo.path())
+            .output()
+            .expect("git");
+    }
+
+    let map = registry(repo.path(), 60)
+        .exec(rusta_core::State::Exploring, "map_refresh", &json!({}))
+        .await;
+    assert!(
+        map.content.contains("cafe_definition"),
+        "a non-ASCII filename must not silently vanish from the map: {}",
+        map.content
+    );
+    assert!(
+        map.content.contains("plain"),
+        "ordinary files must be unaffected: {}",
+        map.content
+    );
+}
+
+/// A42 (round 8): §6.4 requires the two edit syntaxes to be identical. The
+/// text path normalizes CRLF in the parser; the tool-call path passed
+/// `search`/`replace` through verbatim, so a model emitting \r\n inside a
+/// tool-call `search` could never match the normalized file and got a
+/// NoMatch that named no cause.
+#[tokio::test]
+async fn a_tool_call_edit_normalizes_crlf_like_the_text_syntax() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("f.rs"), "fn main() {\n    old();\n}\n").expect("seed");
+    let tools = registry(dir.path(), 60);
+    // Credit the ledger first — read-before-edit (§6.3).
+    tools
+        .exec(
+            rusta_core::State::Exploring,
+            "read",
+            &json!({"path": "f.rs"}),
+        )
+        .await;
+
+    let out = tools
+        .exec(
+            rusta_core::State::Editing,
+            "edit",
+            &json!({"path": "f.rs", "search": "    old();\r\n", "replace": "    new();\r\n"}),
+        )
+        .await;
+    assert_eq!(out.status, rusta_core::Status::Ok, "{}", out.content);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("f.rs")).expect("read"),
+        "fn main() {\n    new();\n}\n",
+        "a CRLF tool-call search must match a LF file, as the text syntax does"
+    );
+}

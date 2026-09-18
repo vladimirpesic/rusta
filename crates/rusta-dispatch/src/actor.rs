@@ -169,11 +169,14 @@ fn clip_observation(text: &str) -> String {
     if estimate_tokens(text) <= OBSERVATION_TOKEN_CAP {
         return text.to_owned();
     }
-    let budget = OBSERVATION_TOKEN_CAP as usize * 3; // chars, per the §6.2 heuristic
+    // A36: §6.1 charges a cap's own marker against the cap. `cap_report`
+    // below does this and carries a comment about the ~411-token reports it
+    // prevents; this sibling appended the marker *past* the cap instead, so
+    // a clipped observation shipped ~1,521 tokens against a 1,500 cap.
+    const MARKER: &str = "\n[… clipped at 1500 tokens — narrow the range and read again]";
+    let budget = (OBSERVATION_TOKEN_CAP.saturating_sub(estimate_tokens(MARKER)) as usize) * 3;
     let head: String = text.chars().take(budget).collect();
-    format!(
-        "{head}\n[… clipped at {OBSERVATION_TOKEN_CAP} tokens — narrow the range and read again]"
-    )
+    format!("{head}{MARKER}")
 }
 
 /// A failed report that keeps the transcript for the session log.
@@ -225,6 +228,35 @@ pub fn cap_report(text: &str) -> (String, bool) {
     let budget = (REPORT_TOKEN_CAP.saturating_sub(estimate_tokens(MARKER)) as usize) * 3;
     let head: String = trimmed.chars().take(budget).collect();
     (format!("{head}{MARKER}"), true)
+}
+
+#[cfg(test)]
+mod round8_regressions {
+    use super::*;
+
+    /// A36: §6.1 charges a cap's own marker against the cap. `cap_report`
+    /// subtracts it first — with a comment about the ~411-token reports that
+    /// taught the lesson — while this sibling appended it past the cap, so a
+    /// clipped observation shipped ~1,521 tokens against a 1,500 cap. The
+    /// function also had no test at all, which is why the asymmetry survived
+    /// the round that fixed its twin.
+    #[test]
+    fn a_clipped_observation_fits_inside_its_own_cap() {
+        let huge = "abcd ".repeat(20_000);
+        let clipped = clip_observation(&huge);
+        assert!(
+            estimate_tokens(&clipped) <= OBSERVATION_TOKEN_CAP,
+            "clipped observation is {} tokens against a {OBSERVATION_TOKEN_CAP} cap",
+            estimate_tokens(&clipped)
+        );
+        assert!(
+            clipped.contains("clipped at"),
+            "a cap that truncated must say so (§6.1)"
+        );
+        // Under the cap, nothing is touched.
+        let small = "one line";
+        assert_eq!(clip_observation(small), small);
+    }
 }
 
 #[cfg(test)]

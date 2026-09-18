@@ -100,6 +100,19 @@ fn run(root: &Path, input: &Value) -> Result<ToolOutcome, ToolOutcome> {
         outcome.read_credit = Some(rel.display().to_string());
         return Ok(outcome);
     }
+    // A35: a window starting past EOF reported `Ok`, not truncated, with a
+    // fabricated header — `read(a.rs, from: 10, to: 12)` on three lines
+    // answered `a.rs:3-9` over an empty body, because `from` was clamped to
+    // the file while `last_line` kept its pre-loop seed. Neither number
+    // described anything real. Partial overlap stays a success: asking
+    // `from: 2, to: 100` of three lines did ask for line 2.
+    if from > total_lines {
+        let asked = to.map_or_else(|| "the end".to_owned(), |to| to.to_string());
+        return Err(ToolOutcome::error(format!(
+            "{raw}: lines {from}-{asked} are past the end of the file, which has {total_lines} \
+             line(s); read a window inside it"
+        )));
+    }
     // The window the caller actually asked for, clamped to the file.
     let from = from.min(total_lines);
     let requested_to = to.unwrap_or(total_lines).min(total_lines);

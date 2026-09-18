@@ -25,6 +25,28 @@ pub struct Git {
     available: bool,
 }
 
+/// Why `/undo` did or did not revert a commit (A43). Previously a `bool`,
+/// which collapsed "someone committed after us" and "the reset itself
+/// failed" into one value the caller then explained as the former.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResetOutcome {
+    /// The commit was reverted; HEAD moved back one.
+    Reverted,
+    /// HEAD is no longer the recorded sha — never reset an unrelated commit.
+    HeadMoved,
+    /// HEAD matched, but `git reset` failed (no parent commit, index lock).
+    Failed(String),
+}
+
+/// First non-empty line of `text`, for one-line error reporting.
+fn first_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("git reset failed")
+        .to_owned()
+}
+
 impl Git {
     /// Probes `root` for a git work tree. When git is missing or `root` is
     /// outside any repo, every operation becomes a graceful no-op.
@@ -128,15 +150,24 @@ impl Git {
     /// leaves the working tree alone — the journal has already restored the
     /// file bytes, so the tree lands clean at the pre-batch state. Returns
     /// whether a reset actually happened.
-    pub fn reset_if_head(&self, sha: &str) -> bool {
+    pub fn reset_if_head(&self, sha: &str) -> ResetOutcome {
         if !self.available || self.head().as_deref() != Some(sha) {
-            return false; // someone committed after us — never touch it
+            // Someone committed after us — never touch it.
+            return ResetOutcome::HeadMoved;
         }
-        Command::new("git")
+        match Command::new("git")
             .args(["reset", "--mixed", "HEAD~1", "--quiet"])
             .current_dir(&self.root)
             .output()
-            .is_ok_and(|out| out.status.success())
+        {
+            Ok(out) if out.status.success() => ResetOutcome::Reverted,
+            // A43: a failed reset used to be indistinguishable from "HEAD
+            // moved on", and the caller explained it as exactly that — a
+            // false statement on a real edge, since the first commit in a
+            // fresh repo is a rusta batch with no parent to reset to.
+            Ok(out) => ResetOutcome::Failed(first_line(&String::from_utf8_lossy(&out.stderr))),
+            Err(err) => ResetOutcome::Failed(err.to_string()),
+        }
     }
 
     /// The `/diff` body: the most recent rusta batch (`git show HEAD`) when
@@ -266,14 +297,18 @@ mod tests {
             .output()
             .expect("commit");
         let user_sha = git.head().expect("user sha");
-        assert!(!git.reset_if_head(&sha), "unrelated HEAD is never reset");
+        assert_eq!(
+            git.reset_if_head(&sha),
+            ResetOutcome::HeadMoved,
+            "unrelated HEAD is never reset"
+        );
 
         // When HEAD *is* ours, the reset lands on exactly its parent.
         std::fs::write(root.join("a.txt"), "two\n").expect("write");
         let sha2 = git
             .commit(&["a.txt".to_owned()], "rusta: second batch")
             .expect("commit 2");
-        assert!(git.reset_if_head(&sha2));
+        assert_eq!(git.reset_if_head(&sha2), ResetOutcome::Reverted);
         assert_eq!(
             git.head().as_deref(),
             Some(user_sha.as_str()),
@@ -329,7 +364,7 @@ mod tests {
         assert!(!git.available());
         assert!(git.commit(&["x".to_owned()], "rusta: x").is_none());
         assert!(git.head().is_none());
-        assert!(!git.reset_if_head("deadbeef"));
+        assert_eq!(git.reset_if_head("deadbeef"), ResetOutcome::HeadMoved);
         assert!(git.log(3).is_empty());
         assert!(git.diff().contains("not a git repository"));
     }

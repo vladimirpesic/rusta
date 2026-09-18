@@ -19,10 +19,17 @@ pub(crate) fn edit(editor: &Mutex<Editor>, input: &Value) -> ToolOutcome {
         let rel = safe_rel(raw)?;
         let search = req_str(input, "search")?;
         let replace = req_str(input, "replace")?;
+        // A42: §6.4 requires the two edit syntaxes to be identical, and they
+        // were not. The text path normalizes CRLF in the parser and the file
+        // content is normalized at apply time, but this path handed
+        // `search`/`replace` over verbatim — so a model emitting \r\n inside
+        // a tool-call `search` could never match the normalized file, and
+        // failed with a NoMatch that named no cause. Normalizing here is the
+        // parser's job done at the other entry point.
         let block = EditBlock {
             candidates: vec![rel.display().to_string()],
-            original: search.to_owned(),
-            updated: replace.to_owned(),
+            original: search.replace("\r\n", "\n"),
+            updated: replace.replace("\r\n", "\n"),
         };
         let report = lock(editor).apply_parsed(ParsedResponse {
             blocks: vec![block],

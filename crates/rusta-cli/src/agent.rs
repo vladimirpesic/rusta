@@ -241,7 +241,14 @@ pub fn parse_items(text: &str, native: &[NativeCall]) -> Parsed {
         }
         // Only advance the block scan outside fences: an `edit` tool call may
         // legitimately carry marker text inside its JSON `search` argument.
-        if !block.inside(line) && trimmed.starts_with("```tool") {
+        // A44: matched by prefix, ```toolbox and ```tools were consumed as
+        // tool fences — their bodies became spurious "malformed tool block"
+        // notes, and any SEARCH/REPLACE inside them never reached the edit
+        // parser. The info string must be exactly `tool`.
+        let tool_fence = trimmed
+            .strip_prefix("```tool")
+            .is_some_and(|rest| rest.trim().is_empty());
+        if !block.inside(line) && tool_fence {
             flush(&mut out, &mut prose);
             in_fence = true;
             fence_body.clear();

@@ -244,16 +244,28 @@ fn undo(app: &mut App) -> Control {
         app.reporter.line(&format!("  {path}"));
     }
     match &batch.sha {
-        Some(sha) if app.git.reset_if_head(sha) => {
-            app.reporter
-                .line(&format!("reverted commit {}", short(sha)));
-        }
-        Some(sha) => {
-            app.reporter.line(&format!(
-                "commit {} kept — HEAD moved on after it (never reset unrelated commits)",
-                short(sha)
-            ));
-        }
+        Some(sha) => match app.git.reset_if_head(sha) {
+            crate::git::ResetOutcome::Reverted => {
+                app.reporter
+                    .line(&format!("reverted commit {}", short(sha)));
+            }
+            crate::git::ResetOutcome::HeadMoved => {
+                app.reporter.line(&format!(
+                    "commit {} kept — HEAD moved on after it (never reset unrelated commits)",
+                    short(sha)
+                ));
+            }
+            // A43: say what actually happened. The files are already
+            // restored at this point, so the tree is correct and only the
+            // commit is stale — which is the one thing the user needs told.
+            crate::git::ResetOutcome::Failed(cause) => {
+                app.reporter.line(&format!(
+                    "commit {} kept — the revert failed: {cause} (files were restored; \
+                     revert or amend the commit by hand)",
+                    short(sha)
+                ));
+            }
+        },
         None => {
             app.reporter
                 .line("no commit to revert (not a git repository, or the commit failed)");

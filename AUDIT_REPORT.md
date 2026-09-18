@@ -27,7 +27,7 @@ condition, not a new one.
 
 ## 1. Verdict
 
-**1 High · 6 Medium · 21 Low.** No finding is remotely exploitable by a third party; R11 holds
+**1 High · 6 Medium · 21 Low**, plus **A54**, found during remediation rather than by either audit. No finding is remotely exploitable by a third party; R11 holds
 (the only network path is the user-configured backend). The High finding is an information-flow
 defect: `grep` reads outside the repository through an in-repo symlink, and it reproduces in two
 lines of probe code.
@@ -256,18 +256,18 @@ Verified at the cited location; reproduced by execution where marked **[exec]**.
 
 | # | Origin | Finding | Location |
 | --- | --- | --- | --- |
-| **A33** | F-08 | **[exec]** Non-ASCII filenames silently vanish from the map in git repos. `git ls-files` C-quotes them (`"src/caf\303\251.rs"`), rusta takes the output literally, the path never matches, and the file disappears with no warning. Probe: `src/café.rs` absent from the map, `src/plain.rs` present. The non-git walk fallback handles the same name fine, so git and non-git repos diverge. | `rusta-repomap/src/discover.rs:37-40` |
-| **A34** | F-09 | **[exec]** `drill` on an empty file returns the contradictory range `empty.rs:1-0` (`from` clamps to `max(1)`, `to` clamps to `0`). See §5.1 — the model-facing string differs. | `rusta-repomap/src/drill.rs:75-77` |
-| **A35** | F-11 | **[exec]** A `read` window starting past EOF fabricates a range. Probe: 3-line file, `read(from:10,to:12)` → `status=Ok`, `truncated=false`, content `"a.rs:3-9\n"` — a header claiming lines 3–9 of a 3-line file, empty body, no remedy. | `rusta-tools/src/read.rs:47,104-111` |
-| **A36** | F-13/F-14 | `clip_observation` appends its marker *past* the cap, while the sibling `cap_report` subtracts it first — and carries a comment recording the ~411-token bug that taught the lesson. §6.1 says a cap's marker is charged against the cap. The function also has zero test coverage. | `rusta-dispatch/src/actor.rs:168-177` |
+| **A33** | F-08 | **Status: RESOLVED** (wave 3) — `git ls-files -z`. **[exec]** Non-ASCII filenames silently vanish from the map in git repos. `git ls-files` C-quotes them (`"src/caf\303\251.rs"`), rusta takes the output literally, the path never matches, and the file disappears with no warning. Probe: `src/café.rs` absent from the map, `src/plain.rs` present. The non-git walk fallback handles the same name fine, so git and non-git repos diverge. | `rusta-repomap/src/discover.rs:37-40` |
+| **A34** | F-09 | **Status: RESOLVED** (wave 3); see A54, which this fix uncovered. **[exec]** `drill` on an empty file returns the contradictory range `empty.rs:1-0` (`from` clamps to `max(1)`, `to` clamps to `0`). See §5.1 — the model-facing string differs. | `rusta-repomap/src/drill.rs:75-77` |
+| **A35** | F-11 | **Status: RESOLVED** (wave 3) — a window entirely past EOF is now an error naming the real length; partial overlap still succeeds. **[exec]** A `read` window starting past EOF fabricates a range. Probe: 3-line file, `read(from:10,to:12)` → `status=Ok`, `truncated=false`, content `"a.rs:3-9\n"` — a header claiming lines 3–9 of a 3-line file, empty body, no remedy. | `rusta-tools/src/read.rs:47,104-111` |
+| **A36** | F-13/F-14 | **Status: RESOLVED** (wave 3). `clip_observation` appends its marker *past* the cap, while the sibling `cap_report` subtracts it first — and carries a comment recording the ~411-token bug that taught the lesson. §6.1 says a cap's marker is charged against the cap. The function also has zero test coverage. | `rusta-dispatch/src/actor.rs:168-177` |
 | **A37** | F-15 | Input-validation asymmetry: `{"task": ""}` bypasses the non-empty check the `tasks` array form enforces (`from_items` filters `!t.trim().is_empty()`; the single-task arm does not), spawning a sub-coder with an empty brief. | `rusta-dispatch/src/dag.rs:77` vs `99-103` |
 | **A38** | F-16 | `capsule_note`'s budget guard is `> CAPSULE_TOKEN_BUDGET && included > 0`, so a *first* capsule over 180 tokens ships regardless — the §6.6 guarantee has a hole. Latent: the shipped set's longest text is ~25 tokens. | `rusta-core/src/context.rs:1122-1126` |
 | **A39** | F-17 | Module doc says "Four states, **six** scaffold events" — `PHASE_EVENTS: [PhaseEvent; 7]` since `LoopEscalated`. | `rusta-core/src/state.rs:3` |
 | **A40** | F-18 | The M3 acceptance test's own doc says "all **24** `(State × PhaseEvent)` cells … all **sixteen** illegal combinations"; the table is 4 × 7 = **28**. Assertions are correct; only the prose miscounts. With A39, both load-bearing spots in `state.rs` miscount the table they exist to pin. | `rusta-core/src/state.rs:525-527` |
 | **A41** | F-23 | ADR §9 says each corpus fixture carries "an expected parse **and** an expected apply result". `parser_corpus_is_green` is the only fixture-driven test and calls **only** `parse_response`; no fixture is ever run through `Editor`. The `Editor` uses in `corpus.rs` are hand-written cases. | `rusta-edit/tests/corpus.rs:155-195` vs `ADR.md:735-738` |
-| **A42** | F-24 | CRLF forgiveness is asymmetric across the two syntaxes §6.4 requires to be identical: text blocks are normalized, but `prep()` does not normalize `\r` and the tool-call `edit` path passes `search`/`replace` verbatim — a model emitting `\r\n` in a tool-call `search` can never match. | `rusta-edit/src/apply.rs:631-638` + `rusta-tools/src/edit.rs:22-26` |
-| **A43** | F-27 | `reset_if_head` returns `false` both when HEAD moved **and** when `git reset` itself fails; the caller prints "commit kept — HEAD moved on after it" in both cases. On a failed reset that explanation is simply false. | `rusta-cli/src/git.rs:131-140` + `commands.rs:218-222` |
-| **A44** | F-28 | The tool fence is matched by prefix — `trimmed.starts_with("```tool")` also matches ` ```toolbox ` / ` ```tools `. Such a fence is consumed as a tool call, its body becomes a spurious malformed-block note, and any SEARCH/REPLACE inside it never reaches the edit parser. | `rusta-cli/src/agent.rs:244` |
+| **A42** | F-24 | **Status: RESOLVED** (wave 3). CRLF forgiveness is asymmetric across the two syntaxes §6.4 requires to be identical: text blocks are normalized, but `prep()` does not normalize `\r` and the tool-call `edit` path passes `search`/`replace` verbatim — a model emitting `\r\n` in a tool-call `search` can never match. | `rusta-edit/src/apply.rs:631-638` + `rusta-tools/src/edit.rs:22-26` |
+| **A43** | F-27 | **Status: RESOLVED** (wave 3) — `reset_if_head` returns an outcome enum, so a failed revert is reported as one. `reset_if_head` returns `false` both when HEAD moved **and** when `git reset` itself fails; the caller prints "commit kept — HEAD moved on after it" in both cases. On a failed reset that explanation is simply false. | `rusta-cli/src/git.rs:131-140` + `commands.rs:218-222` |
+| **A44** | F-28 | **Status: RESOLVED** (wave 3). The tool fence is matched by prefix — `trimmed.starts_with("```tool")` also matches ` ```toolbox ` / ` ```tools `. Such a fence is consumed as a tool call, its body becomes a spurious malformed-block note, and any SEARCH/REPLACE inside it never reaches the edit parser. | `rusta-cli/src/agent.rs:244` |
 | **A45** | F-29 | `Config::summary()` journals `self.backend.kind` — the **file's** value — ignoring the `--backend` override that the adjacent accessor honours. One `SessionStart` event can record `backend=http` beside an embedded backend. | `rusta-cli/src/config.rs:240-250` |
 | **A46** | F-30 | ADR §9 locates the parser corpus at `crates/rusta-edit/tests/edit_corpus/`; it lives at workspace-root `tests/edit_corpus/`. Loaders point at the real path; the normative document does not. | `ADR.md:735` |
 | **A47** | F-31 | `[validate] timeout_secs` is parsed and validated but appears in neither ADR §7's schema nor `rusta.toml.example` (whose `timeout_secs` is under `[shell]`). The inverse of the `strict_grammar` archetype: real, working, undocumented. | `rusta-validate/src/validators.rs:84-89` |
@@ -277,6 +277,30 @@ Verified at the cited location; reproduced by execution where marked **[exec]**.
 | **A51** | F-35 | `multiple-versions = "warn"` — a dependency duplication warns but never fails CI. Moot today. | `deny.toml:26` |
 | **A52** | F-10 | The parity justification "TSX shares TypeScript's tags query (**Aider does the same**)" is unsupported: Aider's query packs contain `typescript-tags.scm` and no TSX query, and `repomap.py` does not mention `tsx` at all. Rusta's choice is a reasonable superset and breaks no ADR rule; the cited justification is false. | `rusta-repomap/src/lang.rs:70` |
 | **A53** | F-12 | Stale comment: "the timeout's drop of the `wait_with_output` future guarantees the child is killed" — the code builds a custom `collect` future; `wait_with_output` appears only in comments. | `rusta-tools/src/shell.rs:302` |
+
+### A54 — `map_drill` answered a past-EOF window with content from a *different* region
+
+*Found during wave 3 while fixing A34; not reported by either source audit ·
+`crates/rusta-repomap/src/drill.rs`*
+
+A34 reported the empty-file header `path:1-0`. Fixing it surfaced the same clamp doing something
+worse on a non-empty file. `drill(a.rs, from: 10, to: 12)` on a three-line file returned:
+
+```text
+Ok("a.rs:3-3\nthree\n")
+```
+
+Real content, from a region the caller never asked for, with a header that matches what was
+returned rather than what was requested — and `map_drill` credits the read-before-edit ledger for
+it, so the model proceeds believing it has seen lines 10–12.
+
+This is the round-6 `read` regression exactly: *silently wrong content is worse than the error it
+replaced*, because a SEARCH block gets anchored on it. It is recorded separately from A34 because
+the severity differs — an obviously broken `1-0` header is noticed; a plausible `3-3` header is
+not.
+
+**Status: RESOLVED** (wave 3), with A34, by the same `PastEof` error. Partial overlap remains a
+success: `from: 2, to: 100` of three lines still answers `a.rs:2-3`.
 
 ---
 

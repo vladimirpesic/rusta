@@ -654,3 +654,99 @@ async fn a_failed_undo_keeps_the_batch_the_journal_and_the_commit() {
         "the batch is consumed once it is fully restored"
     );
 }
+
+/// A44 (round 8): the tool fence was matched by prefix, so ```toolbox and
+/// ```tools were consumed as tool calls. Their bodies became spurious
+/// "malformed tool block" notes instead of prose, and — the part that
+/// actually costs an edit — any SEARCH/REPLACE inside such a fence never
+/// reached the edit parser.
+#[test]
+fn only_an_exact_tool_fence_is_a_tool_call() {
+    let completion = "Here is a note.\n\
+        ```toolbox\n\
+        some/file.rs\n\
+        <<<<<<< SEARCH\n\
+        old\n\
+        =======\n\
+        new\n\
+        >>>>>>> REPLACE\n\
+        ```\n";
+    let parsed = rusta_cli::parse_items(completion, &[]);
+    assert!(
+        !parsed
+            .items
+            .iter()
+            .any(|item| matches!(item, rusta_cli::Item::Call { .. })),
+        "```toolbox is not a tool fence: {:?}",
+        parsed.items
+    );
+    assert!(
+        parsed.notes.is_empty(),
+        "and it must not produce a malformed-tool-block note: {:?}",
+        parsed.notes
+    );
+
+    // The real thing still parses.
+    let real = rusta_cli::parse_items(
+        "```tool\n{\"name\": \"read\", \"input\": {\"path\": \"a.rs\"}}\n```\n",
+        &[],
+    );
+    assert!(
+        matches!(
+            real.items.first(),
+            Some(rusta_cli::Item::Call { name, .. }) if name == "read"
+        ),
+        "an exact ```tool fence must still be a call: {:?}",
+        real.items
+    );
+}
+
+/// A43 (round 8): `reset_if_head` returned `false` both when HEAD had moved
+/// on and when `git reset` itself failed, and the caller explained both as
+/// the former. The failure is reachable: the first commit in a fresh repo
+/// has no parent, and in the M8 acceptance flow that first commit is a rusta
+/// batch — so `/undo` told the user "HEAD moved on after it" about a commit
+/// that was still HEAD.
+#[test]
+fn a_failed_revert_is_not_reported_as_head_moving_on() {
+    use rusta_cli::git::{Git, ResetOutcome};
+
+    let repo = tempfile::TempDir::new().expect("repo");
+    for args in [vec!["init", "-q"], vec!["add", "-A"]] {
+        std::process::Command::new("git")
+            .args(&args)
+            .current_dir(repo.path())
+            .output()
+            .expect("git");
+    }
+    std::fs::write(repo.path().join("f.txt"), "one\n").expect("seed");
+    for args in [
+        vec!["add", "-A"],
+        vec![
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=c",
+            "commit",
+            "-qm",
+            "rusta: first",
+        ],
+    ] {
+        std::process::Command::new("git")
+            .args(&args)
+            .current_dir(repo.path())
+            .output()
+            .expect("git");
+    }
+
+    let git = Git::open(repo.path());
+    let head = git.head().expect("head");
+    // HEAD *is* the recorded sha, but it is the root commit: there is no
+    // HEAD~1 to reset to, so the reset fails rather than HEAD having moved.
+    match git.reset_if_head(&head) {
+        ResetOutcome::Failed(cause) => {
+            assert!(!cause.is_empty(), "the failure must carry git's reason");
+        }
+        other => panic!("a root commit's revert must report failure, got {other:?}"),
+    }
+}

@@ -45,6 +45,15 @@ pub enum DrillError {
     NotFound { path: String, name: String },
     #[error("window must satisfy 1 <= from <= to (got {from}..{to})")]
     BadWindow { from: usize, to: usize },
+    /// A window whose `from` is past the end of the file. Distinct from
+    /// [`DrillError::BadWindow`]: the request is well-formed, the file is
+    /// just shorter than it assumes.
+    #[error("{path} has {lines} line(s); the window starts at {from}")]
+    PastEof {
+        path: String,
+        from: usize,
+        lines: usize,
+    },
 }
 
 /// Drill `request` against the repo at `root`. Output format:
@@ -72,7 +81,25 @@ pub fn drill(root: &Path, request: DrillRequest<'_>) -> Result<String, DrillErro
     let source = std::fs::read_to_string(root.join(&rel))
         .map_err(|_| DrillError::Unreadable(rel.clone()))?;
     let lines: Vec<&str> = source.lines().collect();
-    let from = from.min(lines.len().max(1));
+    // A34, and the worse sibling found while fixing it: clamping `from` into
+    // the file turned a window the caller never asked for into a successful
+    // answer. `drill(a.rs, from: 10, to: 12)` on a three-line file returned
+    // `Ok("a.rs:3-3\nthree\n")` — real content from a different region, and
+    // `map_drill` credits the ledger for it, so the model believes it has
+    // seen lines 10-12. That is the round-6 `read` regression exactly:
+    // silently wrong content is worse than an error, because a SEARCH block
+    // gets anchored on it. An empty file is the same bug at zero length,
+    // where the header read `path:1-0` — a range naming no line at all.
+    //
+    // Partial overlap is *not* an error: `from: 2, to: 100` on three lines
+    // still answers `a.rs:2-3`, because the caller did ask for line 2.
+    if from > lines.len() {
+        return Err(DrillError::PastEof {
+            path: rel.clone(),
+            from,
+            lines: lines.len(),
+        });
+    }
     let to = to.min(lines.len());
     let mut out = format!("{rel}:{from}-{to}\n");
     for line in lines.get(from.saturating_sub(1)..to).into_iter().flatten() {
