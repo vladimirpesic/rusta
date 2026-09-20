@@ -81,7 +81,7 @@ Rusta combines five proven scaffold pillars into one Rust/Tokio binary:
 
 | # | Requirement | Notes |
 | --- | --- | --- |
-| R1 | **≤ 15,000 lines of production Rust; ≤ 25,000 total including tests** (total raised from 20,000 on 2026-09-15 — see §12) | Counted on `*.rs` by the §12 script; enforced as a CI gate. Query files (`.scm`), skill cards (`.md`) and prompt templates are *data*, tracked separately. |
+| R1 | **≤ 15,000 lines of production Rust; ≤ 30,000 total including tests** (total raised 20,000 → 25,000 → 30,000 — see §12) | Counted on `*.rs` by the §12 script; enforced as a CI gate. Query files (`.scm`), skill cards (`.md`) and prompt templates are *data*, tracked separately. |
 | R2 | **Dual LLM backend, user-selectable at runtime** | (a) OpenAI-compatible HTTP client — always compiled, the default; (b) **embedded llama.cpp** via `llama-cpp-2` behind the `embedded` cargo feature. Selected by `rusta.toml` `[backend] kind` or `--backend`. |
 | R3 | CLI-first: Aider-style REPL | TUI / IDE extensions are out of scope for v1 (§14). |
 | R4 | Plain-text edit protocol with a forgiving parser and Aider's proven apply chain | §6.3. |
@@ -877,7 +877,7 @@ tests, LoC gate). Condensed; the per-milestone evidence trails live in the git h
 
 ## 12. R1 Enforcement — `scripts/loc_budget.sh` (CI gate)
 
-Production ≤ **15,000** lines; total including tests ≤ **25,000**. Canonical counting is the
+Production ≤ **15,000** lines; total including tests ≤ **30,000**. Canonical counting is the
 script (`wc -l` on `*.rs`); `tokei` is an optional cross-check. Data files (`.scm` queries,
 `skills/*.md`, prompt fragments) are reported separately, never counted.
 
@@ -891,6 +891,14 @@ script (`wc -l` on `*.rs`); `tokei` is an optional cross-check. Data files (`.sc
 > a third. Worse than the wrong number is the incentive: under that count, adding a unit test
 > consumed production budget, so the cheapest way to stay green was to delete tests. In a project
 > whose defects have all been test-coverage defects, that is precisely the wrong pressure.
+>
+> **Revision (2026-09-20).** Raised 25,000 → 30,000 to close the reference-project gaps in §16.10.
+> The production cap is again unchanged and again is not the pressure — it stands at ~13.9k of
+> 15,000. The growth is regression tests plus four new detector/recovery subsystems, each of
+> which exists because a real model failed in that exact way (§16.9). The same reasoning as the
+> two prior raises applies: holding the total would have meant buying the work out of test
+> coverage, in a project whose every defect has been a coverage defect. Skill cards remain data
+> and remain uncounted, which is why the deck could grow from 4 to a full deck for free.
 >
 > **Revision (2026-09-15).** The 20,000 total cap was reached. Production is not the pressure —
 > it stands at ~12.3k against its unchanged 15,000 — and all the growth is regression tests from

@@ -1200,11 +1200,36 @@ pub fn error_cues(tool: &str, content: &str) -> Vec<String> {
     let mut cues = vec!["error".to_owned()];
     let mut add = |cue: &str| cues.push(cue.to_owned());
 
+    // Tool-independent shapes first (round 10). Each names a failure a real
+    // model produced (§16.9); the vocabulary, not the deck size, was what
+    // limited how much any set of cards could help.
+    if has("must be a positive integer")
+        || has("must be a non-empty")
+        || has("must satisfy")
+        || has("takes either")
+        || has("must be at least")
+        || has("must be ≥")
+    {
+        add("bad_tool_args");
+    }
+    if has("no such file") || has("no definition named") || has("resolves outside") {
+        add("wrong_path");
+    }
+    if has("past the end of the file") {
+        add("past_eof");
+    }
+
     match tool {
         "edit" | "write" => {
             add("edit_failed");
             if has("failed to exactly match") || has("no such file") {
                 add("not_found");
+            }
+            if has("failed to match") {
+                // Distinct from `not_found`, which also covers a missing
+                // file: this is the file existing and the SEARCH text not.
+                // It is the cue a whole-file rewrite should answer.
+                add("patch_target_not_found");
             }
             if has("did you mean") || has("already in") {
                 add("duplicate_match");
@@ -1219,6 +1244,8 @@ pub fn error_cues(tool: &str, content: &str) -> Vec<String> {
         "read" if has("no such file") => add("not_found"),
         _ => {}
     }
+    cues.sort_unstable();
+    cues.dedup();
     cues
 }
 
@@ -1302,7 +1329,11 @@ mod tests {
     #[test]
     fn shipped_cards_fit_the_token_budget_invariant() {
         let deck = shipped_deck();
-        assert_eq!(deck.cards().len(), 4, "the shipped starter deck");
+        // Round 10 grew the deck from 4 to 9 against the reference decks
+        // (little-coder ships 31). Cards are data and uncounted by §12, so
+        // the only ceiling is the ≤ 120-token budget asserted below and the
+        // ≤ 2-cards-per-note injection rule.
+        assert_eq!(deck.cards().len(), 9, "the shipped starter deck");
         for card in deck.cards() {
             assert!(
                 card.declared_cost() <= CARD_TOKEN_BUDGET,
@@ -1329,13 +1360,26 @@ mod tests {
             ("re-read src/lib.rs to be sure", &["read-large-files"]),
             ("spreadsheet", &[]), // word boundary: "read" is not in "spread"
             ("edit_failed", &["edit-recovery"]),
-            ("not_found", &["edit-recovery"]),
             ("duplicate_match", &["edit-recovery"]),
             ("write", &["write-vs-edit"]),
             ("validation_failed", &["verify-focus"]),
-            ("test_failure", &["verify-focus"]),
             ("shell", &[]),
             ("map_drill", &[]),
+            // Round 10 cues, each named after a failure a real model
+            // produced (§16.9). Order within a cue is priority-then-name.
+            ("not_found", &["edit-recovery", "find-the-real-name"]),
+            ("wrong_path", &["find-the-real-name"]),
+            (
+                "patch_target_not_found",
+                &["locate-the-cause", "search-must-be-verbatim"],
+            ),
+            ("bad_tool_args", &["tool-arguments"]),
+            ("past_eof", &["tool-arguments"]),
+            ("test_failure", &["locate-the-cause", "verify-focus"]),
+            ("fix the failing test", &["task-decomposition"]),
+            ("refactor this module", &["task-decomposition"]),
+            // Word boundaries still hold for the new keyword triggers.
+            ("prefix suffix", &[]),
         ];
         for (cue, expected) in matrix {
             let names: Vec<&str> = deck.select(&[cue]).iter().map(|card| card.name()).collect();

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # R1 enforcement gate — ADR.md §12.
-# Production budget: ≤ 15,000 lines; total (including tests): ≤ 25,000 lines.
+# Production budget: ≤ 15,000 lines; total (including tests): ≤ 30,000 lines.
 #
 # The total cap was 20,000 and was reached by the fifth remediation round.
 # Production is not the pressure — it sits at ~12.3k of its unchanged 15k.
@@ -54,4 +54,4 @@ TOTAL=$((PROD + TESTS))
 
 echo "production=${PROD} tests=${TESTS} (inline=${INLINE_TESTS} suites=${SUITE_TESTS}) total=${TOTAL}"
 [ "$PROD" -le 15000 ] || { echo "FAIL: production budget exceeded (${PROD} > 15000)"; exit 1; }
-[ "$TOTAL" -le 25000 ] || { echo "FAIL: total budget exceeded (${TOTAL} > 25000)"; exit 1; }
+[ "$TOTAL" -le 30000 ] || { echo "FAIL: total budget exceeded (${TOTAL} > 30000)"; exit 1; }

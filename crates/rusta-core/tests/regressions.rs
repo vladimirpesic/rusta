@@ -609,3 +609,74 @@ fn a_resumed_dispatch_report_appears_exactly_once() {
         .count();
     assert_eq!(mentions, 1, "the report must replay once, not twice");
 }
+
+/// Round 10: the cue vocabulary was the ceiling on what any skill deck could
+/// do. Six cues shipped (`error`, `edit_failed`, `not_found`,
+/// `duplicate_match`, `validation_failed`, `test_failure`), so a card could
+/// only ever fire on those six situations however many cards existed —
+/// little-coder ships 31 cards against Rusta's 4, and the gap was not only
+/// the deck.
+///
+/// Each cue added here names a failure observed from a real model (§16.9),
+/// not a hypothetical one.
+#[test]
+fn cues_cover_the_failures_real_models_actually_produce() {
+    use rusta_core::error_cues;
+
+    let cues = |tool: &str, content: &str| error_cues(tool, content);
+    let has = |tool: &str, content: &str, cue: &str| cues(tool, content).iter().any(|c| c == cue);
+
+    // Qwen2.5-Coder passed `{"from": "fn sum_even"}` — a string where a line
+    // number belongs — on the first real tool call this project ever saw.
+    assert!(
+        has(
+            "read",
+            "\"from\" must be a positive integer",
+            "bad_tool_args"
+        ),
+        "{:?}",
+        cues("read", "\"from\" must be a positive integer")
+    );
+    assert!(has(
+        "grep",
+        "\"pattern\" must be a non-empty string",
+        "bad_tool_args"
+    ));
+
+    // Qwen3-Coder drilled `map_drill(name: "eval_binary_op")` twice for an
+    // identifier that does not exist anywhere in the file.
+    assert!(has(
+        "map_drill",
+        "no definition named \"eval_binary_op\" in src/eval.rs",
+        "wrong_path"
+    ));
+    assert!(has("read", "no such file — check the path", "wrong_path"));
+
+    // A SEARCH block whose text the model invented: the failure that most
+    // wants a whole-file rewrite rather than another SEARCH attempt.
+    assert!(has(
+        "edit",
+        "# 1 SEARCH/REPLACE block failed to match!",
+        "patch_target_not_found"
+    ));
+
+    // A window past EOF, and a drill that resolved nothing.
+    assert!(has(
+        "read",
+        "lines 10-12 are past the end of the file, which has 3 line(s)",
+        "past_eof"
+    ));
+
+    // The six original cues still fire — a wider vocabulary must not
+    // displace the deck that already depends on it.
+    assert!(has("edit", "failed to exactly match", "edit_failed"));
+    assert!(has("edit", "failed to exactly match", "not_found"));
+    assert!(has("edit", "did you mean", "duplicate_match"));
+    assert!(has(
+        "validation",
+        "test result: FAILED",
+        "validation_failed"
+    ));
+    assert!(has("validation", "test result: FAILED", "test_failure"));
+    assert!(has("read", "anything at all", "error"));
+}
