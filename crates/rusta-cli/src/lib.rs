@@ -103,7 +103,16 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         app.set_auto(true);
     }
     match &cli.prompt {
-        Some(prompt) => app.run_once(prompt).await,
+        Some(prompt) => {
+            if !app.run_once(prompt).await {
+                // The model offered edits and none landed. Exiting 0 here
+                // let a confident "the fix has been applied" stand as the
+                // result of a run that changed nothing (round 9).
+                return Err(anyhow::Error::msg(
+                    "no edits were applied, though the model offered some —                      the answer above may describe work that did not happen",
+                ));
+            }
+        }
         None => app.run_repl().await,
     }
     Ok(())

@@ -306,6 +306,27 @@ pub fn parse_items(text: &str, native: &[NativeCall]) -> Parsed {
     out
 }
 
+/// The plan an offered edit implies, for the §6.4 gate to rule on.
+///
+/// An interactive user is approving a *change*, so the prompt must name what
+/// would be written rather than echo the model's prose — which, in the run
+/// that motivated this, asserted a fix that had not happened.
+fn describe_offered_edit(blocks: &[EditBlock]) -> String {
+    let mut paths: Vec<&str> = blocks
+        .iter()
+        .filter_map(|block| block.candidates.first().map(String::as_str))
+        .collect();
+    paths.dedup();
+    if paths.is_empty() {
+        return format!("Apply {} edit block(s).", blocks.len());
+    }
+    format!(
+        "Apply {} edit block(s) to: {}",
+        blocks.len(),
+        paths.join(", ")
+    )
+}
+
 /// §6.4 plan detection: a completion with no actionable items counts as a
 /// drafted change-plan when it mentions a plan and carries a numbered list
 /// (the core prompt's format). Conservative by construction — plain answers
@@ -377,6 +398,8 @@ impl App {
     /// prose-only answer ends the request, the §6.7 gate finishes it, or the
     /// turn cap forces a wrap-up.
     pub async fn submit(&mut self, request: &str) {
+        self.edits_offered = 0;
+        self.edits_applied = 0;
         // Every user request is its own task: a fresh §6.7 repair bound
         // (`Gate::reset`) and fresh §6.6 detector state
         // (`LoopGuard::start_task`) — the previous request's counters never
@@ -519,6 +542,8 @@ impl App {
     async fn finish_batch(&mut self, summary: &str, undo_before: usize) -> bool {
         let entries: Vec<UndoEntry> =
             self.tools.editor().undo_stack().pending()[undo_before..].to_vec();
+        // What reached a file — the journal delta, not what was offered.
+        self.edits_applied += entries.len();
         for entry in &entries {
             // The edit journal is what `/undo` restores from, so a silent
             // failure here costs more than any other dropped write.
@@ -692,15 +717,58 @@ impl App {
         Some((text, native))
     }
 
+    /// The `edit`/`write` counterpart of [`Self::gate_for_offered_edit`].
+    ///
+    /// Reuses the same gate as the text syntax so the two cannot drift
+    /// apart. The caller has already journalled the call.
+    fn gate_for_offered_tool_edit(&mut self, name: &str, input: &Value) -> bool {
+        if self.machine.state() == State::Exploring {
+            self.fire(PhaseEvent::PlanDrafted);
+        }
+        let path = input
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("(unnamed path)");
+        let plan = format!("Apply a `{name}` to: {path}");
+        if self.plan_gate.approve(&plan) {
+            self.fire(PhaseEvent::PlanApproved);
+            true
+        } else {
+            self.push_observation(
+                "plan gate",
+                "PLAN DECLINED — revise the plan, or answer without edits.",
+                Status::Error,
+            );
+            false
+        }
+    }
+
     /// Executes one model tool call through the phase-gated registry (§6.4),
     /// journals the call/result pair (§6.10), and pushes the §6.1 observation.
     async fn exec_call(&mut self, name: &str, input: &Value) {
         let trip = self.guard.observe_tool_call(name, input);
         self.handle_trip(trip);
+        // The `edit`/`write` tool calls are the other half of "one edit
+        // mechanism, two syntaxes" (§6.4), so an edit offered from a
+        // read-only state drafts the plan here exactly as a SEARCH/REPLACE
+        // block does. The real run that motivated this used *this* form
+        // five times; gating only the text syntax would have left the
+        // observed failure in place.
+        // Journalled before the gate rules on it, so a declined edit is
+        // still in the §6.10 audit trail — and journalled exactly once.
         self.journal(Event::ToolCall {
             name: name.to_owned(),
             input: input.clone(),
         });
+        if matches!(name, "edit" | "write") {
+            self.edits_offered += 1;
+        }
+        if matches!(name, "edit" | "write")
+            && matches!(self.machine.state(), State::Exploring | State::Planning)
+            && !self.gate_for_offered_tool_edit(name, input)
+        {
+            return;
+        }
         let outcome = self.tools.exec(self.machine.state(), name, input).await;
         let flag = if outcome.status == Status::Ok {
             "ok"
@@ -743,13 +811,58 @@ impl App {
         }
     }
 
+    /// An edit offered from a read-only state: draft the plan it implies,
+    /// put it to the §6.4 gate, and return whether editing may proceed.
+    ///
+    /// Round 9, from a real run: Qwen3-Coder 30B spent 45 minutes in
+    /// `Exploring`, was refused five times with "Draft a plan to enter
+    /// Planning", and applied nothing. The refusal is not a detection-tuning
+    /// problem — `is_plan` runs in `handle_prose_turn`, which only a
+    /// completion with *no* actionable items reaches, so a completion
+    /// carrying an edit can never reach the gate however the prose is
+    /// worded. That is a livelock by construction.
+    ///
+    /// An offered edit is an unambiguous intent to change, which is what the
+    /// gate exists to put in front of the user. Drafting it here preserves
+    /// the property that matters — the user still rules before anything is
+    /// written, and `/auto` still means auto — while removing the
+    /// requirement that the model guess a phrase. Mutation stays unreachable
+    /// in read-only states: this moves the *machine*, it does not bypass it,
+    /// and a decline leaves the state exactly where a declined prose plan
+    /// does.
+    ///
+    /// `Verifying` is deliberately not included: its exits are the two
+    /// validation verdicts (§6.7), and an edit there keeps the existing
+    /// corrective note.
+    fn gate_for_offered_edit(&mut self, blocks: &[EditBlock]) -> bool {
+        if !matches!(self.machine.state(), State::Exploring | State::Planning) {
+            let note = corrective_note(self.machine.state(), Tool::Edit);
+            self.push_observation("edit", &note, Status::Error);
+            return false;
+        }
+        if self.machine.state() == State::Exploring {
+            self.fire(PhaseEvent::PlanDrafted);
+        }
+        let plan = describe_offered_edit(blocks);
+        if self.plan_gate.approve(&plan) {
+            self.fire(PhaseEvent::PlanApproved);
+            true
+        } else {
+            self.push_observation(
+                "plan gate",
+                "PLAN DECLINED — revise the plan, or answer without edits.",
+                Status::Error,
+            );
+            false
+        }
+    }
+
     /// Applies one group of SEARCH/REPLACE blocks (§6.3) through the shared
     /// apply chain. In read-only states the blocks are never executed — the
     /// §6.4 corrective note comes back instead (never a silent drop).
     fn apply_blocks(&mut self, blocks: Vec<EditBlock>) {
-        if self.machine.state() != State::Editing {
-            let note = corrective_note(self.machine.state(), Tool::Edit);
-            self.push_observation("edit", &note, Status::Error);
+        self.edits_offered += blocks.len();
+        if self.machine.state() != State::Editing && !self.gate_for_offered_edit(&blocks) {
             return;
         }
         for block in &blocks {

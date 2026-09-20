@@ -92,6 +92,16 @@ pub struct App {
     /// it was also *silent*, so a full disk stopped the audit trail with no
     /// sign until `/resume` came back short. Reported once per session.
     pub journal_broken: bool,
+    /// Edits the model offered during the current request (§6.3 blocks and
+    /// `edit`/`write` calls alike), and how many actually reached a file.
+    ///
+    /// Round 9: a real model ended a run with "The fix has been applied to
+    /// the source code" having applied nothing, and `rusta -c` exited 0 with
+    /// that claim as the answer. Rusta cannot check a model's prose, but it
+    /// can report what it did and refuse to call that success.
+    pub edits_offered: usize,
+    /// Edits that reached a file this request.
+    pub edits_applied: usize,
 }
 
 /// Builds the runtime backend from config + CLI overrides (§6.2: config or
@@ -227,6 +237,8 @@ impl App {
             card_cues: Vec::new(),
             last_request: String::new(),
             journal_broken: false,
+            edits_offered: 0,
+            edits_applied: 0,
         };
         if fresh {
             let summary = app.config.summary(overrides);
@@ -352,11 +364,21 @@ impl App {
     }
 
     /// The `-c` mode (§6.9): one agent request, then the process exits.
-    pub async fn run_once(&mut self, prompt: &str) {
+    /// Returns `false` when the model offered edits and none of them
+    /// reached a file — a run that looks successful and changed nothing.
+    pub async fn run_once(&mut self, prompt: &str) -> bool {
         self.submit(prompt).await;
+        let stalled = self.edits_offered > 0 && self.edits_applied == 0;
+        if self.edits_offered > 0 {
+            self.reporter.line(&format!(
+                "{} of {} offered edit(s) applied",
+                self.edits_applied, self.edits_offered
+            ));
+        }
         self.reporter
             .line(&format!("session: {}", self.session.path().display()));
         self.end_session().await;
+        !stalled
     }
 
     /// The interactive reedline loop (§6.9).

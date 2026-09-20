@@ -408,6 +408,21 @@ folded into `Verifying` feedback). **Canonical tool registry — 10 tools, DECID
   `Verifying`, whose only exits are the two validation verdicts — there it fires
   `ValidationFailed`, since an abandoned verification is not a passed one, returning to `Editing`
   where work can continue.
+- **An edit offered from a read-only state drafts the plan it implies.** Both syntaxes: a
+  SEARCH/REPLACE block and an `edit`/`write` tool call alike fire `PlanDrafted` and go to the
+  approval gate, whose verdict decides whether the edit proceeds. A decline leaves the state
+  exactly where a declined prose plan does.
+
+  > **Revision (2026-09-20).** Plan detection runs only on a completion with **no actionable
+  > items**, so a completion carrying an edit could never reach the gate however its prose was
+  > worded — a livelock by construction, not a detection-tuning problem. Measured: Qwen3-Coder
+  > 30B-A3B spent 45 minutes and 40 tool calls in `Exploring`, was refused five times with
+  > "Draft a plan to enter Planning", never produced the shape `is_plan` recognises, and applied
+  > nothing. An offered edit is an unambiguous intent to change, which is precisely what this
+  > gate exists to put in front of the user, so it now *is* the draft. The safety property is
+  > unchanged — the user still rules before anything is written, `/auto` still means auto, and
+  > mutation tools stay unregistered in read-only states, so this moves the machine rather than
+  > bypassing it. What is removed is the requirement that the model guess a phrase.
 
 **Tool reference** (JSON input keys → behaviour; results truncated per §6.1):
 
@@ -620,7 +635,14 @@ Config: `rusta.toml` discovery cwd → parents → `~/.rusta/`, with flag-over-f
 precedence and §6.11-style actionable errors.
 
 Non-interactive: `rusta -c "prompt"` runs the agent and exits — plan auto-approved, `ask`
-headless, **shell denied by default** (§6.12).
+headless, **shell denied by default** (§6.12). When the model offered edits, the run prints how
+many of them reached a file, and **exits non-zero if none did**.
+
+> **Revision (2026-09-20).** §6.1 step 3 makes a completion with no actionable items the answer
+> shown to the user, and nothing compared that answer to what the session had done. A real run
+> ended with "The fix has been applied to the source code" having applied nothing, and exited 0
+> with that sentence as its result. Rusta cannot check a model's prose; it can decline to call a
+> run that offered edits and landed none a success.
 
 ### 6.10 Session Persistence (`rusta-core/session.rs`)
 
@@ -1042,7 +1064,7 @@ Every row ships and is tested.
 
 ---
 
-## 16. Audit Record — eight review rounds
+## 16. Audit Record — nine review rounds
 
 Six full line-by-line audits were run against this specification and the §3 references. Rounds
 1–4 were in-repo; round 5 added two independent external reviews by other LLMs; round 6 was a
@@ -1245,6 +1267,32 @@ and are not recorded as findings here. The substantive leads among them: an unbo
 `map_drill` reading whole files while `read` streams; blocking sync I/O on tokio workers;
 detached dispatch tasks that are not cancelled; cap markers appended past the cap in three more
 places; and Ctrl-C not being listened for during a running `dispatch`.
+
+### 16.9 Round 9 — the first defects found by running, not reading
+
+Rounds 1–8 were audits of source. Round 9 is the first whose findings came from **running the
+scaffold against real models** — Qwen2.5-Coder 7B and Qwen3-Coder 30B-A3B, through Ollama on
+CPU — and every one of them was invisible to a green suite.
+
+| # | Finding | Why no test could see it |
+| --- | --- | --- |
+| A55 | A SEARCH/REPLACE block wrapped in a ```tool fence was swallowed whole; the note said "the fence body must be JSON", true of the call it failed to parse and silent about the edit it dropped | No fixture wrapped an edit in a tool fence — real models do |
+| A56 | A busy server reported as `Unreachable`, with a remedy asking whether the server was running and `base_url` correct. Both false: a sub-coder had queued behind the main generation, exactly as §6.8 documents | Needs a real backend under real load |
+| A57 | **The phase gate livelocked every capable model.** 40 tool calls, five refusals, nothing applied — see §6.4's 2026-09-20 revision | The matrix test proves `edit` is refused in `Exploring`, which is correct; it cannot show that a model never escapes |
+| A58 | `rusta -c` exited **0** on a run that applied nothing while the model claimed success — see §6.9's revision | Requires a model that asserts something false |
+
+**The lesson, which is §16.1 one layer further out.** Every prior round looked for code that was
+wrong. These four are code that is *right* and a system that fails anyway: a correct fence parser
+that discards an edit, a correct retry classifier with a wrong remedy, a correct phase gate no
+model can pass, and a correct answer-rendering rule that reports a fiction. A suite can pin
+behaviour; only a run can show the behaviour composing into a dead end.
+
+**One defect was introduced and caught inside the round.** The A55 recovery note claimed the
+mis-fenced block "was applied anyway this time". It was not: recovery hands the block to the edit
+parser, and whether it applies still depends on the phase gate. A 30B run put a recovery and a
+closed gate in the same turn and was told it had succeeded. The suite was green because the test
+asserted the note's *presence*, never that its content was true — the §16.1 shape, committed by
+the same pass that was removing it.
 
 ## 17. Current Status & Known Limitations
 

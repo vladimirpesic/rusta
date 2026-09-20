@@ -548,3 +548,188 @@ async fn only_the_first_ask_of_a_turn_reaches_the_user() {
         "the extra asks must surface, not vanish: {shown}"
     );
 }
+
+/// Round 9, from a real run: Qwen3-Coder 30B spent 45 minutes and 40 tool
+/// calls in `Exploring` and applied nothing. Five times it attempted an edit
+/// and five times it was told "edit is not available in Exploring. Draft a
+/// plan to enter Planning" — and it never produced prose that `is_plan`
+/// recognises.
+///
+/// The livelock is structural, not a detection-tuning problem: plan
+/// detection runs in `handle_prose_turn`, which is only reached by a
+/// completion with **no actionable items**. A completion that carries an
+/// edit therefore never reaches the gate at all, so no amount of loosening
+/// `is_plan` can help it.
+///
+/// An attempted edit *is* an intent to change, which is exactly what the
+/// §6.4 gate exists to put in front of the user. It now drafts the plan, so
+/// the user still rules on it and the model is not asked to guess a phrase.
+#[tokio::test]
+async fn an_edit_attempted_in_exploring_drafts_the_plan_instead_of_looping() {
+    if !git_present() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let dir = init_repo();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    std::fs::write(root.join("src/lib.rs"), "fn one() {}\n").expect("write");
+
+    // No plan prose anywhere — the completion is an edit block and nothing
+    // else, which is what the real model produced.
+    let mock = Mock::start(|hit| match hit {
+        1 => "src/lib.rs\n\
+              <<<<<<< SEARCH\n\
+              fn one() {}\n\
+              =======\n\
+              fn two() {}\n\
+              >>>>>>> REPLACE\n"
+            .to_owned(),
+        _ => "Done — the rename is applied.".to_owned(),
+    });
+    let capture = Capture::default();
+    let mut app = app_for(root, &mock, 16, &capture, Mode::Repl);
+
+    app.handle_line("rename fn one() to fn two() in src/lib.rs")
+        .await;
+
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).expect("read"),
+        "fn two() {}\n",
+        "an edit offered in Exploring must reach the file once the gate \
+         approves, not loop against the phase note: {}",
+        capture.text()
+    );
+    let text = capture.text();
+    assert!(
+        text.contains("(Exploring → Planning)") && text.contains("(Planning → Editing)"),
+        "the machine must walk the real §6.4 arc, not skip it: {text}"
+    );
+    assert!(
+        !text.contains("is not available in Exploring"),
+        "the model must not be handed the refusal it cannot act on: {text}"
+    );
+}
+
+/// The `edit` *tool call* half of the same livelock — and the form the real
+/// 30B actually used five times. Gating only the text syntax would have left
+/// the observed failure exactly where it was, and would have split "one edit
+/// mechanism, two syntaxes" (§6.4) in two.
+#[tokio::test]
+async fn an_edit_tool_call_in_exploring_drafts_the_plan_too() {
+    if !git_present() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let dir = init_repo();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    std::fs::write(root.join("src/lib.rs"), "fn one() {}\n").expect("write");
+
+    let mock = Mock::start(|hit| match hit {
+        // Read first so the ledger is credited (§6.3 read-before-edit),
+        // then an `edit` tool call with no plan prose anywhere.
+        1 => "```tool\n{\"name\": \"read\", \"input\": {\"path\": \"src/lib.rs\"}}\n```".to_owned(),
+        2 => "```tool\n{\"name\": \"edit\", \"input\": {\"path\": \"src/lib.rs\", \
+              \"search\": \"fn one() {}\", \"replace\": \"fn two() {}\"}}\n```"
+            .to_owned(),
+        _ => "Done.".to_owned(),
+    });
+    let capture = Capture::default();
+    let mut app = app_for(root, &mock, 16, &capture, Mode::Repl);
+
+    app.handle_line("rename fn one() to fn two() in src/lib.rs")
+        .await;
+
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).expect("read"),
+        "fn two() {}\n",
+        "the tool-call syntax must be gated the same way: {}",
+        capture.text()
+    );
+    // Exactly one journalled ToolCall per call the model made — the gate
+    // must not record the edit twice on its way through.
+    let edits = app
+        .session
+        .events()
+        .iter()
+        .filter(|event| matches!(event, rusta_core::Event::ToolCall { name, .. } if name == "edit"))
+        .count();
+    assert_eq!(edits, 1, "the approved edit call is journalled once");
+}
+
+/// Round 9, from a real run: Qwen3-Coder ended a `-c` run with "The fix has
+/// been applied to the source code" having applied nothing at all, and rusta
+/// exited **0** with that sentence as the answer. §6.1 step 3 makes a
+/// completion with no actionable items the user's answer, and nothing
+/// compared that answer to what the session had actually done.
+///
+/// Rusta cannot check a model's prose. It can refuse to call a run that
+/// offered edits and landed none a success, and say so in one line.
+#[tokio::test]
+async fn a_run_that_offers_edits_and_lands_none_does_not_report_success() {
+    if !git_present() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let dir = init_repo();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    std::fs::write(root.join("src/lib.rs"), "fn one() {}\n").expect("write");
+
+    let mock = Mock::start(|hit| match hit {
+        1 => "```tool\n{\"name\": \"read\", \"input\": {\"path\": \"src/lib.rs\"}}\n```".to_owned(),
+        // A SEARCH that does not occur in the file: offered, never applied.
+        2 => "src/lib.rs\n\
+              <<<<<<< SEARCH\n\
+              fn nonexistent() {}\n\
+              =======\n\
+              fn two() {}\n\
+              >>>>>>> REPLACE\n"
+            .to_owned(),
+        _ => "The fix has been applied to the source code.".to_owned(),
+    });
+    let capture = Capture::default();
+    let mut app = app_for(root, &mock, 6, &capture, Mode::Oneshot);
+
+    let ok = app.run_once("rename fn one() to fn two()").await;
+
+    assert!(
+        !ok,
+        "a run that applied nothing must not report success: {}",
+        capture.text()
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).expect("read"),
+        "fn one() {}\n",
+        "and the file is genuinely untouched"
+    );
+    assert!(
+        capture.text().contains("0 of"),
+        "the user is told how many offered edits landed: {}",
+        capture.text()
+    );
+
+    // The control: a run that lands its edit reports success.
+    let dir2 = init_repo();
+    let root2 = dir2.path();
+    std::fs::create_dir_all(root2.join("src")).expect("mkdir");
+    std::fs::write(root2.join("src/lib.rs"), "fn one() {}\n").expect("write");
+    let mock2 = Mock::start(|hit| match hit {
+        1 => "src/lib.rs\n\
+              <<<<<<< SEARCH\n\
+              fn one() {}\n\
+              =======\n\
+              fn two() {}\n\
+              >>>>>>> REPLACE\n"
+            .to_owned(),
+        _ => "Done.".to_owned(),
+    });
+    let capture2 = Capture::default();
+    let mut app2 = app_for(root2, &mock2, 6, &capture2, Mode::Oneshot);
+    assert!(
+        app2.run_once("rename it").await,
+        "a run that applied its edit is a success: {}",
+        capture2.text()
+    );
+}
