@@ -750,3 +750,81 @@ fn a_failed_revert_is_not_reported_as_head_moving_on() {
         other => panic!("a root commit's revert must report failure, got {other:?}"),
     }
 }
+
+/// Round 9, found by a real model (Qwen3-Coder 30B-A3B through Ollama):
+/// the model wrapped a *correct* SEARCH/REPLACE block inside a ```tool
+/// fence. Rusta consumed the fence as a tool call, found the body was not
+/// JSON, and answered "the fence body must be JSON like {...}" — true, but
+/// it does not say that the edit inside was discarded.
+///
+/// The model reasonably concluded its edit had landed and ended the turn
+/// with "The fix has been applied to the source code", which §6.1 step 3
+/// makes the answer shown to the user. `rusta -c` exited 0 with that claim,
+/// no edit applied, no commit, and the tests still failing.
+///
+/// §6.3's forgiveness is the right instrument: a fence body that yields no
+/// calls but does parse as edit blocks is an edit the model mis-fenced, not
+/// a malformed call. This is the inverse of A44 — that was a non-`tool`
+/// fence wrongly consumed, this is a `tool` fence wrongly keeping content
+/// that belongs to the edit parser.
+#[test]
+fn an_edit_block_wrapped_in_a_tool_fence_is_recovered_not_swallowed() {
+    let completion = "Let me apply this fix:\n\
+        ```tool\n\
+        src/eval.rs\n\
+        <<<<<<< SEARCH\n\
+        let lhs = stack.pop().ok_or(EvalError::StackUnderflow)?;\n\
+        =======\n\
+        let rhs = stack.pop().ok_or(EvalError::StackUnderflow)?;\n\
+        >>>>>>> REPLACE\n\
+        ```\n\
+        That should do it.\n";
+    let parsed = rusta_cli::parse_items(completion, &[]);
+
+    let blocks: Vec<_> = parsed
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            rusta_cli::Item::Blocks(blocks) => Some(blocks),
+            rusta_cli::Item::Call { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        blocks.len(),
+        1,
+        "the mis-fenced edit must reach the edit parser: {:?}",
+        parsed.items
+    );
+    assert_eq!(blocks[0].len(), 1, "{:?}", blocks[0]);
+    assert_eq!(
+        blocks[0][0].candidates,
+        vec!["src/eval.rs".to_owned()],
+        "and keep its filename"
+    );
+    assert!(
+        !parsed
+            .notes
+            .iter()
+            .any(|note| note.contains("must be JSON")),
+        "the misleading malformed-call note must not be emitted: {:?}",
+        parsed.notes
+    );
+
+    // A genuine tool call is untouched, and a genuine malformed one still
+    // gets the JSON note — recovery must not swallow either.
+    let real = rusta_cli::parse_items(
+        "```tool\n{\"name\": \"read\", \"input\": {\"path\": \"a.rs\"}}\n```\n",
+        &[],
+    );
+    assert!(
+        matches!(real.items.first(), Some(rusta_cli::Item::Call { name, .. }) if name == "read"),
+        "{:?}",
+        real.items
+    );
+    let junk = rusta_cli::parse_items("```tool\nnot json at all\n```\n", &[]);
+    assert!(
+        junk.notes.iter().any(|note| note.contains("must be JSON")),
+        "a body that is neither JSON nor an edit block still gets the note: {:?}",
+        junk.notes
+    );
+}

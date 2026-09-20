@@ -58,6 +58,27 @@ pub enum Error {
         cause: String,
     },
 
+    /// The server accepted the connection but sent nothing within the
+    /// response budget (ADR §6.2).
+    ///
+    /// Round 9, found against a real Ollama server: this used to surface as
+    /// [`Error::Unreachable`], whose remedy asks whether the server is
+    /// running and whether `base_url` is right — both false here, and
+    /// neither actionable. The realistic cause is the one §6.8 documents:
+    /// on a single-model backend a sub-coder request queues behind the main
+    /// generation, and a slow CPU model can hold the slot for longer than
+    /// the budget.
+    #[error(
+        "backend accepted the connection but sent nothing within {seconds}s. \
+         Remedy: the server is reachable but busy or slow — on a single-model \
+         backend (Ollama, llama-server) concurrent requests queue behind the \
+         current generation (§6.8), so raise the budget or reduce concurrency"
+    )]
+    ResponseTimeout {
+        /// The budget that elapsed, in seconds.
+        seconds: u64,
+    },
+
     /// A stream broke after partial output was already delivered (no retry mid-stream).
     #[error("stream failed after partial output: {cause}")]
     StreamFailed {

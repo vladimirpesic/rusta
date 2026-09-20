@@ -132,6 +132,11 @@ pub struct HttpConfig {
     /// Environment variable holding the API key; read once at construction,
     /// never persisted (ADR §7).
     pub api_key_env: Option<String>,
+    /// How long to wait for the server to *start* answering, in seconds.
+    ///
+    /// Configurable so the timeout path is reachable by a test in under two
+    /// minutes; operators on very slow hardware can also raise it.
+    pub response_timeout_secs: u64,
 }
 
 impl Default for HttpConfig {
@@ -143,6 +148,7 @@ impl Default for HttpConfig {
             max_tokens: 4096,
             temperature: 0.2,
             api_key_env: None,
+            response_timeout_secs: RESPONSE_TIMEOUT.as_secs(),
         }
     }
 }
@@ -187,7 +193,7 @@ impl HttpBackend {
             .filter(|key| !key.is_empty());
         let client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
-            .read_timeout(RESPONSE_TIMEOUT)
+            .read_timeout(Duration::from_secs(config.response_timeout_secs.max(1)))
             .build()
             .map_err(|e| Error::Config {
                 cause: e.to_string(),
@@ -263,6 +269,15 @@ impl HttpBackend {
             match request.send().await {
                 Err(e) if e.is_connect() => {
                     last_cause = e.to_string();
+                }
+                // A timeout is not unreachability: the connection was
+                // accepted and the server simply had not started answering.
+                // Reporting it as unreachable sent the model a remedy about
+                // `base_url` for a server that was reachable and correct.
+                Err(e) if e.is_timeout() => {
+                    return Err(Error::ResponseTimeout {
+                        seconds: self.config.response_timeout_secs,
+                    });
                 }
                 Err(e) => {
                     return Err(Error::Unreachable {

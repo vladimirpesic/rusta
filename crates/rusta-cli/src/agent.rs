@@ -194,6 +194,42 @@ pub struct NativeCall {
 /// through `rusta_dispatch::parse_tool_calls` — both syntaxes keep their
 /// proven parsers and still execute in the order the model wrote them.
 /// Native `tool_calls` execute after the text items, in server order.
+/// Closes a ```tool fence: emit its calls, or — when the body is not a call
+/// at all but *is* an edit — hand it back to the prose stream.
+///
+/// Round 9, from a real model: Qwen3-Coder wrapped a correct SEARCH/REPLACE
+/// block in a ```tool fence. The body was consumed as a malformed call, the
+/// edit inside was discarded, and the note ("the fence body must be JSON")
+/// described the call it failed to parse rather than the edit it dropped.
+/// The model took that as success and said so, which §6.1 step 3 turns into
+/// the user's answer.
+///
+/// §6.3's forgiveness is the right instrument here — this is the same class
+/// as a stray markdown fence around a block — and the recovery is narrow by
+/// construction: it fires only when the body yields *no* calls and does
+/// parse as edit blocks. A real `edit` call carrying markers inside its JSON
+/// `search` argument parses as JSON and never reaches this path; a body that
+/// is neither still gets the JSON note.
+fn close_tool_fence(out: &mut Parsed, body: &str, prose: &mut String) {
+    let calls = parse_tool_calls(&format!("```tool\n{body}\n```"));
+    if calls.calls.is_empty() && !rusta_edit::parse_response(body).blocks.is_empty() {
+        out.notes.push(
+            "a SEARCH/REPLACE block belongs in the message body, not inside a ```tool fence \
+             — it was applied anyway this time"
+                .to_owned(),
+        );
+        prose.push_str(body);
+        return;
+    }
+    for call in calls.calls {
+        out.items.push(Item::Call {
+            name: call.name,
+            input: call.input,
+        });
+    }
+    out.notes.extend(calls.notes);
+}
+
 pub fn parse_items(text: &str, native: &[NativeCall]) -> Parsed {
     let mut out = Parsed::default();
     let mut prose = String::new();
@@ -225,14 +261,7 @@ pub fn parse_items(text: &str, native: &[NativeCall]) -> Parsed {
             if trimmed.starts_with("```") {
                 // The proven fence parser, scoped to this one block — so calls
                 // interleave with prose edit blocks in true document order.
-                let calls = parse_tool_calls(&format!("```tool\n{fence_body}\n```"));
-                for call in calls.calls {
-                    out.items.push(Item::Call {
-                        name: call.name,
-                        input: call.input,
-                    });
-                }
-                out.notes.extend(calls.notes);
+                close_tool_fence(&mut out, &fence_body, &mut prose);
                 in_fence = false;
             } else {
                 fence_body.push_str(line);
@@ -258,14 +287,7 @@ pub fn parse_items(text: &str, native: &[NativeCall]) -> Parsed {
     }
     // Unterminated fence at EOF: parse what was gathered (§6.1 forgiveness).
     if in_fence {
-        let calls = parse_tool_calls(&format!("```tool\n{fence_body}\n```"));
-        for call in calls.calls {
-            out.items.push(Item::Call {
-                name: call.name,
-                input: call.input,
-            });
-        }
-        out.notes.extend(calls.notes);
+        close_tool_fence(&mut out, &fence_body, &mut prose);
     }
     flush(&mut out, &mut prose);
 

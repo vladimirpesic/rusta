@@ -275,6 +275,9 @@ impl Config {
     pub fn http(&self, overrides: &Overrides) -> HttpConfig {
         let defaults = HttpConfig::default();
         HttpConfig {
+            // Not a §7 key: the default is the ADR §6.2 budget, and it is a
+            // field only so the timeout path is reachable by a test.
+            response_timeout_secs: defaults.response_timeout_secs,
             base_url: overrides
                 .base_url
                 .clone()

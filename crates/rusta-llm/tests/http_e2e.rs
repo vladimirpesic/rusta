@@ -322,3 +322,41 @@ async fn an_out_of_range_tool_call_index_is_rejected_not_allocated() {
         "an out-of-range index must be a recoverable error: {events:?}"
     );
 }
+
+/// Round 9, found against a real Ollama server: a sub-coder request queued
+/// behind the main model's generation (§6.8's documented serialization on a
+/// single-model backend) exceeded the response budget, and the failure
+/// surfaced as `Error::Unreachable` — "is the server running, and is
+/// `base_url` the full API root incl. /v1?". Both suggestions were wrong:
+/// the server was running and the URL was correct. The model was handed a
+/// remedy it could not act on, against §6.11.
+#[tokio::test]
+async fn a_busy_server_is_not_reported_as_unreachable() {
+    let server = MockServer::start(|_| Step::Stall);
+    let backend = HttpBackend::new(HttpConfig {
+        base_url: format!("http://127.0.0.1:{}/v1", server.port),
+        // The real budget is 120s; the path is the same at 1s.
+        response_timeout_secs: 1,
+        ..HttpConfig::default()
+    })
+    .expect("valid config");
+
+    let err = backend
+        .stream(request())
+        .await
+        .expect_err("a stalled server must fail");
+    let rendered = err.to_string();
+
+    assert!(
+        matches!(err, Error::ResponseTimeout { .. }),
+        "a stall is a timeout, not unreachability: {err:?}"
+    );
+    assert!(
+        !rendered.contains("base_url"),
+        "the remedy must not blame the URL of a server that answered: {rendered}"
+    );
+    assert!(
+        rendered.contains("busy or slow"),
+        "and must name the real cause (§6.11 actionable remedy): {rendered}"
+    );
+}

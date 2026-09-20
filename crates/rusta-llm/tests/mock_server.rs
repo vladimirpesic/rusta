@@ -17,6 +17,11 @@ pub enum Step {
     Fragments(Vec<Vec<u8>>),
     /// A plain HTTP status with a body.
     Status(u16, String),
+    /// Accepts the connection and then sends nothing at all, until the
+    /// client gives up. Models a server that is reachable but busy — on a
+    /// single-model backend, a request queued behind the current generation
+    /// (ADR §6.8).
+    Stall,
     /// 200 JSON body (non-streaming completions).
     Json(serde_json::Value),
 }
@@ -95,6 +100,11 @@ async fn serve(mut stream: TcpStream, step: Step) {
                 write_all(&mut stream, fragment).await;
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
+        }
+        Step::Stall => {
+            // Hold the socket open, answering nothing. The client's response
+            // budget is what ends this.
+            tokio::time::sleep(Duration::from_secs(60)).await;
         }
         Step::Status(code, body) => {
             write_head(&mut stream, code, "text/plain", Some(body.as_bytes())).await;
