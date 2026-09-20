@@ -807,3 +807,47 @@ async fn a_degenerate_completion_is_cut_off_mid_stream() {
         "the stream must be cut short, saw {repeats} repeats"
     );
 }
+
+/// Round 10: the detector is wired to *both* edit syntaxes. §6.4 calls them
+/// one mechanism, and A26 is the standing reminder of what happens when a
+/// guard reaches some consumers and not others.
+#[tokio::test]
+async fn two_missed_searches_on_one_file_tell_the_model_to_rewrite_it() {
+    if !git_present() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let dir = init_repo();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    std::fs::write(root.join("src/lib.rs"), "fn one() {}\n").expect("write");
+
+    // SEARCH text the model invented — the §16.9 failure, twice.
+    let mock = Mock::start(|hit| match hit {
+        1 | 2 => "src/lib.rs\n\
+                  <<<<<<< SEARCH\n\
+                  fn invented_by_the_model() {}\n\
+                  =======\n\
+                  fn two() {}\n\
+                  >>>>>>> REPLACE\n"
+            .to_owned(),
+        _ => "I will stop guessing.".to_owned(),
+    });
+    let capture = Capture::default();
+    let mut app = app_for(root, &mock, 6, &capture, Mode::Repl);
+
+    app.handle_line("rename fn one()").await;
+
+    // The capsule reaches the model as the trailing system note (§6.6), so
+    // the observable is that note, not the user-facing stream.
+    let capsule = rusta_core::capsule("whole_file_rewrite").expect("registered");
+    let note = app
+        .guard
+        .capsule_note()
+        .map(|message| message.content)
+        .unwrap_or_default();
+    assert!(
+        note.contains(capsule.text),
+        "after two misses the model must be told to use `write`, got: {note:?}"
+    );
+}

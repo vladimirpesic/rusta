@@ -759,3 +759,60 @@ fn a_completion_that_degenerates_mid_stream_is_stopped() {
         );
     }
 }
+
+/// Round 10: Aider's default `edit_format` is **`"whole"`** — full-file
+/// replacement — and it upgrades a model to `diff` only when that model is
+/// known to handle SEARCH/REPLACE. Rusta has always been diff-only, with
+/// `write` available but nothing ever routing to it.
+///
+/// That cost a measured run: the 7B's dominant failure in §16.9 was a SEARCH
+/// block whose text it had invented, which can never match however many
+/// times it retries. Aider's insight is that after repeated match failures
+/// the format is the problem, not the attempt.
+#[test]
+fn repeated_search_failures_on_one_file_route_to_a_whole_file_rewrite() {
+    use rusta_core::LoopGuard;
+
+    let mut guard = LoopGuard::new();
+
+    // One failure is ordinary — SEARCH/REPLACE is still the right tool.
+    let first = guard.observe_edit_failure("src/eval.rs");
+    assert!(
+        first.capsules.is_empty(),
+        "one miss must not change strategy: {first:?}"
+    );
+
+    // Two on the same file is the format failing, not the attempt.
+    let second = guard.observe_edit_failure("src/eval.rs");
+    assert!(
+        second.capsules.contains(&"whole_file_rewrite"),
+        "a second miss routes to `write`: {second:?}"
+    );
+    let capsule = rusta_core::capsule("whole_file_rewrite").expect("capsule is registered");
+    assert!(
+        capsule.text.contains("write"),
+        "the capsule must name the tool that does not match text: {}",
+        capsule.text
+    );
+
+    // Failures on *different* files are not the same problem.
+    let mut guard = LoopGuard::new();
+    assert!(guard.observe_edit_failure("a.rs").capsules.is_empty());
+    assert!(
+        guard.observe_edit_failure("b.rs").capsules.is_empty(),
+        "each file gets its own budget"
+    );
+
+    // A success clears the count: the model recovered, so the next miss
+    // starts over rather than inheriting a stale strike.
+    let mut guard = LoopGuard::new();
+    let _ = guard.observe_edit_failure("src/eval.rs");
+    guard.observe_edit_success("src/eval.rs");
+    assert!(
+        guard
+            .observe_edit_failure("src/eval.rs")
+            .capsules
+            .is_empty(),
+        "a success resets the file's failure count"
+    );
+}

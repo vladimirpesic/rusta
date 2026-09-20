@@ -859,7 +859,12 @@ pub struct Capsule {
 /// `evidence_reuse` detector (b) consecutive identical calls,
 /// `mutation_required` detector (c) repeated identical validator outputs,
 /// and `no_op_edit` detector (d) REPLACE == SEARCH.
-static CAPSULES: [Capsule; 4] = [
+static CAPSULES: [Capsule; 5] = [
+    Capsule {
+        name: "whole_file_rewrite",
+        text: "SEARCH has missed twice on this file. Stop composing SEARCH text — call `write` with the whole corrected file.",
+        priority: 9,
+    },
     Capsule {
         name: "repeat_breaker",
         text: "Do not repeat the same tool call unchanged; use prior output or switch to a different action.",
@@ -940,6 +945,15 @@ pub struct LoopGuard {
     last_validator: HashMap<String, (String, u32)>,
     /// Detector (d): no-op edits seen.
     noop_edits: u32,
+    /// Consecutive failed edits per file (§6.6).
+    ///
+    /// Aider's default `edit_format` is `whole` and it promotes a model to
+    /// `diff` only when that model is known to handle SEARCH/REPLACE. Rusta
+    /// is diff-only, so the equivalent is to notice when the *format* is
+    /// failing rather than the attempt, and route to `write`. Two misses on
+    /// one file is that signal: the 7B in §16.9 failed repeatedly against
+    /// SEARCH text it had invented, which no retry could ever match.
+    patch_failures: std::collections::BTreeMap<String, u32>,
     /// Active capsules with activation turns.
     active: Vec<ActiveCapsule>,
     /// The current turn (incremented by [`LoopGuard::end_turn`]).
@@ -965,6 +979,7 @@ impl LoopGuard {
             recent: VecDeque::new(),
             last_validator: HashMap::new(),
             noop_edits: 0,
+            patch_failures: std::collections::BTreeMap::new(),
             active: Vec::new(),
             turn: 0,
             escalation: None,
@@ -1035,6 +1050,30 @@ impl LoopGuard {
             trip.escalate = self.noop_edits >= 2;
         }
         self.finish(trip)
+    }
+
+    /// Records an edit that failed to apply to `path` (§6.6).
+    ///
+    /// The second consecutive failure on one file trips
+    /// `whole_file_rewrite`. Counted per file because a miss on one file
+    /// says nothing about another, and escalating at 2× as every other
+    /// detector does.
+    pub fn observe_edit_failure(&mut self, path: &str) -> Trip {
+        let misses = self.patch_failures.entry(path.to_owned()).or_insert(0);
+        *misses += 1;
+        let misses = *misses;
+        let mut trip = Trip::none();
+        if misses >= 2 {
+            trip.capsules.push("whole_file_rewrite");
+            trip.escalate = misses >= 4;
+        }
+        self.finish(trip)
+    }
+
+    /// Records an edit that applied to `path`: the model recovered, so the
+    /// next miss starts from zero rather than inheriting a stale strike.
+    pub fn observe_edit_success(&mut self, path: &str) {
+        self.patch_failures.remove(path);
     }
 
     /// Activates every capsule in `trip`, latches escalation, returns `trip`.
@@ -1186,6 +1225,7 @@ impl LoopGuard {
         self.recent.clear();
         self.last_validator.clear();
         self.noop_edits = 0;
+        self.patch_failures.clear();
         self.active.clear();
     }
 }

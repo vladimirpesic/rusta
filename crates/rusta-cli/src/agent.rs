@@ -790,6 +790,18 @@ impl App {
             return;
         }
         let outcome = self.tools.exec(self.machine.state(), name, input).await;
+        // The `edit`/`write` syntax feeds the same detector, so the two
+        // cannot drift apart — the mistake A26 made with the read fence.
+        if matches!(name, "edit" | "write")
+            && let Some(path) = input.get("path").and_then(Value::as_str)
+        {
+            if outcome.status == Status::Ok {
+                self.guard.observe_edit_success(path);
+            } else {
+                let trip = self.guard.observe_edit_failure(path);
+                self.handle_trip(trip);
+            }
+        }
         let flag = if outcome.status == Status::Ok {
             "ok"
         } else {
@@ -895,6 +907,17 @@ impl App {
             notes: Vec::new(),
         };
         let report = self.tools.editor().apply_parsed(parsed);
+        // §6.6: two misses on one file means the *format* is failing, not
+        // the attempt — route to `write` rather than let the model compose
+        // another SEARCH it cannot match.
+        for applied in &report.applied {
+            self.guard
+                .observe_edit_success(&applied.path.display().to_string());
+        }
+        for failed in &report.failed {
+            let trip = self.guard.observe_edit_failure(&failed.path);
+            self.handle_trip(trip);
+        }
         for applied in &report.applied {
             self.reporter.line(&format!(
                 "* applied {}{}",
