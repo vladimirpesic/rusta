@@ -76,9 +76,11 @@ model for editing when it should not.
 1. `git -C <fixture> reset --hard <seed-commit> && git clean -fd`
 2. Confirm the tests **fail** — a fixture that passes before the run measures nothing.
 3. Run with an explicit, isolated session file:
+
    ```sh
    timeout 2700 rusta --session "$OUT/$task.jsonl" -c "$PROMPT"
    ```
+
    Record the exit code. **It is now meaningful**: non-zero means edits were offered and none
    changed a file, or the final validators were red (ADR §6.9's 2026-09-20 revision).
 4. Run the fixture's tests again; that is the pass/fail.
@@ -96,7 +98,7 @@ model for editing when it should not.
 
 One JSON object per line, `{"type": ...}` snake_case (ADR §6.10). Tags observed in real runs:
 
-```
+```bash
 session_start  user_message  assistant_message  tool_call  tool_result
 edit_applied   validation_run  state_change  batch_boundary  commit
 dispatch  session_end
