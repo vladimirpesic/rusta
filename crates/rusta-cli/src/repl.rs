@@ -16,6 +16,9 @@ use rusta_core::session::Reconstructed;
 use rusta_core::{CardDeck, Compressor, Event, LoopGuard, Machine};
 use rusta_llm::Backend;
 use rusta_llm::Message;
+use rusta_lsp::CodeIntel;
+#[cfg(feature = "lsp")]
+use rusta_lsp::Config as LspConfig;
 use rusta_repomap::RepoMap;
 use rusta_tools::ShellPolicy;
 use rusta_tools::Tools;
@@ -162,7 +165,7 @@ impl App {
         overrides: &Overrides,
         root: PathBuf,
         session_path: PathBuf,
-        reporter: Reporter,
+        mut reporter: Reporter,
         mode: Mode,
     ) -> Result<Self, String> {
         let backend = build_backend(&config, overrides)?;
@@ -179,7 +182,8 @@ impl App {
             .map_err(|e| e.to_string())?
             .with_repomap(
                 RepoMap::new(root.clone()).with_budget(config.repomap.max_tokens as usize),
-            );
+            )
+            .with_code_intel(code_intel(&config, &root, &mut reporter));
         let plan_gate: Box<dyn PlanGate> = match mode {
             Mode::Repl => {
                 tools = tools
@@ -325,7 +329,12 @@ impl App {
     }
 
     /// Records `SessionEnd` — the clean close of the log (§6.10).
-    pub(crate) fn end_session(&mut self) {
+    pub(crate) async fn end_session(&mut self) {
+        // Before journaling: `mcpls-core` keeps its own server shutdown
+        // crate-private, so `rusta-lsp` holds the `LspServer` itself to keep
+        // a graceful path. A no-op when enrichment was never enabled or
+        // never spawned.
+        self.tools.code_intel().shutdown().await;
         self.journal(Event::SessionEnd);
     }
 
@@ -347,7 +356,7 @@ impl App {
         self.submit(prompt).await;
         self.reporter
             .line(&format!("session: {}", self.session.path().display()));
-        self.end_session();
+        self.end_session().await;
     }
 
     /// The interactive reedline loop (§6.9).
@@ -392,7 +401,44 @@ impl App {
                 _ => continue,
             }
         }
-        self.end_session();
+        self.end_session().await;
+    }
+}
+
+/// Build the `map_drill` type-enrichment handle from `[lsp]`.
+///
+/// Three outcomes, and the middle one is the reason this is a function rather
+/// than an expression: a `rusta.toml` shared between a plain build and an
+/// `lsp` build must stay portable, so asking for a feature this binary does
+/// not have is a warning, never an error — but it is also never silent, since
+/// a request that quietly does nothing is worse than one that fails loudly.
+fn code_intel(config: &Config, root: &Path, reporter: &mut Reporter) -> CodeIntel {
+    if !config.lsp.enabled {
+        return CodeIntel::disabled();
+    }
+    #[cfg(feature = "lsp")]
+    {
+        // Nothing to report: the enabled path either works or degrades
+        // silently to no annotation, which is its documented contract.
+        let _ = reporter;
+        CodeIntel::enabled(
+            root.to_path_buf(),
+            LspConfig {
+                deadline: std::time::Duration::from_millis(config.lsp.deadline_ms),
+                max_documents: config.lsp.max_documents as usize,
+                ..LspConfig::default()
+            },
+        )
+    }
+    #[cfg(not(feature = "lsp"))]
+    {
+        let _ = root;
+        reporter.line(
+            "note: rusta.toml [lsp] enabled = true, but this build has no `lsp` feature — \
+             drills will carry no type annotations. Rebuild with `--features lsp`, or set \
+             `enabled = false` to silence this.",
+        );
+        CodeIntel::disabled()
     }
 }
 

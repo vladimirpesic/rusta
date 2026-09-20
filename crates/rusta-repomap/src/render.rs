@@ -25,7 +25,7 @@ const PAD_BEFORE: usize = 1;
 /// body — the shape Aider's parent-scope rendering produces in practice).
 const PAD_AFTER: usize = 2;
 /// Hard cap on rendered line length in chars (§6.5 step 5).
-const MAX_LINE_LEN: usize = 100;
+pub(crate) const MAX_LINE_LEN: usize = 100;
 /// Lines sampled for token-cost estimation (§6.5 step 6).
 const SAMPLE_LINES: usize = 100;
 /// Marks elided lines between two shown regions.
@@ -145,7 +145,7 @@ fn render_file(rel: &str, lois: &BTreeSet<usize>, source: &str) -> String {
 }
 
 /// Truncate to at most `max` chars, never splitting a multi-byte character.
-fn truncate(line: &str, max: usize) -> String {
+pub(crate) fn truncate(line: &str, max: usize) -> String {
     if line.chars().count() <= max {
         line.to_string()
     } else {

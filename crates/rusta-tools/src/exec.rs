@@ -15,6 +15,7 @@ use rusta_core::session::Status;
 use rusta_core::state::{Tool, corrective_note};
 use rusta_edit::Editor;
 use rusta_llm::Backend;
+use rusta_lsp::CodeIntel;
 use rusta_repomap::RepoMap;
 use serde_json::Value;
 
@@ -214,6 +215,10 @@ pub struct Tools {
     /// never reach main context, so they travel beside the observation
     /// rather than inside it.
     dispatch_log: Mutex<DispatchLog>,
+    /// Opt-in LSP type enrichment for `map_drill` (ADR §14 → §0 rule 4).
+    /// Disabled unless the host installs an enabled one, and disabled
+    /// entirely in a build without the `lsp` feature.
+    intel: CodeIntel,
 }
 
 /// What one `dispatch` call produced, for §6.10 journaling:
@@ -241,7 +246,25 @@ impl Tools {
             responder: Mutex::new(Box::new(crate::ask::Headless)),
             mentions: Mutex::new(Vec::new()),
             dispatch_log: Mutex::new(Vec::new()),
+            intel: CodeIntel::disabled(),
         })
+    }
+
+    /// Install LSP type enrichment for `map_drill`.
+    ///
+    /// The default is [`CodeIntel::disabled`], so a host that never calls
+    /// this — and every build without the `lsp` feature — behaves exactly as
+    /// it did before the feature existed.
+    #[must_use]
+    pub fn with_code_intel(mut self, intel: CodeIntel) -> Self {
+        self.intel = intel;
+        self
+    }
+
+    /// The installed type-enrichment handle.
+    #[must_use]
+    pub fn code_intel(&self) -> &CodeIntel {
+        &self.intel
     }
 
     /// Replace the shell approver (M8: the y/n/always prompt).
@@ -342,7 +365,7 @@ impl Tools {
                 let mut map = self.repomap();
                 crate::map::refresh(&mut map, &chat_files, &mentions)
             }
-            Tool::MapDrill => crate::map::drill(&self.root, input),
+            Tool::MapDrill => crate::map::drill(&self.root, input, &self.intel).await,
             Tool::Dispatch => crate::dispatch::dispatch(self, input).await,
             Tool::Ask => crate::ask::ask(&self.responder, input),
             Tool::Edit => crate::edit::edit(&self.editor, input),

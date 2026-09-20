@@ -37,3 +37,14 @@ deny = []                 # extra deny regexes (§6.12)
 # cleared environment. Validators inherit yours already. Values always come
 # from your environment, never from this file.
 env = []                  # e.g. ["RUSTFLAGS", "CARGO_TARGET_DIR"]
+
+# Opt-in LSP type enrichment for `map_drill` (ADR §14 → §0 rule 4).
+# Requires a build with `--features lsp` (Rust 1.88+) and `rust-analyzer` on
+# PATH. A definition drill then carries one extra line: the resolved type
+# signature. Absent either requirement, drills render exactly as they do
+# without it — the feature never changes the prompt, the tool registry, or
+# any output it cannot improve.
+[lsp]
+enabled = false
+deadline_ms = 1500        # hard per-call budget; bounds the LSP client's own retries too
+max_documents = 64        # documents held open before the server is recycled

@@ -4,7 +4,7 @@
 //! built in tempdirs (no git → the ignore-aware walk path) and snapshots
 //! contain only repo-relative paths, so they are deterministic.
 
-use rusta_repomap::{DrillRequest, RepoMap, drill, estimate_tokens};
+use rusta_repomap::{DrillRequest, RepoMap, definition_anchor, drill, estimate_tokens};
 use std::fs;
 use tempfile::TempDir;
 
@@ -279,4 +279,110 @@ fn rendering_is_deterministic_across_instances() {
     let one = render(&repo, 512);
     let two = render(&repo, 512);
     assert_eq!(one, two, "identical inputs must render identical maps");
+}
+
+/// Write `content` to `name` inside a fresh temp repo and hand back both.
+fn anchor_repo(name: &str, content: &str) -> TempDir {
+    let dir = TempDir::new().expect("tempdir");
+    fs::write(dir.path().join(name), content).expect("write");
+    dir
+}
+
+#[test]
+fn definition_anchor_points_at_the_identifier() {
+    // T-A1. `fn alpha` on line 2 (1-based), identifier at byte column 7
+    // (`pub fn ` is seven ASCII bytes), so the 1-based anchor is (2, 8).
+    let dir = anchor_repo(
+        "a.rs",
+        "// header\npub fn alpha(x: u32) -> u32 {\n    x\n}\n",
+    );
+    let anchor = definition_anchor(dir.path(), "a.rs", "alpha").expect("anchor resolves");
+    assert_eq!(anchor.line, 2, "1-based line");
+    assert_eq!(anchor.character, 8, "1-based column at the `a` of `alpha`");
+}
+
+#[test]
+fn definition_anchor_counts_utf16_units_not_bytes() {
+    // T-A2. This is the test the byte -> UTF-16 conversion exists for: an
+    // em-dash before the identifier is one UTF-16 code unit but three UTF-8
+    // bytes, so a byte column would report 14 where LSP wants 12. Without
+    // this assertion the conversion in `definition_anchor` is unverified and
+    // every hover on a line containing non-ASCII silently targets the wrong
+    // offset.
+    let src = "/* — */ fn alpha() {}\n";
+    let dir = anchor_repo("a.rs", src);
+
+    let line = src.lines().next().expect("one line");
+    let byte_col = line.find("alpha").expect("identifier present");
+    assert_eq!(byte_col, 13, "byte column, for contrast");
+
+    let anchor = definition_anchor(dir.path(), "a.rs", "alpha").expect("anchor resolves");
+    assert_eq!(anchor.line, 1);
+    assert_eq!(
+        anchor.character, 12,
+        "UTF-16 column, three bytes but one code unit shorter than the byte column"
+    );
+    assert_ne!(
+        anchor.character,
+        u32::try_from(byte_col).expect("fits") + 1,
+        "a byte column would be wrong here"
+    );
+}
+
+#[test]
+fn definition_anchor_returns_none_rather_than_erroring() {
+    // T-A3 / T-A4: every failure mode degrades to `None` so a caller can
+    // never tell "no enrichment available" from "feature switched off".
+    let dir = anchor_repo("a.rs", "pub fn alpha() {}\n");
+    assert!(
+        definition_anchor(dir.path(), "a.rs", "nonexistent").is_none(),
+        "unknown definition name"
+    );
+    assert!(
+        definition_anchor(dir.path(), "missing.rs", "alpha").is_none(),
+        "unreadable file"
+    );
+
+    let plain = anchor_repo("notes.txt", "pub fn alpha() {}\n");
+    assert!(
+        definition_anchor(plain.path(), "notes.txt", "alpha").is_none(),
+        "unsupported language"
+    );
+}
+
+#[test]
+fn definition_anchor_agrees_with_the_drilled_span() {
+    // The anchor and the span are resolved from one tag, so the anchored line
+    // must fall inside the span the model is shown. A drift here would point
+    // hover at a different definition than the one rendered.
+    let dir = anchor_repo(
+        "a.rs",
+        "fn first() {}\n\npub fn second(v: u8) -> u8 {\n    v\n}\n",
+    );
+    let anchor = definition_anchor(dir.path(), "a.rs", "second").expect("anchor");
+    let span = drill(
+        dir.path(),
+        DrillRequest::Definition {
+            path: "a.rs",
+            name: "second",
+        },
+    )
+    .expect("drill");
+
+    let header = span.lines().next().expect("header");
+    let (from, to) = header
+        .rsplit_once(':')
+        .and_then(|(_, range)| range.split_once('-'))
+        .map(|(f, t)| {
+            (
+                f.parse::<u32>().expect("from"),
+                t.parse::<u32>().expect("to"),
+            )
+        })
+        .expect("parsable header");
+    assert!(
+        (from..=to).contains(&anchor.line),
+        "anchor line {} outside drilled span {from}-{to}",
+        anchor.line
+    );
 }

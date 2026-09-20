@@ -79,6 +79,41 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --features rusta-cli/embedded -- -D warnings
 
+  lsp:
+    name: lsp feature (mcpls-core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check -p rusta-lsp --features lsp
+
+      # The feature forwards rusta-lsp -> rusta-tools -> rusta-cli; check the
+      # whole chain, not just the leaf crate (the `embedded` job's reasoning).
+      - name: Check feature forwarding
+        run: cargo check -p rusta-cli --features lsp
+
+      # `cargo check` never runs a test. Without this the signature-extraction
+      # corpus — the one place the feature's context cost is actually bounded
+      # — would compile but never execute. The live rust-analyzer tests stay
+      # `#[ignore]`d (ADR §17.2).
+      - name: Tests
+        run: cargo test --workspace --features rusta-cli/lsp
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --features rusta-cli/lsp -- -D warnings
+
+      - name: Docs
+        run: cargo doc --workspace --no-deps --features rusta-cli/lsp
+        env:
+          RUSTDOCFLAGS: -D warnings
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest

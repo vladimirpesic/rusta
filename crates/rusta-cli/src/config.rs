@@ -28,6 +28,44 @@ pub struct Config {
     pub validate: ValidateConfig,
     /// Shell policy (§6.12).
     pub shell: ShellSection,
+    /// Opt-in LSP type enrichment (§14 → §0 rule 4).
+    pub lsp: LspSection,
+}
+
+/// `[lsp]` — opt-in type enrichment for `map_drill`.
+///
+/// Parsed in every build (the schema is stable); acted on only behind the
+/// `lsp` feature at runtime, the same arrangement as [`EmbeddedSection`]. A
+/// build without the feature warns rather than failing when this is enabled,
+/// so a shared `rusta.toml` stays portable across both builds.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LspSection {
+    /// Annotate drilled definitions with their resolved type signature.
+    /// Requires `rust-analyzer` on `PATH`.
+    pub enabled: bool,
+    /// Hard per-call deadline in milliseconds. Bounds the whole enrichment,
+    /// including any retry the LSP client performs internally.
+    pub deadline_ms: u64,
+    /// Documents held open before the language server is recycled.
+    pub max_documents: u32,
+}
+
+/// Largest accepted `deadline_ms`.
+///
+/// An enrichment is optional by construction, so a deadline beyond this is
+/// always a misconfiguration: it would trade the turn budget this feature
+/// exists to protect for an annotation the model can do without.
+const MAX_DEADLINE_MS: u64 = 10_000;
+
+impl Default for LspSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            deadline_ms: 1500,
+            max_documents: 64,
+        }
+    }
 }
 
 /// `[backend]` — §7 schema verbatim.
@@ -196,6 +234,32 @@ impl Config {
             .validate
             .check()
             .map_err(|e| format!("rusta.toml [validate]: {e}"))?;
+        if config.lsp.enabled {
+            if config.lsp.deadline_ms == 0 {
+                return Err(
+                    "rusta.toml [lsp]: deadline_ms must be at least 1 — set it to \
+                            1500 for the default, or `enabled = false` to switch type \
+                            enrichment off"
+                        .to_owned(),
+                );
+            }
+            if config.lsp.deadline_ms > MAX_DEADLINE_MS {
+                return Err(format!(
+                    "rusta.toml [lsp]: deadline_ms must be at most {MAX_DEADLINE_MS} (got {}) \
+                     — a type annotation is optional, so it must never cost more of a turn \
+                     than that; lower it, or set `enabled = false`",
+                    config.lsp.deadline_ms
+                ));
+            }
+            if config.lsp.max_documents == 0 {
+                return Err(
+                    "rusta.toml [lsp]: max_documents must be at least 1 — set it to \
+                            64 for the default, or `enabled = false` to switch type \
+                            enrichment off"
+                        .to_owned(),
+                );
+            }
+        }
         Ok(config)
     }
 
@@ -448,6 +512,63 @@ allow = ["cargo"]
             discover(&dir.path().join("a")),
             Some(dir.path().join("rusta.toml"))
         );
+    }
+
+    #[test]
+    fn lsp_defaults_are_off_and_survive_an_absent_section() {
+        let config = Config::parse("").expect("empty config is valid");
+        assert!(!config.lsp.enabled, "enrichment must default to off");
+        assert_eq!(config.lsp.deadline_ms, 1500);
+        assert_eq!(config.lsp.max_documents, 64);
+    }
+
+    #[test]
+    fn lsp_rejects_settings_that_would_cost_a_turn() {
+        // §16.6: every rejection names the remedy, because a config error the
+        // user cannot act on is just a crash with extra words.
+        let err = Config::parse("[lsp]\nenabled = true\ndeadline_ms = 0\n").unwrap_err();
+        assert!(err.contains("deadline_ms"), "{err}");
+        assert!(
+            err.contains("1500") || err.contains("enabled = false"),
+            "{err}"
+        );
+
+        let err = Config::parse("[lsp]\nenabled = true\ndeadline_ms = 60000\n").unwrap_err();
+        assert!(err.contains("at most"), "{err}");
+
+        let err = Config::parse("[lsp]\nenabled = true\nmax_documents = 0\n").unwrap_err();
+        assert!(err.contains("max_documents"), "{err}");
+
+        let err = Config::parse("[lsp]\nnonsense = true\n").unwrap_err();
+        assert!(err.contains("unknown"), "{err}");
+    }
+
+    #[test]
+    fn config_errors_are_not_mangled_by_source_wrapping() {
+        // A wrapped string literal that loses its `\` continuations keeps the
+        // source indentation, and the user reads a sentence with thirty
+        // spaces in the middle of it. The assertions above all pass on such a
+        // message, because they only look for substrings.
+        for toml in [
+            "[lsp]\nenabled = true\ndeadline_ms = 0\n",
+            "[lsp]\nenabled = true\ndeadline_ms = 60000\n",
+            "[lsp]\nenabled = true\nmax_documents = 0\n",
+        ] {
+            let err = Config::parse(toml).unwrap_err();
+            assert!(
+                !err.contains("  "),
+                "error message carries a run of spaces: {err:?}"
+            );
+            assert!(!err.contains('\n'), "error message spans lines: {err:?}");
+        }
+    }
+
+    #[test]
+    fn lsp_bounds_are_not_enforced_while_disabled() {
+        // A shared rusta.toml must stay loadable when the section is dormant;
+        // only an *enabled* misconfiguration is worth refusing to start over.
+        Config::parse("[lsp]\nenabled = false\ndeadline_ms = 0\n")
+            .expect("a disabled section imposes no bounds");
     }
 
     #[test]

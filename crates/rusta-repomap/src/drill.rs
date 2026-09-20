@@ -14,7 +14,7 @@
 use std::path::Path;
 
 use crate::lang::Lang;
-use crate::tags::{TagKind, extract_tags};
+use crate::tags::{Tag, TagKind, extract_tags};
 
 /// Context lines padded around a drilled definition span (§6.5 step 8
 /// DECIDED). Wider than the map renderer's overview window on purpose: the
@@ -109,8 +109,13 @@ pub fn drill(root: &Path, request: DrillRequest<'_>) -> Result<String, DrillErro
     Ok(out)
 }
 
-/// Resolve `name` to its 1-based inclusive definition span.
-fn definition_span(root: &Path, rel: &str, name: &str) -> Result<(usize, usize), DrillError> {
+/// Read `rel` and resolve `name` to its definition tag, returning the file
+/// text alongside it.
+///
+/// Shared by [`definition_span`] and [`definition_anchor`] so the drilled span
+/// and the enrichment anchor can never disagree about which definition a name
+/// resolves to — they are the same tag, found once.
+fn definition_tag(root: &Path, rel: &str, name: &str) -> Result<(String, Tag), DrillError> {
     let abs = root.join(rel);
     let lang = Lang::from_path(&abs).ok_or_else(|| DrillError::Unreadable(rel.to_string()))?;
     let source =
@@ -118,11 +123,61 @@ fn definition_span(root: &Path, rel: &str, name: &str) -> Result<(usize, usize),
     let Some(tags) = extract_tags(&source, lang) else {
         return Err(DrillError::Unreadable(rel.to_string()));
     };
-    tags.iter()
+    let tag = tags
+        .into_iter()
         .find(|t| t.kind == TagKind::Def && t.name == name)
-        .map(|t| (t.line + 1, t.line_end + 1))
         .ok_or_else(|| DrillError::NotFound {
             path: rel.to_string(),
             name: name.to_string(),
-        })
+        })?;
+    Ok((source, tag))
+}
+
+/// Resolve `name` to its 1-based inclusive definition span.
+fn definition_span(root: &Path, rel: &str, name: &str) -> Result<(usize, usize), DrillError> {
+    let (_, tag) = definition_tag(root, rel, name)?;
+    Ok((tag.line + 1, tag.line_end + 1))
+}
+
+/// A definition identifier's position, in the units the LSP boundary wants:
+/// **1-based line, 1-based UTF-16 code-unit column**.
+///
+/// The scaffold produces these from its own tree-sitter tags, so a model never
+/// supplies a coordinate. That is the whole reason position-anchored code
+/// intelligence is usable here at all: ADR §17.1 records a real run in which
+/// `qwen2.5-coder:7b` passed an identifier where a line number was specified,
+/// and `map_drill` takes `path` + `name` precisely so it never has to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Anchor {
+    /// 1-based line.
+    pub line: u32,
+    /// 1-based column, in UTF-16 code units.
+    pub character: u32,
+}
+
+/// Resolve `name`'s definition in `rel` to an [`Anchor`].
+///
+/// Returns `None` for every failure — unreadable file, unsupported language,
+/// no such definition, a column that is not a `char` boundary, or a file large
+/// enough to overflow `u32`. Callers treat `None` as "no enrichment available",
+/// never as an error: this feeds a best-effort annotation whose absence must be
+/// indistinguishable from the feature being switched off.
+///
+/// # Units
+///
+/// Tree-sitter reports a 0-based **byte** column; the LSP boundary defines
+/// character offsets in **UTF-16 code units** and is 1-based on the MCP side.
+/// Both conversions happen here, in the one place that owns them.
+#[must_use]
+pub fn definition_anchor(root: &Path, rel: &str, name: &str) -> Option<Anchor> {
+    let (source, tag) = definition_tag(root, rel, name).ok()?;
+    let line_text = source.lines().nth(tag.line)?;
+    // `get` yields `None` when `col` is not a char boundary, which degrades to
+    // "no enrichment" instead of slicing a position into the middle of a
+    // multi-byte character.
+    let utf16_col = line_text.get(..tag.col)?.encode_utf16().count();
+    Some(Anchor {
+        line: u32::try_from(tag.line).ok()?.checked_add(1)?,
+        character: u32::try_from(utf16_col).ok()?.checked_add(1)?,
+    })
 }

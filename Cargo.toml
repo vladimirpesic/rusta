@@ -6,6 +6,7 @@ members = [
     "crates/rusta-core",
     "crates/rusta-tools",
     "crates/rusta-repomap",
+    "crates/rusta-lsp",
     "crates/rusta-dispatch",
     "crates/rusta-validate",
     "crates/rusta-cli",
@@ -45,6 +46,13 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 # Snapshot testing (ADR.md §10, dev-only) — failure-feedback
 # contract of rusta-edit and later validator/repomap golden files.
 insta = "1"
+# Opt-in LSP type enrichment (ADR.md §14 → §0 rule 4, `rusta-lsp` behind the
+# `lsp` feature): pinned EXACT, the `llama-cpp-2` treatment. mcpls is pre-1.0
+# with a stated "no deprecation shim" policy and changed the `Translator`
+# handler signatures this crate calls in v0.5.0, one day after v0.4.0.
+# Default features off: that drops the optional `transport-http` stack, since
+# Rusta links the LSP client and never the MCP server.
+mcpls-core = { version = "=0.5.0", default-features = false }
 # Embedded backend (ADR.md §6.2, §10): pinned EXACT — the crate
 # ignores semver. Default features stay off (no OpenMP, no android stdcxx
 # flags) so every consumer only needs cmake + a C++ toolchain; rusta-llm's

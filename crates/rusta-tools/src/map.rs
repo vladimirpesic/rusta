@@ -2,13 +2,24 @@
 //!
 //! `map_drill` credits the read-before-edit ledger (§6.5 step 8): the padded
 //! span may be the model's whole view of a region before an edit.
+//!
+//! A definition drill may carry one appended line of resolved type
+//! information when the opt-in `lsp` feature is built and enabled. The
+//! coordinate for it comes from the repo map's own tree-sitter tag, never
+//! from the model.
 
 use std::path::Path;
 
+use rusta_lsp::CodeIntel;
 use rusta_repomap::{DrillError, DrillRequest, RepoMap};
 use serde_json::Value;
 
 use crate::exec::{ToolOutcome, caps, clip_bytes, opt_usize, req_nonempty, safe_rel_in};
+
+/// Prefix marking an appended type annotation, chosen so it can never be
+/// mistaken for a source line: the drill renders source unprefixed, and the
+/// repo map's own gutter is `│`.
+const TYPE_MARKER: &str = "⟪type⟫ ";
 
 /// Clips a drilled span to the §6.1 `read` caps (2,000 lines / 64 KiB),
 /// marking the cut so the model narrows its next drill instead of assuming
@@ -134,7 +145,11 @@ pub(crate) fn refresh(
 }
 
 /// Execute `map_drill(path, name | from, to)` against `root`.
-pub(crate) fn drill(root: &Path, input: &Value) -> ToolOutcome {
+///
+/// `intel` annotates a *definition* drill with its resolved type signature
+/// when enabled; it is never consulted for an explicit `from`/`to` window,
+/// which names no definition to resolve.
+pub(crate) async fn drill(root: &Path, input: &Value, intel: &CodeIntel) -> ToolOutcome {
     let raw = match req_nonempty(input, "path") {
         Ok(raw) => raw,
         Err(outcome) => return outcome,
@@ -175,6 +190,14 @@ pub(crate) fn drill(root: &Path, input: &Value) -> ToolOutcome {
         }
     };
 
+    // Derived from the request rather than re-testing the inputs, so the
+    // enrichment path can never disagree with the drill about whether a
+    // definition was named.
+    let definition_name = match &request {
+        DrillRequest::Definition { name, .. } => Some(*name),
+        DrillRequest::Window { .. } => None,
+    };
+
     match rusta_repomap::drill(root, request) {
         Ok(text) => {
             // §6.1 caps apply here exactly as they do to `read`. An explicit
@@ -183,7 +206,19 @@ pub(crate) fn drill(root: &Path, input: &Value) -> ToolOutcome {
             // straight into the context this project exists to protect. The
             // core prompt steers the model here ("prefer map_drill to
             // whole-file reads"), so this is the hot path, not the edge.
-            let (content, truncated) = cap_window(&text);
+            let (mut content, truncated) = cap_window(&text);
+            // Appended *after* the caps, deliberately. `cap_window` rewrites
+            // the `path:from-to` header from the number of body lines it
+            // returns, so an annotation added before it would inflate that
+            // range by one and tell the model it had seen a source line that
+            // does not exist — the same "header describes something other
+            // than the content" defect the A34 comment in
+            // `rusta_repomap::drill` was written about. The annotation is one
+            // line clipped to the map's own width, so it cannot meaningfully
+            // affect the §6.1 byte budget it sits outside.
+            if let Some(name) = definition_name {
+                append_type_annotation(root, &checked, name, intel, &mut content).await;
+            }
             ToolOutcome {
                 status: rusta_core::Status::Ok,
                 content,
@@ -204,4 +239,35 @@ pub(crate) fn drill(root: &Path, input: &Value) -> ToolOutcome {
             "{path}: unsupported language or unreadable file — use read for raw lines"
         )),
     }
+}
+
+/// Append `name`'s resolved type signature to `out`, if one is available.
+///
+/// Every step is allowed to yield nothing — the feature may be off, the
+/// anchor may not resolve, the language server may be missing, indexing,
+/// slow or dead — and in every one of those cases `out` is left exactly as it
+/// was. A drill without a language server is byte-identical to a drill from a
+/// build compiled without this crate's `lsp` feature.
+async fn append_type_annotation(
+    root: &Path,
+    rel: &str,
+    name: &str,
+    intel: &CodeIntel,
+    out: &mut String,
+) {
+    if !intel.is_enabled() {
+        return;
+    }
+    // The scaffold supplies the coordinate. `map_drill` takes `path` + `name`
+    // precisely so the model never has to produce a line and column, which
+    // §17.1 records it getting wrong on its first real tool call.
+    let Some(anchor) = rusta_repomap::definition_anchor(root, rel, name) else {
+        return;
+    };
+    let Some(signature) = intel.signature(rel, anchor.line, anchor.character).await else {
+        return;
+    };
+    out.push('\n');
+    out.push_str(TYPE_MARKER);
+    out.push_str(&signature.0);
 }

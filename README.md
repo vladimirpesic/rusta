@@ -6,12 +6,13 @@ hosted coding LLMs (8B–35B parameters). Rust + Tokio, one fast binary.
 > **Status: pre-alpha.** The architecture, its rationale and its audit history live in
 > [`ADR.md`](ADR.md) (v1.1) — the single source of truth.
 > **v1 is milestone-complete: M0–M8 all green**, through eight audit-and-remediation rounds
-> (fmt clean, clippy `-D warnings` 0 on both feature graphs, `cargo doc` 0 warnings; counts
+> (fmt clean, clippy `-D warnings` 0 on all three feature graphs, `cargo doc` 0 warnings; counts
 > below are produced by `scripts/loc_budget.sh` and `cargo test --workspace`).
 > Pre-alpha is meant literally. Rusta has now completed one real end-to-end run against a local
 > Ollama model (`qwen2.5-coder:7b`) — plan, edit, auto-commit, validators green — but that is one
 > model, one trivial bug, one run; the test corpus still contains no real completion. See ADR §17.
-> The subsystem trail: **M0 — workspace skeleton** (8 crates, CI, LoC-budget gate), **M1 —
+> The subsystem trail: **M0 — workspace skeleton** (8 crates, CI, LoC-budget gate; a ninth,
+> `rusta-lsp`, was added later as the opt-in `lsp` feature — ADR §14.1), **M1 —
 > `HttpBackend`** (SSE streaming, 3-attempt retry/backoff, 404 `base_url` hints, native
 > `tool_calls` passthrough, mock-server e2e) plus **JSONL session persistence** (§6.10),
 > **M1.5 — `EmbeddedBackend`** (in-process llama.cpp via `llama-cpp-2` behind the opt-in
@@ -78,6 +79,7 @@ cp rusta.toml.example rusta.toml   # edit [backend] base_url + [validate] comman
 ./target/release/rusta            # interactive REPL — /help lists commands
 ./target/release/rusta -c "fix the failing test in src/lib.rs"   # one shot, then exit
 cargo build --release --features embedded   # same `rusta` binary, with in-process llama.cpp
+cargo build --release --features lsp        # adds resolved type signatures to map_drill
 ```
 
 The REPL runs the full loop: model turns stream live, tool calls and
@@ -109,6 +111,64 @@ Two backends (ADR §6.2), selected at runtime in `rusta.toml` or via `--backend`
   including `/v1`.
 - **Embedded** (opt-in): in-process llama.cpp via `cargo build --features embedded`.
   Needs cmake and a C++ toolchain; the default artifact stays cmake-free.
+
+## Type signatures in `map_drill` (opt-in)
+
+Tree-sitter parses syntax, so the repo map can tell you a definition *exists*
+but not what its types resolve to. With `--features lsp`, a definition drill
+carries one extra line:
+
+```text
+crates/rusta-repomap/src/drill.rs:164-183
+/// Tree-sitter reports a 0-based **byte** column; the LSP boundary defines
+...
+pub fn definition_anchor(root: &Path, rel: &str, name: &str) -> Option<Anchor> {
+    let (source, tag) = definition_tag(root, rel, name).ok()?;
+...
+⟪type⟫ pub fn definition_anchor(root: &Path, rel: &str, name: &str) -> Option<Anchor>
+```
+
+Real output from this repository, abridged in the middle. The annotation is
+the last line; everything above it is the drill exactly as it renders without
+the feature. A signature wider than the map's own 100-character line is cut at
+that width and marked `…`, so a truncated one never reads as complete.
+
+```sh
+cargo build --release --features lsp   # needs Rust 1.88 (mcpls-core's MSRV)
+```
+
+Then in `rusta.toml`:
+
+```toml
+[lsp]
+enabled = true
+```
+
+It needs `rust-analyzer` on `PATH`. **It changes nothing else**: no new tool,
+no new prompt text, no extra dependency in a default build. The coordinate
+comes from the repo map's own tree-sitter tag, so you still call
+`map_drill(path, name)` and the model never produces a line or column. If the
+language server is missing, slow or dead, the drill renders exactly as it does
+without the feature — the first failure prints one note to stderr and is never
+retried for the life of the process.
+
+**Expect nothing for the first few seconds of a session.** `rust-analyzer` has
+to load the crate graph before it can answer, so the server is started in the
+background as soon as the session opens and indexing overlaps your first turns.
+Measured on Rusta's own tree: ~9–10 s to first useful answer; a drill issued
+before that returns no annotation and costs up to `deadline_ms`, while drills
+after it resolve in 36–99 ms. Raise `deadline_ms` if you would rather wait than
+miss an early annotation.
+
+Not included, on purpose: diagnostics (rust-analyzer's pull endpoint omits
+`cargo check`/clippy results, which is what `[validate]` already gives you)
+and rename (it would bypass the read-before-edit ledger and the undo journal).
+
+The live tests need a language server, so they are `#[ignore]`d:
+
+```sh
+cargo test -p rusta-tools --features lsp --test lsp_enrichment -- --ignored --nocapture
+```
 
 ## Testing the embedded backend against a real GGUF
 

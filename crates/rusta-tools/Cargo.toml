@@ -15,11 +15,20 @@ rusta-core = { path = "../rusta-core" }
 rusta-dispatch = { path = "../rusta-dispatch" }
 rusta-edit = { path = "../rusta-edit" }
 rusta-llm = { path = "../rusta-llm" }
+# Not optional: `CodeIntel` exists as a type in both feature graphs so this
+# crate needs no `cfg` at its call sites and the disabled path is exercised by
+# the default CI job. The mcpls-core dependency is gated inside `rusta-lsp`.
+rusta-lsp = { path = "../rusta-lsp" }
 rusta-repomap = { path = "../rusta-repomap" }
 regex.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+
+[features]
+# Forwards to `rusta-lsp/lsp` (ADR §0 rule 4), mirroring how `embedded`
+# forwards to `rusta-llm/embedded`.
+lsp = ["rusta-lsp/lsp"]
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -21,6 +21,10 @@
 //! padded with ±8 context lines (a zoom, deliberately wider than the map's
 //! overview window), or an exact line window of a file. The M7 tool registry wires it to the session and the
 //! read-before-edit ledger.
+//!
+//! [`definition_anchor`] resolves a definition name to its identifier's
+//! position for the opt-in LSP enrichment in `rusta-lsp`. The scaffold owns
+//! the coordinate so the model never has to supply one.
 
 mod cache;
 mod discover;
@@ -33,7 +37,7 @@ mod tags;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-pub use drill::{DrillError, DrillRequest, drill};
+pub use drill::{Anchor, DrillError, DrillRequest, definition_anchor, drill};
 use graph::{Mentions, RankedLoi, rank_files};
 
 /// Default map budget in estimated tokens (Aider's default).
@@ -143,4 +147,22 @@ impl RepoMap {
 #[must_use]
 pub fn estimate_tokens(text: &str) -> usize {
     render::estimate_tokens(text)
+}
+
+/// Hard cap on a rendered map line, in chars (§6.5 step 5).
+///
+/// Exported so anything appended beside map output — the opt-in LSP type
+/// annotation in `rusta-lsp` — is bounded by the same number the map itself
+/// uses, and cannot drift from it.
+pub const MAX_LINE_LEN: usize = render::MAX_LINE_LEN;
+
+/// Truncate `line` to at most `max` chars, never splitting a multi-byte
+/// character.
+///
+/// The map's own truncator (§6.5 step 5), exported for the same reason as
+/// [`MAX_LINE_LEN`]: one implementation, so appended annotations and rendered
+/// source lines clip identically.
+#[must_use]
+pub fn truncate_line(line: &str, max: usize) -> String {
+    render::truncate(line, max)
 }

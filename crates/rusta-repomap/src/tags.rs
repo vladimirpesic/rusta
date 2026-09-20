@@ -23,7 +23,11 @@ use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 /// bumping this serves stale tag shapes from the in-memory cache until the
 /// process restarts (the cache is per-process, so the blast radius is one
 /// session). Treat a query edit and a bump here as one change.
-pub(crate) const QUERY_VERSION: u32 = 1;
+///
+/// A change to the [`Tag`] *shape* counts the same way, for the same reason:
+/// v2 added `Tag::col`, so a cache populated by v1 would hand back tags whose
+/// column is absent rather than merely different.
+pub(crate) const QUERY_VERSION: u32 = 2;
 
 /// Reserved words across the supported languages; a merged set suffices
 /// because a keyword that leaks in from another language can never match a
@@ -49,6 +53,12 @@ pub(crate) struct Tag {
     pub(crate) name: String,
     pub(crate) kind: TagKind,
     pub(crate) line: usize,
+    /// 0-based **byte** column of `name` within its line
+    /// (`Node::start_position().column`). Byte, not character: the LSP
+    /// boundary wants UTF-16 code units, and [`crate::definition_anchor`] is
+    /// the single place that conversion happens. Converting here would make
+    /// every tag pay for a cost only the anchor path incurs.
+    pub(crate) col: usize,
     /// 0-based line of the end of the enclosing definition node — equals
     /// `line` for refs and for queries without an outer capture.
     pub(crate) line_end: usize,
@@ -104,7 +114,8 @@ pub(crate) fn extract_tags(source: &str, lang: Lang) -> Option<Vec<Tag>> {
                 continue;
             };
             let node = cap.node;
-            let line = node.start_position().row;
+            let start = node.start_position();
+            let line = start.row;
             let line_end = if kind == TagKind::Def {
                 outers
                     .iter()
@@ -114,14 +125,27 @@ pub(crate) fn extract_tags(source: &str, lang: Lang) -> Option<Vec<Tag>> {
             } else {
                 line
             };
-            let name = text(node).trim();
+            let raw = text(node);
+            let name = raw.trim();
             if name.is_empty() || name.len() > 128 {
                 continue;
             }
+            // `name` is `raw` trimmed, so the identifier begins `lead` bytes
+            // into the node and the column must agree with the name it
+            // describes. Leading whitespace in an identifier capture would be
+            // unusual — the trim is defensive — but whitespace spanning a line
+            // break would also invalidate `line`, so those keep the node's own
+            // column rather than a value pointing into the wrong row.
+            let lead = raw.len() - raw.trim_start().len();
+            let col = match raw.get(..lead) {
+                Some(ws) if !ws.contains('\n') => start.column + lead,
+                _ => start.column,
+            };
             tags.push(Tag {
                 name: name.to_string(),
                 kind,
                 line,
+                col,
                 line_end,
             });
         }
@@ -130,11 +154,12 @@ pub(crate) fn extract_tags(source: &str, lang: Lang) -> Option<Vec<Tag>> {
     if !tags.iter().any(|t| t.kind == TagKind::Ref) && tags.iter().any(|t| t.kind == TagKind::Def) {
         // Defs without refs (c/cpp): backfill refs with an identifier word
         // scan (§6.5 step 2 — Aider's pygments fallback, minus the dependency).
-        for (line, ident) in scan_identifiers(source) {
+        for (line, col, ident) in scan_identifiers(source) {
             tags.push(Tag {
                 name: ident,
                 kind: TagKind::Ref,
                 line,
+                col,
                 line_end: line,
             });
         }
@@ -156,8 +181,8 @@ fn name_capture(cname: &str) -> Option<(TagKind, &str)> {
 }
 
 /// Identifier-token word scan: ASCII `[A-Za-z_][A-Za-z0-9_]*` runs that are
-/// not keywords, as `(0-based line, identifier)` pairs.
-fn scan_identifiers(source: &str) -> Vec<(usize, String)> {
+/// not keywords, as `(0-based line, 0-based byte column, identifier)` triples.
+fn scan_identifiers(source: &str) -> Vec<(usize, usize, String)> {
     let mut out = Vec::new();
     for (line, text) in source.lines().enumerate() {
         let mut start: Option<usize> = None;
@@ -167,20 +192,20 @@ fn scan_identifiers(source: &str) -> Vec<(usize, String)> {
                 start = Some(i);
             } else if !ident_ch {
                 if let Some(s) = start.take() {
-                    push_ident(&mut out, line, &text[s..i]);
+                    push_ident(&mut out, line, s, &text[s..i]);
                 }
             }
         }
         if let Some(s) = start {
-            push_ident(&mut out, line, &text[s..]);
+            push_ident(&mut out, line, s, &text[s..]);
         }
     }
     out
 }
 
-fn push_ident(out: &mut Vec<(usize, String)>, line: usize, ident: &str) {
+fn push_ident(out: &mut Vec<(usize, usize, String)>, line: usize, col: usize, ident: &str) {
     if !ident.is_empty() && !is_keyword(ident) {
-        out.push((line, ident.to_string()));
+        out.push((line, col, ident.to_string()));
     }
 }
 
@@ -236,6 +261,41 @@ mod tests {
         assert!(
             tags.iter()
                 .any(|t| t.name == "compute" && t.kind == TagKind::Ref)
+        );
+    }
+
+    #[test]
+    fn tags_carry_the_identifier_byte_column() {
+        // Query captures and the word-scan backfill are two separate
+        // construction sites; a column populated in only one of them would
+        // leave `definition_anchor` silently correct for Rust and silently
+        // wrong for C.
+        let src = "mod inner {\n    pub fn alpha(x: u32) -> u32 { x + 1 }\n}\n";
+        let tags = extract_tags(src, Lang::Rust).expect("parses");
+        let alpha = tags
+            .iter()
+            .find(|t| t.name == "alpha" && t.kind == TagKind::Def)
+            .expect("alpha def");
+        let line = src.lines().nth(alpha.line).expect("line present");
+        assert_eq!(
+            line.get(alpha.col..alpha.col + alpha.name.len()),
+            Some("alpha"),
+            "column must index the identifier itself"
+        );
+
+        // The C path has no reference patterns, so its refs come from
+        // `scan_identifiers` rather than a query capture.
+        let c_src = "int compute(void) {\n    return helper(41) + 1;\n}\n";
+        let c_tags = extract_tags(c_src, Lang::C).expect("parses");
+        let helper = c_tags
+            .iter()
+            .find(|t| t.name == "helper" && t.kind == TagKind::Ref)
+            .expect("backfilled ref");
+        let c_line = c_src.lines().nth(helper.line).expect("line present");
+        assert_eq!(
+            c_line.get(helper.col..helper.col + helper.name.len()),
+            Some("helper"),
+            "backfilled refs carry a real column too"
         );
     }
 

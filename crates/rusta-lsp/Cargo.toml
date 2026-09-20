@@ -1,0 +1,36 @@
+[package]
+name = "rusta-lsp"
+description = "Opt-in LSP type enrichment for Rusta's repo map (ADR §0 rule 4, §14)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rusta-repomap = { path = "../rusta-repomap" }
+tokio = { workspace = true }
+# Pinned EXACT (ADR §10, the `llama-cpp-2` treatment). mcpls is pre-1.0 with a
+# stated "no deprecation shim" policy, and v0.5.0 — shipped one day after
+# v0.4.0 — changed `Translator::handle_*` from two bare `u32` arguments to a
+# `Position` struct. That is the exact surface this crate calls, so the pin is
+# load-bearing and `src/mcpls.rs` is deliberately the only file that names an
+# `mcpls_core` type.
+#
+# `default-features = false` drops the optional `transport-http` stack (axum,
+# tokio-util): this crate links the LSP client, never the MCP server.
+mcpls-core = { workspace = true, optional = true }
+
+[features]
+default = []
+# Requires `rust-analyzer` on PATH and a Rust 1.88 toolchain (mcpls-core's
+# MSRV; the rest of the workspace stays on 1.85). Absent, every call returns
+# `None` and `map_drill` renders exactly as it does without the feature.
+lsp = ["dep:mcpls-core"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

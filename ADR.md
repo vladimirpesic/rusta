@@ -128,16 +128,25 @@ Per-crate design targets (indicative; only the §12 global totals are gated):
 | `rusta-core` | state machine, session persistence, context manager, prompt compiler | 2,000 | 600 |
 | `rusta-tools` | phase-gated registry, the 10 canonical tools (§6.4) | 1,600 | 500 |
 | `rusta-repomap` | tree-sitter extraction, ranking, budget-fitted rendering, cache | 1,000 | 300 |
+| `rusta-lsp` | **opt-in** (`lsp`): type enrichment for `map_drill` via `mcpls-core` | 550 | 350 |
 | `rusta-dispatch` | sub-coder actors, parallel read-only DAG | 600 | 200 |
 | `rusta-validate` | config-driven validators, feedback formatting | 400 | 150 |
 | `rusta-cli` | REPL, slash commands, render, git, config | 1,800 | 400 |
 | glue | shared error types, small utils | 400 | 100 |
 | **Total** | | **11,000** | **4,550** |
 
-**Scope fences (NON-goals for v1):** no TUI, no IDE plugin, no LSP integration, no RAG/embedding
-store, no MCP, no multi-cloud provider matrix, no in-tree benchmark suite, no plugin system, no
-web UI, no remote/SSH orchestration, no fine-tuning tooling. Anything here that later proves
-essential goes into a *separate* opt-in crate — never the core (§0 rule 4).
+**Scope fences (NON-goals for v1):** no TUI, no IDE plugin, **no LSP integration in core**, no
+RAG/embedding store, no MCP, no multi-cloud provider matrix, no in-tree benchmark suite, no plugin
+system, no web UI, no remote/SSH orchestration, no fine-tuning tooling. Anything here that later
+proves essential goes into a *separate* opt-in crate — never the core (§0 rule 4).
+
+> **Revision (2026-09-19).** This fence read "no LSP integration" without qualification, which the
+> `rusta-lsp` crate would now contradict. It is amended rather than quietly outgrown. The fence's
+> intent — that no LSP subsystem inflates the core, the prompt or the tool registry — is *intact*
+> and is what §3 names as the thing that pushes other harnesses past their line budgets:
+> `rusta-lsp` is default-off, registers no tool, adds no prompt token, and is the §0 rule 4 escape
+> hatch working exactly as written. **"no MCP" is unqualified and still holds**: `mcpls-core` is
+> linked as a plain LSP library, and Rusta has no MCP client (§14 still parks one).
 
 ## 5. Workspace Layout
 
@@ -154,6 +163,7 @@ rusta/
 │   ├── rusta-core/          ← state.rs, session.rs, context.rs, prompt.rs, proc.rs
 │   ├── rusta-tools/         ← registry.rs + the 10 tools (§6.4)
 │   ├── rusta-repomap/       ← extract/rank/render/cache + queries/*.scm (data)
+│   ├── rusta-lsp/           ← opt-in `lsp`: signature.rs (pure) + mcpls.rs (cfg-gated)
 │   ├── rusta-dispatch/      ← actor.rs, dag.rs
 │   ├── rusta-validate/      ← validators.rs
 │   └── rusta-cli/           ← main.rs, repl.rs, agent.rs, commands.rs, render.rs, git.rs, config.rs
@@ -806,6 +816,26 @@ tests, LoC gate). Condensed; the per-milestone evidence trails live in the git h
   CUDA offload. Pinned exact: the crate intentionally does not follow semver. Companion
   `encoding_rs 0.8` (same feature) — llama-cpp-2's detokenization API takes an
   `encoding_rs::Decoder` by type, so incremental UTF-8-safe decoding requires the direct dep.
+- `mcpls-core =0.5.0` — **optional**, feature `lsp` (default features off, which drops its
+  `transport-http`/axum stack). Used as a plain LSP client library: its `bridge::Translator`
+  returns typed Rust structs, so no MCP client, no JSON-RPC hop and no second process beyond the
+  language server itself — "no MCP" (§4) is untouched. Pinned exact for the same reason as
+  `llama-cpp-2`, but a sharper one: the crate is pre-1.0, its changelog states *"No deprecation
+  shim, per pre-1.0 policy"*, and v0.5.0 — released **one day** after v0.4.0 — changed the
+  `Translator::handle_*` signatures Rusta calls. Every mention of an `mcpls_core` type is confined
+  to `rusta-lsp/src/mcpls.rs` so a breaking upgrade is a one-file diff. It requires **Rust 1.88**
+  against the workspace's declared 1.85; only builds with `--features lsp` are affected. It brings
+  31 crates, of which 26 are reachable only through `rmcp`/`schemars`/`ignore`/`dirs` and serve
+  its MCP server rather than its LSP client — an upstream feature flag is filed for in §14.1. It also requests `tokio` with `features = ["full"]`, which unions into this workspace's
+  otherwise pruned feature set whenever `lsp` is on.
+- **MSRV, stated precisely.** `rusta-lsp` itself, and every other library crate, compile on the
+  declared 1.85 (`cargo +1.85 check -p rusta-lsp -p rusta-repomap -p rusta-tools` passes);
+  `mcpls-core` raises that to **1.88 for `--features lsp` builds only**. Separately and
+  pre-dating this crate, `[workspace.package] rust-version = "1.85"` no longer describes
+  `rusta-cli`: `reedline 0.51` requires **1.95**, so `cargo +1.85 check --workspace` already
+  failed before `rusta-lsp` existed. CI builds on `stable` and never noticed. The declaration is
+  left untouched here — changing a published MSRV is a project decision, not a side effect of
+  adding an optional crate — but it is recorded rather than left to be rediscovered.
 - Dev-only: `insta`, `tempfile`.
 - **Explicitly avoided:** async-trait (native async traits / enum dispatch), graph crates
   (PageRank is ~40 lines), axum/actix, ORM/DAL, anything pulling OpenSSL.
@@ -869,9 +899,132 @@ multi-agent teams beyond dispatch · per-phase model routing (plan on strong, ex
 2-stage tool routing · per-model tool-call format adapters · udiff edit format as an alternative
 model dialect.
 
+### 14.1 Shipped from this list: LSP type enrichment (`rusta-lsp`, 2026-09-19)
+
+`rusta-lsp` is default-off and annotates a **definition** drill with one line: the resolved type
+signature, from `rust-analyzer` through `mcpls-core` used as a library. It is the §0 rule 4 path
+taken deliberately — see §4's revision for why the scope fence survives it.
+
+**What makes it affordable.** The scaffold owns the coordinate. `rusta_repomap::definition_anchor`
+derives line and column from the tree-sitter tag the drill already resolved, so the model still
+calls `map_drill(path, name)` and never produces a position — the failure §17.1 records on its
+first real tool call. Consequently: no tool is registered (the registry stays at ten, the phase
+matrix 4×10), no prompt text changes (R7's 500-token budget is untouched), and the default build
+gains **zero** dependencies.
+
+**What was deliberately left out**, each a decision rather than an omission:
+
+- **Diagnostics.** mcpls's own `specs/bridge/004-get-diagnostics-flycheck-gap` documents that
+  rust-analyzer's pull endpoint never returns `cargo check`/clippy diagnostics — those arrive only
+  via `publishDiagnostics` push, which has no completion event. §6.7 runs commands with exit
+  codes. Substituting a smaller diagnostic set that cannot say when it finished would be a
+  correctness regression wearing a latency win.
+- **Rename / code actions.** An LSP `WorkspaceEdit` touches files the read-before-edit ledger
+  never saw and bypasses §6.3's single `guarded()` entry point and the undo journal. An
+  architectural conflict, not a cost — permanently out of scope.
+- **References as a tool.** Would cost resident prompt tokens and a matrix row; the repo map uses
+  refs only as PageRank edge weights, where exact resolution barely moves a coarse ranking.
+- **Replacing the repo map.** Not possible in principle: the map is unprompted, ranked,
+  budget-fitted compression of a whole repository; LSP is a query anchored at a position. Of
+  §6.5's eight steps only tag extraction has an LSP counterpart, and it is the step that *feeds*
+  the other seven.
+
+**What live testing found that in-repo testing could not.** Three defects survived every unit
+test and both clippy graphs, and surfaced only once a real `rust-analyzer` was installed and the
+`#[ignore]`d tests were run — the §16.1 defect shape exactly, one layer out:
+
+1. `mcpls_core`'s `detect_language` is a pure lookup in a caller-supplied map with **no built-in
+   defaults**, so a `Translator` built the documented library way resolves every file to
+   `"plaintext"` and fails every call. Library mode does not work at all without
+   `with_extensions`, and nothing in the API says so.
+2. A cold `rust-analyzer` answers in ~4 ms with *"No hover information available"* rather than
+   blocking, so one attempt after spawn reliably returns nothing. First useful answer: ~357 ms
+   warm, over 1.5 s loaded. Handled by polling until the session is warm, bounded by the deadline.
+3. The first version of that polling retried on *any* failure, so a permanently-failing call — a
+   path outside the workspace — spent the whole deadline re-asking a question whose answer could
+   not change. Only an empty *successful* hover now counts as "still indexing".
+
+A second round, against **this workspace** rather than a fixture, found the feature returning
+nothing on every drill — three causes stacked, all hidden by a crate small enough to index
+instantly: `Timeout` classified as permanent rather than as the indexing window; a per-request
+budget (2 s) larger than the whole deadline (1.5 s), so no request could finish inside it; and a
+lazy spawn that made the first drill wait out the entire cold start. The server is now started on
+a background task when enrichment is enabled, so indexing overlaps the model's first turns.
+Measured on this workspace at the 1.5 s default: no annotation and ~2 s per drill if one is issued
+immediately, all annotations in **36–99 ms** after a 15 s gap, with first useful answer at ~9–10 s.
+
+A third round — auditing the finished diff with every gate already green — found five more, three
+behavioural: `Config::deadline` bounded only the hover, leaving the slot lock and a 30 s spawn
+handshake outside the timeout it documented; a signature cut at the map's 100-character width was
+unmarked, so a truncated one read as a complete one and would have had the model reasoning about
+the wrong arity; and the three `[lsp]` config errors reached the user with twenty-plus spaces
+mid-sentence, asserted only by substring. Two documents had drifted from the code they describe.
+The lesson is the one §16.1 already states, and it holds one layer further out than expected: a
+green matrix cannot see a deadline that bounds the wrong region, a cut that looks like an
+identifier, or a README example nothing executes.
+
+**Hazards in the dependency, and what each forced.** Found by reading `mcpls-core` 0.5.0's
+source before writing against it; every one of them shaped the design, and the last three are the
+reason this crate is shaped the way it is rather than the obvious way.
+
+| | Hazard | What it forced |
+| --- | --- | --- |
+| H1 | Pre-1.0 churn on the exact API consumed: 11 breaking changes in v0.5.0, one day after v0.4.0, including the `Translator::handle_*` signatures Rusta calls | Pin `=0.5.0`; confine every `mcpls_core` mention to `rusta-lsp/src/mcpls.rs` |
+| H2 | `LspClient::request` retries `-32801`/`-32802` up to 4 times with backoff, worst case `4 × request_timeout + 3.5 s` = **123.5 s** at the shipped 30 s default, and `textDocument/hover` is on the retry list | An outer `tokio::time::timeout` on every call, never reliance on the internal retry budget, plus a per-request timeout **derived from the deadline** — the plan's fixed 2 s was itself a defect (§14.1, second round) |
+| H3 | Cold start: `rust-analyzer` needs tens of seconds of indexing before answers are trustworthy, on a project targeting ≤ 8 GB CPU-only boxes | Default `enabled = false`. The plan also said "lazy spawn, never at startup"; that was half right — startup must not *block*, but a lazy spawn made the first drills useless, so the spawn is now a background task |
+| H4 | No public graceful shutdown: `Translator::shutdown_servers` is `pub(crate)`, and registering an `LspServer` hands over ownership with no way back, leaving only `kill_on_drop` | Call `register_client` only and keep the `LspServer`, to retain its public `shutdown()`. Accepted cost: capability gating degrades to "assume supported", which this crate's contract already tolerates |
+| H5 | `DocumentLimitExceeded` is **terminal** — `DocumentTracker::open` hard-errors at the limit, there is no LRU eviction, no `didClose` is sent anywhere in the crate, and the tracker field is private. Once hit, every later call fails for the life of the `Translator` | Cap at 64, watch the public `open_document_paths().len()`, recycle the whole instance at 90 %. It is the only recovery that exists |
+| H6 | `mcp_to_lsp_position` silently falls back to the **raw, unconverted** character when the line text is unavailable or the offset is out of bounds, rather than failing | Anchors come only from `definition_anchor`, derived from the same file content the server reads. No position is ever synthesised from another source |
+| H7 | rust-analyzer's pull diagnostics never return `cargo check`/clippy results; push has no completion event | Out of scope permanently — see "deliberately left out" above |
+| H8 | `mcpls-core` requests `tokio` with `features = ["full"]`, unioning into this workspace's pruned set whenever `lsp` is on | Accepted; recorded in §10. Does not affect the default build |
+
+**Two deviations from the implementation plan**, both found by the code rather than by review:
+
+1. **The annotation is appended *after* `cap_window`, not before.** The plan said before, so the
+   §6.1 output cap would govern it. That was wrong, and the existing code says why: `cap_window`
+   rewrites the `path:from-to` header from the body lines it returns, so an annotation added first
+   counts as a body line and the header claims a source line the drill does not contain — the
+   "header describes something other than the content" defect that the A34 comment and the A12
+   regression test already exist for, and the shape §6.5's elision erratum calls *actively
+   misleading for a model composing a SEARCH block*. Appended after the cap it is bounded by
+   construction instead: one line, ~110 bytes beside a 64 KiB budget. Pinned by
+   `the_drill_header_counts_only_source_lines`.
+2. **`MAX_LINE_LEN` and the truncator are exported rather than re-implemented.** The plan said to
+   reuse the renderer's constant, which was private. Both are now `pub` on `rusta-repomap`, so an
+   annotation and a rendered map line clip identically and cannot drift.
+
+**Acceptance invariants**, all verified at the commit that shipped this: core prompt unchanged
+(I1); registry still ten tools and the phase matrix 4×10 (I2); the default dependency graph
+byte-identical apart from the workspace's own `rusta-lsp` (I3); LoC gate green (I4); `map_drill`
+output byte-identical with the feature off (I5) **and** with it on but no server (I6) — the pair
+that makes "failure is indistinguishable from absence" a test rather than a claim; every library
+crate still compiles on the declared 1.85 (I7, with §10's pre-existing `rusta-cli` exception);
+`#![forbid(unsafe_code)]` in the new crate (I8).
+
+**Upstream asks for `bug-ops/mcpls`**, useful to both projects, none of them blockers:
+
+1. An `lsp-client` feature making `rmcp`/`schemars`/`ignore`/`dirs` optional. Measured, 26 of the
+   31 crates this dependency adds are reachable only through those four and serve its MCP server;
+   the genuinely LSP-bearing additions are three — `mcpls-core`, `gen-lsp-types`, `dunce`.
+2. Make `Translator::shutdown_servers` public (H4).
+3. LRU-evict at `max_documents`, or expose a document close, instead of a terminal
+   `DocumentLimitExceeded` (H5).
+4. Make `Translator::register_server_config` public, so embedders get auto-respawn.
+5. Give `detect_language` built-in defaults, or make the omission loud. A `Translator` built the
+   documented library way — `new`, `with_router`, `register_client`, all public — resolves every
+   file to `"plaintext"` and fails every call, with nothing in their docs saying so.
+
+**Standing risk.** The dependency is pre-1.0 with no deprecation shims (§10).
+
 ## 15. Traceability Matrix
 
 Every row ships and is tested.
+
+> `rusta-lsp` (§14.1) has **no row here, deliberately**. It satisfies no R-number: it is an
+> opt-in extension under §0 rule 4, not a requirement, and R6 remains satisfied by
+> `rusta-repomap` alone — the repo map is load-bearing for `Exploring` in every phase config and
+> was never a candidate for replacement. Listing an optional crate beside the hard requirements
+> would misstate what the matrix asserts, which is that every requirement ships.
 
 | Req | Subsystem | Milestone |
 | --- | --- | --- |
@@ -1095,15 +1248,16 @@ places; and Ctrl-C not being listened for during a running `dispatch`.
 
 ## 17. Current Status & Known Limitations
 
-**Status at 2026-09-18, after the round-8 remediation (§16.8).**
+**Status at 2026-09-19, after the §14.1 `rusta-lsp` addition.**
 
 | Gate | Result |
 | --- | --- |
 | `cargo fmt --all --check` | clean |
-| `cargo clippy --workspace --all-targets -D warnings` | 0 diagnostics, both feature graphs |
-| `cargo doc --workspace --no-deps` | 0 warnings — **now enforced in CI** with `RUSTDOCFLAGS: -D warnings` (it was reported as a gate here while nothing checked it) |
-| `cargo test --workspace` | **308 passed, 0 failed** (320 with `rusta-cli/embedded`; 3 GGUF tests `#[ignore]`d) |
-| `scripts/loc_budget.sh` | production **12,638** / 15,000 · tests 9,527 · total **22,165** / 25,000 |
+| `cargo clippy --workspace --all-targets -D warnings` | 0 diagnostics, all three feature graphs |
+| `cargo doc --workspace --no-deps` | 0 warnings, enforced in CI with `RUSTDOCFLAGS: -D warnings` (default and `lsp` graphs) |
+| `cargo test --workspace` | **333 passed, 0 failed**; **340 passed** under `rusta-cli/lsp --include-ignored`, the 7 extra being live `rust-analyzer` tests plus the contention guard (3 GGUF tests remain `#[ignore]`d under `rusta-cli/embedded`) |
+| `scripts/loc_budget.sh` | production **13,663** / 15,000 · tests 10,376 · total **24,039** / 25,000 |
+| dependency delta | default graph **unchanged**; `--features lsp` adds 31 crates, all licences within `deny.toml` |
 
 **Rusta is pre-alpha and is not production-ready.** The gates above are real and do not support a
 stronger claim.
@@ -1146,8 +1300,18 @@ gap, and no amount of further self-audit closes it.
 4. **Validator heuristics have no real-output fixtures** (§16.7 F2). `is_diagnostic`,
    `zero_tests` and `first_diagnostic` are tuned by hand against imagined `cargo`/`clippy` output.
    This needs no model to fix and is the cheapest hardening outstanding.
-5. **47 quarantined risks from round 8 remain unverified** (§16.8). They are leads, not findings.
-6. **Remediation introduces defects at a measured ~1 per 150–600 changed lines.** Round 8's four
+5. **The `lsp` feature has no CI coverage against a real `rust-analyzer`.** Exactly the embedded
+   backend's situation (item 3): the live tests in `rusta-lsp/tests/lsp_e2e.rs` and
+   `rusta-tools/tests/lsp_enrichment.rs` are `#[ignore]`d because they need a language server on
+   `PATH`. They **have** been run — all five pass, and §14.1 records three defects they caught
+   that nothing else did — but they were run once, by hand, on one machine, against one trivial
+   fixture crate. What CI does cover is the part bounding the feature's context cost (the
+   signature-extraction corpus) and the negative invariant that matters most: with no server, a
+   drill is byte-identical to a build without the feature, pinned on both sides of the feature
+   matrix per §16.6. Caching a language server in CI is the cheap hardening here, and it is the
+   same shape as item 3's cached-GGUF recommendation.
+6. **47 quarantined risks from round 8 remain unverified** (§16.8). They are leads, not findings.
+7. **Remediation introduces defects at a measured ~1 per 150–600 changed lines.** Round 8's four
    waves changed roughly 1,400 production lines; the commits are deliberately separable so a
    bisect is cheap.
 

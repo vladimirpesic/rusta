@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use rusta_dispatch::{ExecMode, RunTool, TaskSet, labeled, run};
+use rusta_lsp::CodeIntel;
 use rusta_repomap::RepoMap;
 use serde_json::{Value, json};
 
@@ -76,7 +77,11 @@ impl RunTool for ReadOnly {
             "read" => crate::read::read(&self.root, &input),
             "grep" => crate::search::grep(&self.root, &input),
             "glob" => crate::glob::glob(&self.root, &input),
-            "map_drill" => crate::map::drill(&self.root, &input),
+            // §6.8: sub-coders are never enriched. Their contexts are
+            // isolated and their returns summarised, and giving each parallel
+            // actor its own language server would multiply the cost of the
+            // thing this feature exists to make cheap.
+            "map_drill" => crate::map::drill(&self.root, &input, &CodeIntel::disabled()).await,
             "map_refresh" => {
                 let mut map = lock(&self.repomap);
                 // A sub-coder has no chat-set and no user message of its own.

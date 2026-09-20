@@ -21,12 +21,17 @@ path = "src/main.rs"
 # dispatch feature forwards the same flag (its `BackendKind::Embedded`
 # scheduling arm is feature-gated to keep the default graph lean).
 embedded = ["rusta-llm/embedded", "rusta-dispatch/embedded"]
+# Opt-in LSP type enrichment for `map_drill` (ADR §14 → §0 rule 4). Needs
+# `rust-analyzer` on PATH and a Rust 1.88 toolchain; absent either, drills
+# render exactly as they do without it.
+lsp = ["rusta-tools/lsp", "rusta-lsp/lsp"]
 
 [dependencies]
 rusta-core = { path = "../rusta-core" }
 rusta-dispatch = { path = "../rusta-dispatch" }
 rusta-edit = { path = "../rusta-edit" }
 rusta-llm = { path = "../rusta-llm" }
+rusta-lsp = { path = "../rusta-lsp" }
 rusta-repomap = { path = "../rusta-repomap" }
 rusta-tools = { path = "../rusta-tools" }
 rusta-validate = { path = "../rusta-validate" }
