@@ -92,11 +92,17 @@ async fn write_sse(stream: &mut TcpStream, content: &str) {
     let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
                 Cache-Control: no-cache\r\nConnection: close\r\n\r\n";
     stream.write_all(head.as_bytes()).await.expect("head");
-    let delta = json!({"choices": [{"delta": {"content": content}}]});
-    stream
-        .write_all(format!("data: {delta}\n\n").as_bytes())
-        .await
-        .expect("delta");
+    // One delta per line rather than one for the whole completion. A real
+    // server streams token by token, and anything that reacts *during* a
+    // completion — §6.6's `StreamGuard` — cannot be exercised by a mock
+    // that hands over the finished text in a single frame.
+    for piece in content.split_inclusive('\n') {
+        let delta = json!({"choices": [{"delta": {"content": piece}}]});
+        stream
+            .write_all(format!("data: {delta}\n\n").as_bytes())
+            .await
+            .expect("delta");
+    }
     let finish = json!({"choices": [{"delta": {}, "finish_reason": "stop"}]});
     stream
         .write_all(format!("data: {finish}\n\n").as_bytes())
@@ -757,5 +763,47 @@ async fn a_run_that_offers_edits_and_lands_none_does_not_report_success() {
         app2.run_once("rename it").await,
         "a run that applied its edit is a success: {}",
         capture2.text()
+    );
+}
+
+/// Round 10: the `StreamGuard` unit tests prove the detector; this proves
+/// the agent uses it. A detector wired to nothing is the §16.1 shape, and
+/// this project has shipped that exact defect before.
+#[tokio::test]
+async fn a_degenerate_completion_is_cut_off_mid_stream() {
+    if !git_present() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let dir = init_repo();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    std::fs::write(root.join("src/lib.rs"), "fn one() {}\n").expect("write");
+
+    let mock = Mock::start(|hit| match hit {
+        // The shape a looping small model emits: the same line, forever.
+        1 => "Let me try that again.\n".to_owned() + &"    stack.pop().unwrap();\n".repeat(30),
+        _ => "Stopping here.".to_owned(),
+    });
+    let capture = Capture::default();
+    let mut app = app_for(root, &mock, 4, &capture, Mode::Repl);
+
+    app.handle_line("fix it").await;
+
+    let text = capture.text();
+    assert!(
+        text.contains("started repeating itself"),
+        "the loop must be reported to the user: {text}"
+    );
+    // The useful prefix survives — only the wasted budget is abandoned.
+    assert!(
+        text.contains("Let me try that again."),
+        "what streamed before the loop is kept: {text}"
+    );
+    // And it stopped early: the whole 30-line repetition never printed.
+    let repeats = text.matches("stack.pop().unwrap();").count();
+    assert!(
+        repeats < 30,
+        "the stream must be cut short, saw {repeats} repeats"
     );
 }

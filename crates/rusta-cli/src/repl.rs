@@ -68,6 +68,9 @@ pub struct App {
     pub history: Vec<Message>,
     /// Loop mitigation (§6.6).
     pub guard: LoopGuard,
+    /// Within-completion degeneracy detection (§6.6). Reset per turn, so a
+    /// repetition never carries across a turn boundary.
+    pub stream_guard: rusta_core::StreamGuard,
     /// The Reflexion repair gate (§6.7).
     pub gate: Gate,
     /// History compression (§6.6).
@@ -231,6 +234,7 @@ impl App {
             tools: Arc::new(tools),
             history: Vec::new(),
             guard: LoopGuard::new(),
+            stream_guard: rusta_core::StreamGuard::default(),
             gate: Gate::new(),
             compressor: Compressor::new(window),
             deck,

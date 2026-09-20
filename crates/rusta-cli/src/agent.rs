@@ -665,6 +665,7 @@ impl App {
     /// collected (§6.1 priority 3), Ctrl-C aborts and discards the partial
     /// turn (§6.1 step 5). `None` means the turn must not be recorded.
     async fn stream_turn(&mut self, request: ChatRequest) -> Option<(String, Vec<NativeCall>)> {
+        self.stream_guard.reset();
         let mut rx = match self.tools.backend().stream(request).await {
             Ok(rx) => rx,
             Err(err) => {
@@ -698,6 +699,16 @@ impl App {
                     Some(StreamEvent::Delta(delta)) => {
                         self.reporter.raw(&delta);
                         text.push_str(&delta);
+                        // §6.6's within-completion half. The turn is kept,
+                        // not discarded: whatever streamed before the model
+                        // began looping is usually the useful part, and the
+                        // items already in it still execute. Only the
+                        // remaining token budget is abandoned.
+                        if let Some(reason) = self.stream_guard.observe(&delta) {
+                            self.reporter.line(&format!("\n{reason}"));
+                            self.tools.backend().stop();
+                            break;
+                        }
                     }
                     Some(StreamEvent::ToolCall { name, arguments, .. }) => {
                         let input = match serde_json::from_str::<Value>(&arguments) {

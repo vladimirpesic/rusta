@@ -680,3 +680,82 @@ fn cues_cover_the_failures_real_models_actually_produce() {
     assert!(has("validation", "test result: FAILED", "test_failure"));
     assert!(has("read", "anything at all", "error"));
 }
+
+/// Round 10: §6.6's detectors all work *across* turns — they compare a call
+/// to the calls before it. Nothing watched a single completion, so a model
+/// degenerating mid-stream ran to `max_tokens` every time. On CPU that is
+/// the most expensive failure available: at ~8 tok/s a 2048-token
+/// degenerate tail is four minutes of wall clock per turn, and the 7B runs
+/// in §16.9 spent most of their budget exactly that way.
+///
+/// smallcode's `early_stop.js` is the reference: inspect only the tail of
+/// the buffer so the check stays O(window) per token rather than O(n²).
+#[test]
+fn a_completion_that_degenerates_mid_stream_is_stopped() {
+    use rusta_core::StreamGuard;
+
+    // Ordinary prose and code never trip it, however long.
+    let mut guard = StreamGuard::default();
+    for i in 0..40 {
+        let prose = format!(
+            "Step {i}: the operands are popped in the wrong order here, so \
+             the first pop is the right-hand side and the subtraction runs \
+             backwards.\n"
+        );
+        assert!(
+            guard.observe(&prose).is_none(),
+            "varying prose must stream freely"
+        );
+    }
+
+    // A repeated line — the shape a looping model actually emits.
+    let mut guard = StreamGuard::default();
+    let mut tripped = None;
+    for turn in 0..12 {
+        if let Some(reason) = guard.observe("    let lhs = stack.pop().unwrap();\n") {
+            tripped = Some((turn, reason));
+            break;
+        }
+    }
+    let (turn, reason) = tripped.expect("a repeating line must trip the guard");
+    assert!(
+        turn >= 2,
+        "never on the first repeat — that is legitimate code"
+    );
+    assert!(
+        reason.contains("repeat"),
+        "the reason reaches the user: {reason}"
+    );
+
+    // A repeated *block*, not just a line.
+    let mut guard = StreamGuard::default();
+    let block = "```tool\n{\"name\": \"read\", \"input\": {\"path\": \"a.rs\"}}\n```\n\
+                 Let me check that file again.\n";
+    let mut stopped = false;
+    for _ in 0..10 {
+        if guard.observe(block).is_some() {
+            stopped = true;
+            break;
+        }
+    }
+    assert!(stopped, "a repeating block must trip the guard too");
+
+    // Real code with legitimately similar lines must survive.
+    let mut guard = StreamGuard::default();
+    for (i, line) in [
+        "    let a = compute_first(input)?;\n",
+        "    let b = compute_second(input)?;\n",
+        "    let c = compute_third(input)?;\n",
+        "    let d = compute_fourth(input)?;\n",
+        "    let e = compute_fifth(input)?;\n",
+        "    let f = compute_sixth(input)?;\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(
+            guard.observe(line).is_none(),
+            "similar-but-distinct line {i} must not trip it"
+        );
+    }
+}

@@ -20,6 +20,7 @@ pub mod proc;
 pub mod prompt;
 pub mod session;
 pub mod state;
+pub mod stream_guard;
 
 pub use context::{
     CARD_TOKEN_BUDGET, Capsule, CardDeck, CardKind, Compression, Compressor, Escalation, LoopGuard,
@@ -31,3 +32,4 @@ pub use session::{Event, Reconstructed, Session, Status, TranscriptLine};
 pub use state::{
     Machine, PHASE_EVENTS, PhaseEvent, STATES, State, TOOLS, Tool, Transition, corrective_note,
 };
+pub use stream_guard::StreamGuard;
