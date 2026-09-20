@@ -400,6 +400,7 @@ impl App {
     pub async fn submit(&mut self, request: &str) {
         self.edits_offered = 0;
         self.edits_applied = 0;
+        self.validators_red = false;
         // Every user request is its own task: a fresh §6.7 repair bound
         // (`Gate::reset`) and fresh §6.6 detector state
         // (`LoopGuard::start_task`) — the previous request's counters never
@@ -542,8 +543,16 @@ impl App {
     async fn finish_batch(&mut self, summary: &str, undo_before: usize) -> bool {
         let entries: Vec<UndoEntry> =
             self.tools.editor().undo_stack().pending()[undo_before..].to_vec();
-        // What reached a file — the journal delta, not what was offered.
-        self.edits_applied += entries.len();
+        // What reached a file — the journal delta, and only entries that
+        // actually changed bytes. A no-op edit (REPLACE == SEARCH) journals
+        // an `EditApplied` with identical hashes, and counting it satisfied
+        // the "did anything land?" check while the tree was untouched: a
+        // real 7B run exited 0 that way, with validators red. §6.6's
+        // detector already treats a no-op as a loop symptom, not progress.
+        self.edits_applied += entries
+            .iter()
+            .filter(|entry| entry.before != entry.after)
+            .count();
         for entry in &entries {
             // The edit journal is what `/undo` restores from, so a silent
             // failure here costs more than any other dropped write.
@@ -957,6 +966,7 @@ impl App {
         }
         match self.gate.assess(&outcome) {
             Verdict::Pass { note } => {
+                self.validators_red = false;
                 self.fire(PhaseEvent::ValidationPassed);
                 if let Some(text) = note {
                     self.reporter.line(text);
@@ -974,6 +984,7 @@ impl App {
                 true // §6.7: the model gets the repair attempt first
             }
             Verdict::Surface { feedback } => {
+                self.validators_red = true;
                 self.fire(PhaseEvent::ValidationFailed);
                 self.reporter
                     .line("validation failed (repair budget exhausted):");

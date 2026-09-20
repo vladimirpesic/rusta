@@ -102,6 +102,10 @@ pub struct App {
     pub edits_offered: usize,
     /// Edits that reached a file this request.
     pub edits_applied: usize,
+    /// The last validation round of this request ended red and was surfaced
+    /// to the user (§6.7). A `-c` run that finishes this way did not do what
+    /// was asked, whatever its closing message says.
+    pub validators_red: bool,
 }
 
 /// Builds the runtime backend from config + CLI overrides (§6.2: config or
@@ -239,6 +243,7 @@ impl App {
             journal_broken: false,
             edits_offered: 0,
             edits_applied: 0,
+            validators_red: false,
         };
         if fresh {
             let summary = app.config.summary(overrides);
@@ -368,12 +373,16 @@ impl App {
     /// reached a file — a run that looks successful and changed nothing.
     pub async fn run_once(&mut self, prompt: &str) -> bool {
         self.submit(prompt).await;
-        let stalled = self.edits_offered > 0 && self.edits_applied == 0;
+        let stalled = (self.edits_offered > 0 && self.edits_applied == 0) || self.validators_red;
         if self.edits_offered > 0 {
             self.reporter.line(&format!(
-                "{} of {} offered edit(s) applied",
+                "{} of {} offered edit(s) changed a file",
                 self.edits_applied, self.edits_offered
             ));
+        }
+        if self.validators_red {
+            self.reporter
+                .line("validators are still failing — the task is not done");
         }
         self.reporter
             .line(&format!("session: {}", self.session.path().display()));

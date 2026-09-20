@@ -710,6 +710,32 @@ async fn a_run_that_offers_edits_and_lands_none_does_not_report_success() {
         capture.text()
     );
 
+    // A no-op edit (REPLACE == SEARCH) journals an `EditApplied` with
+    // identical hashes. Counting it as progress let a real 7B run exit 0
+    // having changed nothing with validators red — the same false success
+    // this test exists to prevent, one step further in.
+    let dir3 = init_repo();
+    let root3 = dir3.path();
+    std::fs::create_dir_all(root3.join("src")).expect("mkdir");
+    std::fs::write(root3.join("src/lib.rs"), "fn one() {}\n").expect("write");
+    let mock3 = Mock::start(|hit| match hit {
+        1 => "src/lib.rs\n\
+              <<<<<<< SEARCH\n\
+              fn one() {}\n\
+              =======\n\
+              fn one() {}\n\
+              >>>>>>> REPLACE\n"
+            .to_owned(),
+        _ => "Done — applied.".to_owned(),
+    });
+    let capture3 = Capture::default();
+    let mut app3 = app_for(root3, &mock3, 6, &capture3, Mode::Oneshot);
+    assert!(
+        !app3.run_once("rename it").await,
+        "a no-op edit changes no file and is not success: {}",
+        capture3.text()
+    );
+
     // The control: a run that lands its edit reports success.
     let dir2 = init_repo();
     let root2 = dir2.path();
