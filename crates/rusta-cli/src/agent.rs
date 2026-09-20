@@ -831,6 +831,25 @@ impl App {
         // block does. The real run that motivated this used *this* form
         // five times; gating only the text syntax would have left the
         // observed failure in place.
+        // §6.6: a call that has already failed identically three times is
+        // not executed a fourth. Advice did not stop a 7B re-issuing one
+        // malformed `map_drill` for a whole turn budget; a refusal does,
+        // and it names the count so the model knows why.
+        if self.guard.is_barred(name, input) {
+            self.journal(Event::ToolCall {
+                name: name.to_owned(),
+                input: input.clone(),
+            });
+            self.reporter
+                .line(&format!("* {name} (barred — already failed three times)"));
+            self.push_observation(
+                name,
+                "this exact call has already failed three times and was not run again. \
+                 Change the arguments, use a different tool, or answer without it.",
+                Status::Error,
+            );
+            return;
+        }
         // Journalled before the gate rules on it, so a declined edit is
         // still in the §6.10 audit trail — and journalled exactly once.
         self.journal(Event::ToolCall {
@@ -850,6 +869,7 @@ impl App {
         // Every failed call feeds the §6.6 classifiers: a first bad argument
         // or invented name fires a card, a second fires a capsule.
         if outcome.status != Status::Ok {
+            self.guard.observe_failed_call(name, input);
             let trip = self.guard.observe_tool_error(name, &outcome.content);
             self.handle_trip(trip);
         }

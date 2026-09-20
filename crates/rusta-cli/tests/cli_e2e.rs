@@ -917,3 +917,43 @@ async fn a_malformed_tool_call_is_repaired_without_spending_a_turn() {
     let repairs = text.matches("repaired").count();
     assert!(repairs <= 1, "at most one repair per turn, saw {repairs}");
 }
+
+/// The wiring half of the failure bar: proved against the exact call the 7B
+/// repeated 15 times — `map_drill` with `from` and no `to`.
+#[tokio::test]
+async fn a_repeatedly_failing_call_stops_being_executed() {
+    if !git_present() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let dir = init_repo();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    std::fs::write(root.join("src/lib.rs"), "fn one() {}\n").expect("write");
+
+    // The same malformed call every turn, as the real model did.
+    let mock = Mock::start(|hit| {
+        if hit <= 8 {
+            "```tool\n{\"name\": \"map_drill\", \"input\": {\"path\": \"src/lib.rs\", \
+             \"from\": 1}}\n```"
+                .to_owned()
+        } else {
+            "I will stop.".to_owned()
+        }
+    });
+    let capture = Capture::default();
+    let mut app = app_for(root, &mock, 10, &capture, Mode::Repl);
+
+    app.handle_line("look at src/lib.rs").await;
+
+    let text = capture.text();
+    assert!(
+        text.contains("barred — already failed three times"),
+        "the model must be told the call is barred: {text}"
+    );
+    // The bar is what ends it, not the turn cap.
+    assert!(
+        !text.contains("turn budget reached"),
+        "a barred call must not have to run out the turn budget: {text}"
+    );
+}

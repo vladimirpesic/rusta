@@ -873,3 +873,72 @@ fn repeated_bad_arguments_and_invented_names_trip_their_own_capsules() {
         );
     }
 }
+
+/// Round 10 follow-up, found by running the round-10 build: a 7B spent its
+/// entire turn budget — 15 minutes, 32 calls — issuing the *same*
+/// `map_drill` with the same wrong arguments. Every layer worked and none
+/// of them had teeth:
+///
+/// - the call failed identically 30 times with "takes either …";
+/// - `bad_tool_args` fired, so the card was injected — and ignored;
+/// - the stagnation detector tripped at 3 and escalated at 6;
+/// - but `LoopEscalated` exists only as `(Editing → Planning)`, and the
+///   model never left `Exploring`, so escalation was a no-op.
+///
+/// Advice is not a control. §6.4's answer to a forbidden action is to make
+/// it unreachable, and the same answer applies here: a call that has failed
+/// identically three times is not executed a fourth.
+#[test]
+fn a_call_that_keeps_failing_identically_is_refused_not_rerun() {
+    use rusta_core::LoopGuard;
+    use serde_json::json;
+
+    let mut guard = LoopGuard::new();
+    let call = json!({"path": "src/eval.rs", "from": 63});
+
+    // The first three attempts run: the model deserves the error text.
+    for attempt in 1..=3 {
+        assert!(
+            !guard.is_barred("map_drill", &call),
+            "attempt {attempt} must still execute"
+        );
+        guard.observe_failed_call("map_drill", &call);
+    }
+    // The fourth does not.
+    assert!(
+        guard.is_barred("map_drill", &call),
+        "a call that failed identically three times is refused"
+    );
+
+    // Different arguments are a different call — the model is trying
+    // something, which is what we want it to do.
+    assert!(
+        !guard.is_barred(
+            "map_drill",
+            &json!({"path": "src/eval.rs", "from": 63, "to": 70})
+        ),
+        "a corrected call must not inherit the bar"
+    );
+    // And a different tool is unaffected.
+    assert!(!guard.is_barred("read", &call));
+
+    // A call that *succeeds* is never barred, however often it repeats —
+    // re-reading a file after an edit is ordinary.
+    let guard = LoopGuard::new();
+    let read = json!({"path": "src/eval.rs"});
+    for _ in 0..10 {
+        assert!(!guard.is_barred("read", &read), "success never bars");
+    }
+
+    // The bar is per task: a new request starts clean.
+    let mut guard = LoopGuard::new();
+    for _ in 0..3 {
+        guard.observe_failed_call("map_drill", &call);
+    }
+    assert!(guard.is_barred("map_drill", &call));
+    guard.start_task();
+    assert!(
+        !guard.is_barred("map_drill", &call),
+        "a new request starts with a clean slate"
+    );
+}

@@ -966,6 +966,16 @@ pub struct LoopGuard {
     patch_failures: std::collections::BTreeMap<String, u32>,
     /// Tool calls rejected for malformed arguments, this task (§6.6).
     bad_args: u32,
+    /// Fingerprints of calls that have failed, and how often (§6.6).
+    ///
+    /// Advice is not a control. A 7B spent a whole turn budget re-issuing
+    /// one malformed `map_drill`: the error was identical 30 times, the
+    /// `bad_tool_args` card fired and was ignored, the stagnation detector
+    /// tripped — and `LoopEscalated` exists only as `(Editing → Planning)`,
+    /// so in `Exploring` it was a no-op. §6.4's answer to an action that
+    /// must not happen is to make it unreachable; this is that answer for a
+    /// call that cannot succeed.
+    failed_calls: std::collections::BTreeMap<String, u32>,
     /// Tool calls naming a path or identifier that does not exist (§6.6).
     wrong_paths: u32,
     /// Active capsules with activation turns.
@@ -995,6 +1005,7 @@ impl LoopGuard {
             noop_edits: 0,
             patch_failures: std::collections::BTreeMap::new(),
             bad_args: 0,
+            failed_calls: std::collections::BTreeMap::new(),
             wrong_paths: 0,
             active: Vec::new(),
             turn: 0,
@@ -1006,7 +1017,7 @@ impl LoopGuard {
     /// the fingerprint uses `canonical_json`, so equal arguments spelled
     /// with different key orders are the same call.
     pub fn observe_tool_call(&mut self, name: &str, input: &Value) -> Trip {
-        let fingerprint = format!("{name}|{}", canonical_json(input));
+        let fingerprint = fingerprint(name, input);
         let calls = {
             let entry = self.stagnation.entry(fingerprint.clone()).or_insert(0);
             *entry += 1;
@@ -1066,6 +1077,30 @@ impl LoopGuard {
             trip.escalate = self.noop_edits >= 2;
         }
         self.finish(trip)
+    }
+
+    /// How many identical failures are allowed before a call is refused.
+    ///
+    /// Three, so the model sees the error and has two chances to act on it
+    /// before the door closes. A bar at one would punish a typo.
+    const FAILURE_BAR: u32 = 3;
+
+    /// Whether this exact call has already failed three times and must not
+    /// be executed again this task (§6.6).
+    pub fn is_barred(&self, tool: &str, input: &Value) -> bool {
+        self.failed_calls
+            .get(&fingerprint(tool, input))
+            .is_some_and(|misses| *misses >= Self::FAILURE_BAR)
+    }
+
+    /// Records that this exact call failed. Only failures count: a call that
+    /// succeeds is never barred however often it repeats, because re-reading
+    /// a file after editing it is ordinary.
+    pub fn observe_failed_call(&mut self, tool: &str, input: &Value) {
+        *self
+            .failed_calls
+            .entry(fingerprint(tool, input))
+            .or_insert(0) += 1;
     }
 
     /// Records a failed tool call (§6.6), classifying it by the shape of the
@@ -1279,6 +1314,7 @@ impl LoopGuard {
         self.noop_edits = 0;
         self.patch_failures.clear();
         self.bad_args = 0;
+        self.failed_calls.clear();
         self.wrong_paths = 0;
         self.active.clear();
     }
@@ -1341,6 +1377,14 @@ pub fn error_cues(tool: &str, content: &str) -> Vec<String> {
     cues.sort_unstable();
     cues.dedup();
     cues
+}
+
+/// The `tool|args` fingerprint two calls share when they are the same call.
+///
+/// One definition, used by both the stagnation detector and the failure bar,
+/// so the two can never disagree about what "the same call" means.
+fn fingerprint(tool: &str, input: &Value) -> String {
+    format!("{tool}|{}", canonical_json(input))
 }
 
 /// Deterministic serialization of a tool-call JSON value: object keys are

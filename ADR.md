@@ -1330,6 +1330,20 @@ this project measured in §16.9 rather than to a feature list.
 - **Observer.** Re-read at source: its CLI carries nothing small-model specific. It remains a
   philosophical comparator, not an architectural one.
 
+**What running the round-10 build found immediately.** A 7B spent its whole turn budget — 15
+minutes, 32 calls — re-issuing one malformed `map_drill` (`from` with no `to`). Every layer
+worked and none had teeth: the call failed identically 30 times; the new `bad_tool_args` cue
+fired, so the card was injected and ignored; the stagnation detector tripped at 3 and escalated
+at 6; and `LoopEscalated` exists only as `(Editing → Planning)`, so in `Exploring` — where a
+model stuck in read-loops lives — escalation was a no-op. Only the turn cap stopped it.
+
+**Advice is not a control**, and that is the round's real lesson. §6.4 answers a forbidden action
+by making it unreachable rather than by asking the model not to take it; §6.6 had been answering
+with text. A call that has failed identically three times is now refused rather than re-run, with
+the count named so the model knows why. Three, not one, so a typo is not punished and the model
+sees the error twice before the door closes; only *failures* count, because re-reading a file
+after editing it is ordinary; and the bar clears per task.
+
 **What round 10 did not do.** None of this is measured. Five mechanisms were added because a
 reference project proved them useful and because §16.9 showed Rusta failing in exactly the way
 each addresses — but no benchmark says they help, and this project's own history is a sequence
