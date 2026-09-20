@@ -816,3 +816,60 @@ fn repeated_search_failures_on_one_file_route_to_a_whole_file_rewrite() {
         "a success resets the file's failure count"
     );
 }
+
+/// Round 10: SmallCTL ships ~20 FAMA detectors; Rusta had four. These two
+/// are the ones that match failures real models produced (§16.9) rather than
+/// failures imagined for a test.
+///
+/// A cue fires a *card* — advice, once. A detector fires a *capsule* — an
+/// imperative that persists for three turns and escalates at 2×. Repetition
+/// is what distinguishes them: the first bad argument is a slip, the third
+/// is a model that has stopped reading its own error messages.
+#[test]
+fn repeated_bad_arguments_and_invented_names_trip_their_own_capsules() {
+    use rusta_core::LoopGuard;
+
+    // Qwen2.5-Coder: `read {"from": "fn sum_even"}` — a string where a line
+    // number belongs, on the first real tool call this project ever saw.
+    let mut guard = LoopGuard::new();
+    assert!(
+        guard
+            .observe_tool_error("read", "\"from\" must be a positive integer")
+            .capsules
+            .is_empty(),
+        "one bad argument is a slip"
+    );
+    let second = guard.observe_tool_error("grep", "\"pattern\" must be a non-empty string");
+    assert!(
+        second.capsules.contains(&"read_the_error"),
+        "a second, on any tool, is a pattern: {second:?}"
+    );
+
+    // Qwen3-Coder: `map_drill(name: "eval")` then `map_drill(name:
+    // "eval_binary_op")` — two identifiers that exist nowhere in the file.
+    let mut guard = LoopGuard::new();
+    let _ = guard.observe_tool_error("map_drill", "no definition named \"eval\" in src/eval.rs");
+    let second = guard.observe_tool_error(
+        "map_drill",
+        "no definition named \"eval_binary_op\" in src/eval.rs",
+    );
+    assert!(
+        second.capsules.contains(&"confirm_the_name"),
+        "guessing a second spelling trips its own capsule: {second:?}"
+    );
+    let capsule = rusta_core::capsule("confirm_the_name").expect("registered");
+    assert!(
+        capsule.text.contains("glob") || capsule.text.contains("map_refresh"),
+        "the capsule must name the tool that confirms: {}",
+        capsule.text
+    );
+
+    // An ordinary successful run trips nothing.
+    let mut guard = LoopGuard::new();
+    for _ in 0..5 {
+        assert!(
+            guard.observe_tool_error("read", "").capsules.is_empty(),
+            "an empty error is not an error"
+        );
+    }
+}

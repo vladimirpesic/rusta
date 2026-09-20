@@ -35,8 +35,8 @@ const LINE_CAP: usize = 512;
 
 /// Watches one completion for degenerate repetition (§6.6).
 ///
-/// Cheap by construction: it keeps at most [`TAIL_LINES`] lines and compares
-/// at most [`MAX_CYCLE`] cycle lengths, so the cost per token does not grow
+/// Cheap by construction: it keeps a bounded tail (13 lines) and compares
+/// at most four cycle lengths, so the cost per token does not grow
 /// with the length of the completion — the O(n²) trap smallcode's own
 /// implementation documents.
 #[derive(Debug, Default)]

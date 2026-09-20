@@ -859,7 +859,17 @@ pub struct Capsule {
 /// `evidence_reuse` detector (b) consecutive identical calls,
 /// `mutation_required` detector (c) repeated identical validator outputs,
 /// and `no_op_edit` detector (d) REPLACE == SEARCH.
-static CAPSULES: [Capsule; 5] = [
+static CAPSULES: [Capsule; 7] = [
+    Capsule {
+        name: "read_the_error",
+        text: "Two tool calls rejected for malformed arguments. Re-read the tool's argument list in the prompt before the next call.",
+        priority: 8,
+    },
+    Capsule {
+        name: "confirm_the_name",
+        text: "That path or identifier does not exist. Confirm it with `glob` or `map_refresh` — do not guess another spelling.",
+        priority: 9,
+    },
     Capsule {
         name: "whole_file_rewrite",
         text: "SEARCH has missed twice on this file. Stop composing SEARCH text — call `write` with the whole corrected file.",
@@ -954,6 +964,10 @@ pub struct LoopGuard {
     /// one file is that signal: the 7B in §16.9 failed repeatedly against
     /// SEARCH text it had invented, which no retry could ever match.
     patch_failures: std::collections::BTreeMap<String, u32>,
+    /// Tool calls rejected for malformed arguments, this task (§6.6).
+    bad_args: u32,
+    /// Tool calls naming a path or identifier that does not exist (§6.6).
+    wrong_paths: u32,
     /// Active capsules with activation turns.
     active: Vec<ActiveCapsule>,
     /// The current turn (incremented by [`LoopGuard::end_turn`]).
@@ -980,6 +994,8 @@ impl LoopGuard {
             last_validator: HashMap::new(),
             noop_edits: 0,
             patch_failures: std::collections::BTreeMap::new(),
+            bad_args: 0,
+            wrong_paths: 0,
             active: Vec::new(),
             turn: 0,
             escalation: None,
@@ -1048,6 +1064,42 @@ impl LoopGuard {
             self.noop_edits += 1;
             trip.capsules.push("no_op_edit");
             trip.escalate = self.noop_edits >= 2;
+        }
+        self.finish(trip)
+    }
+
+    /// Records a failed tool call (§6.6), classifying it by the shape of the
+    /// error so a *repeated* mistake escalates from advice to an imperative.
+    ///
+    /// The cue vocabulary already fires a skill card on the first
+    /// occurrence; this is the second-occurrence response. SmallCTL's
+    /// `detect_bad_tool_args` and `detect_wrong_path` are the references.
+    ///
+    /// Deliberately not ported: SmallCTL's `detect_tool_output_misread`,
+    /// which asks whether the model's next action contradicts the result it
+    /// just read. Every formulation of that test reachable from here is a
+    /// guess about intent, and a detector that fires on a guess is worse
+    /// than none — it spends context telling a model it is wrong when it is
+    /// not. The identical-call fingerprint already covers the concrete case.
+    pub fn observe_tool_error(&mut self, _tool: &str, message: &str) -> Trip {
+        let cues = error_cues(_tool, message);
+        let mut trip = Trip::none();
+        if message.trim().is_empty() {
+            return trip;
+        }
+        if cues.iter().any(|cue| cue == "bad_tool_args") {
+            self.bad_args += 1;
+            if self.bad_args >= 2 {
+                trip.capsules.push("read_the_error");
+                trip.escalate = self.bad_args >= 4;
+            }
+        }
+        if cues.iter().any(|cue| cue == "wrong_path") {
+            self.wrong_paths += 1;
+            if self.wrong_paths >= 2 {
+                trip.capsules.push("confirm_the_name");
+                trip.escalate = trip.escalate || self.wrong_paths >= 4;
+            }
         }
         self.finish(trip)
     }
@@ -1226,6 +1278,8 @@ impl LoopGuard {
         self.last_validator.clear();
         self.noop_edits = 0;
         self.patch_failures.clear();
+        self.bad_args = 0;
+        self.wrong_paths = 0;
         self.active.clear();
     }
 }

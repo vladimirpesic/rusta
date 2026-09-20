@@ -456,7 +456,14 @@ impl App {
                 return;
             }
 
-            let parsed = parse_items(&text, &native);
+            let mut parsed = parse_items(&text, &native);
+            // smallcode's `tmpl_repair_tool`: a fence the model meant as a
+            // call, spelled wrong. A corrective note costs a whole turn —
+            // the entire assembled context re-sent, minutes on CPU — where
+            // a repair asks ~150 tokens. Bounded to one attempt per turn.
+            if parsed.items.is_empty() {
+                self.repair_malformed_calls(&mut parsed).await;
+            }
             let ends_turn = parsed.items.is_empty() && parsed.notes.is_empty();
             // The user always sees a suggested command; the model is only
             // told when the turn continues, so a prose-only answer does not
@@ -506,6 +513,56 @@ impl App {
                 return; // green gate or surfaced failure: request complete
             }
         }
+    }
+
+    /// One attempt to recover a malformed tool call by asking the model to
+    /// re-spell it (smallcode's `tmpl_repair_tool`).
+    ///
+    /// Narrow by construction. It runs only when a completion produced *no*
+    /// executable items and at least one malformed-block note, so a turn
+    /// that did anything useful is never second-guessed; it makes exactly
+    /// one non-streaming call with a short prompt; and if that call fails,
+    /// is empty, or parses to nothing, the original corrective note stands
+    /// and the turn proceeds exactly as it did before.
+    ///
+    /// The prompt carries the registry for the *current* state, so a repair
+    /// can never suggest a tool the §6.4 gate would refuse.
+    async fn repair_malformed_calls(&mut self, parsed: &mut Parsed) {
+        let malformed: Vec<&String> = parsed
+            .notes
+            .iter()
+            .filter(|note| note.contains("malformed tool block"))
+            .collect();
+        if malformed.is_empty() {
+            return;
+        }
+        let tools = self
+            .machine
+            .state()
+            .tools()
+            .iter()
+            .map(|tool| tool.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let prompt = format!(
+            "A tool call failed to parse. Fix it.\n\nError: {}\n\nAvailable tools: \
+             {tools}\n\nReply with ONLY the corrected JSON, nothing else, in the form \
+             {{\"name\": \"read\", \"input\": {{\"path\": \"src/main.rs\"}}}}",
+            malformed[0]
+        );
+        let request = ChatRequest::new(vec![Message::user(&prompt)]);
+        let Ok(reply) = self.tools.backend().complete(request).await else {
+            return; // the note stands; the model gets another turn
+        };
+        let repaired = parse_items(&format!("```tool\n{}\n```", reply.trim()), &[]);
+        if repaired.items.is_empty() {
+            return;
+        }
+        self.reporter.line("* repaired malformed tool call");
+        parsed.items = repaired.items;
+        parsed
+            .notes
+            .retain(|note| !note.contains("malformed tool block"));
     }
 
     /// A completion with no actionable items: the §6.4 plan gate (in the
@@ -790,6 +847,12 @@ impl App {
             return;
         }
         let outcome = self.tools.exec(self.machine.state(), name, input).await;
+        // Every failed call feeds the §6.6 classifiers: a first bad argument
+        // or invented name fires a card, a second fires a capsule.
+        if outcome.status != Status::Ok {
+            let trip = self.guard.observe_tool_error(name, &outcome.content);
+            self.handle_trip(trip);
+        }
         // The `edit`/`write` syntax feeds the same detector, so the two
         // cannot drift apart — the mistake A26 made with the read fence.
         if matches!(name, "edit" | "write")

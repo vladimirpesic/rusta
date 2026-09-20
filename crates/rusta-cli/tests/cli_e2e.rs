@@ -71,10 +71,19 @@ impl Mock {
                 let (behavior, hits) = (Arc::clone(&behavior), Arc::clone(&hits_handle));
                 tokio::spawn(async move {
                     let mut stream = stream;
-                    read_request(&mut stream).await;
+                    let request = read_request(&mut stream).await;
                     let request_number = hits.fetch_add(1, Ordering::SeqCst) + 1;
                     let content = behavior(request_number);
-                    write_sse(&mut stream, &content).await;
+                    // A real server answers `"stream": false` with a JSON
+                    // body, not SSE. `complete()` uses that form (§6.2:
+                    // summaries, sub-coder wrap-ups, and the §6.6 repair
+                    // call), so a mock that only speaks SSE cannot exercise
+                    // any of them.
+                    if String::from_utf8_lossy(&request).contains("\"stream\":false") {
+                        write_json_completion(&mut stream, &content).await;
+                    } else {
+                        write_sse(&mut stream, &content).await;
+                    }
                     let _ = stream.shutdown().await;
                 });
             }
@@ -85,6 +94,20 @@ impl Mock {
     fn hits(&self) -> u32 {
         self.hits.load(Ordering::SeqCst)
     }
+}
+
+/// Serves one non-streaming completion as a plain JSON body (§6.2).
+async fn write_json_completion(stream: &mut TcpStream, content: &str) {
+    let body =
+        json!({"choices": [{"message": {"role": "assistant", "content": content}}]}).to_string();
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).await.expect("head");
+    stream.write_all(body.as_bytes()).await.expect("body");
+    stream.flush().await.expect("flush");
 }
 
 /// Serves one completion as delta chunks + finish + `[DONE]`.
@@ -850,4 +873,47 @@ async fn two_missed_searches_on_one_file_tell_the_model_to_rewrite_it() {
         note.contains(capsule.text),
         "after two misses the model must be told to use `write`, got: {note:?}"
     );
+}
+
+/// Round 10: smallcode's `tmpl_repair_tool` — a malformed call goes back to
+/// the model with the error and the schema in a *short* prompt, rather than
+/// costing a whole turn.
+///
+/// The economics are what justify it on local hardware: a corrective note
+/// costs a full turn, which re-sends the entire assembled context (~8k
+/// tokens) and on CPU is minutes. A repair asks ~150 tokens. The thesis
+/// this project is built on — small models fail at managing long contexts,
+/// not at short focused tasks — predicts the short prompt does better, and
+/// it is the same prediction behind the JIT cards in §6.6.
+#[tokio::test]
+async fn a_malformed_tool_call_is_repaired_without_spending_a_turn() {
+    if !git_present() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let dir = init_repo();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    std::fs::write(root.join("src/lib.rs"), "fn one() {}\n").expect("write");
+
+    let mock = Mock::start(|hit| match hit {
+        // A fenced call that is not JSON — the shape small models emit.
+        1 => "```tool\nread path=src/lib.rs\n```".to_owned(),
+        // The repair completion: the same intent, spelled correctly.
+        2 => "{\"name\": \"read\", \"input\": {\"path\": \"src/lib.rs\"}}".to_owned(),
+        _ => "The file defines fn one().".to_owned(),
+    });
+    let capture = Capture::default();
+    let mut app = app_for(root, &mock, 6, &capture, Mode::Repl);
+
+    app.handle_line("what is in src/lib.rs?").await;
+
+    let text = capture.text();
+    assert!(
+        text.contains("* read (ok)"),
+        "the repaired call must actually execute: {text}"
+    );
+    // And the repair is bounded: one attempt, not a loop.
+    let repairs = text.matches("repaired").count();
+    assert!(repairs <= 1, "at most one repair per turn, saw {repairs}");
 }

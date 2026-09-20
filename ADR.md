@@ -1072,7 +1072,7 @@ Every row ships and is tested.
 
 ---
 
-## 16. Audit Record — nine review rounds
+## 16. Audit Record — ten review rounds
 
 Six full line-by-line audits were run against this specification and the §3 references. Rounds
 1–4 were in-repo; round 5 added two independent external reviews by other LLMs; round 6 was a
@@ -1301,6 +1301,41 @@ parser, and whether it applies still depends on the phase gate. A 30B run put a 
 closed gate in the same turn and was told it had succeeded. The suite was green because the test
 asserted the note's *presence*, never that its content was true — the §16.1 shape, committed by
 the same pass that was removing it.
+
+### 16.10 Round 10 — closing the reference-project gaps
+
+A fresh pass over all five §3 references, reading source rather than the
+round-7 summary, looking specifically for small-model compensations Rusta
+lacked. Five gaps were real; each is now closed, and each maps to a failure
+this project measured in §16.9 rather than to a feature list.
+
+| Gap | Reference | What it answers |
+| --- | --- | --- |
+| The **cue vocabulary** was the ceiling on the deck — six cues, so a card could only ever fire on six situations | little-coder (31 cards to Rusta's 4) | Five cues added, each named after an observed failure; deck grown to nine. Cards are data and uncounted by §12, so the deck is free |
+| No **within-completion** loop detection — all four §6.6 detectors compare a call to earlier calls | smallcode `governor/early_stop.js` | `StreamGuard` stops a completion that repeats a 1–4 line cycle three times. On CPU a degenerate tail costs ~4 minutes of wall clock |
+| **Diff-only editing.** Aider's default `edit_format` is `whole`, promoted to `diff` only for models known to handle it | Aider `models.py` | Two missed SEARCHes on one file trip a capsule routing to `write` — the 7B's dominant failure was SEARCH text it had invented |
+| Four **FAMA detectors** against SmallCTL's ~20 | SmallCTL `fama/detectors.py` | `bad_tool_args` and `wrong_path` classifiers added, the two that match observed failures |
+| A malformed call costs a **whole turn** | smallcode `tmpl_repair_tool` | One bounded repair call (~150 tokens) instead of re-sending ~8k of context |
+
+**Deliberately not ported**, each a decision rather than an omission:
+
+- **SmallCTL's `detect_tool_output_misread`** — whether the model's next action contradicts the
+  result it just read. Every formulation reachable from here is a guess about intent, and a
+  detector that fires on a guess spends context telling a model it is wrong when it is not. The
+  identical-call fingerprint already covers the concrete case.
+- **smallcode's SQLite memory tier and cloud-escalation lane.** The first is §14 parking-lot
+  material behind an opt-in crate; the second contradicts R11.
+- **Aider's architect/editor two-model mode.** It presumes two models of different strength;
+  this project targets one local model.
+- **Observer.** Re-read at source: its CLI carries nothing small-model specific. It remains a
+  philosophical comparator, not an architectural one.
+
+**What round 10 did not do.** None of this is measured. Five mechanisms were added because a
+reference project proved them useful and because §16.9 showed Rusta failing in exactly the way
+each addresses — but no benchmark says they help, and this project's own history is a sequence
+of plausible things that turned out not to work until something ran. §14's out-of-tree harness
+is the missing piece, and until it exists "superior to the references" is a claim nobody here
+can check.
 
 ## 17. Current Status & Known Limitations
 
