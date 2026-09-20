@@ -213,9 +213,15 @@ pub struct NativeCall {
 fn close_tool_fence(out: &mut Parsed, body: &str, prose: &mut String) {
     let calls = parse_tool_calls(&format!("```tool\n{body}\n```"));
     if calls.calls.is_empty() && !rusta_edit::parse_response(body).blocks.is_empty() {
+        // Says only what this function can guarantee. An earlier wording
+        // ("it was applied anyway this time") was false: recovery hands the
+        // block to the edit parser, and whether it *applies* still depends
+        // on the §6.4 phase gate and the apply chain. A real 30B run hit
+        // exactly that — recovered in `Exploring`, then refused — and was
+        // told it had succeeded.
         out.notes.push(
             "a SEARCH/REPLACE block belongs in the message body, not inside a ```tool fence \
-             — it was applied anyway this time"
+             — it was read as an edit block this time"
                 .to_owned(),
         );
         prose.push_str(body);
