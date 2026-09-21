@@ -1128,10 +1128,15 @@ impl App {
                 }
                 false
             }
+            // Red is red whether or not the repair budget is spent: a run
+            // cut short by the turn cap mid-repair has still left the
+            // validators failing, and reporting `Done` there was the same
+            // false-success class as round 9's.
             Verdict::Repair {
                 feedback,
                 attempts_left,
             } => {
+                self.validators_red = true;
                 self.fire(PhaseEvent::ValidationFailed);
                 let content = format!("{feedback}\nRepair attempts left: {attempts_left}.");
                 self.push_observation("validation", &content, Status::Error);

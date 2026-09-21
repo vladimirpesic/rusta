@@ -721,11 +721,12 @@ async fn a_run_that_offers_edits_and_lands_none_does_not_report_success() {
     let capture = Capture::default();
     let mut app = app_for(root, &mock, 6, &capture, Mode::Oneshot);
 
-    let ok = app.run_once("rename fn one() to fn two()").await;
+    let outcome = app.run_once("rename fn one() to fn two()").await;
 
-    assert!(
-        !ok,
-        "a run that applied nothing must not report success: {}",
+    assert_eq!(
+        outcome,
+        rusta_cli::repl::RunOutcome::NothingApplied,
+        "a run that applied nothing must say so: {}",
         capture.text()
     );
     assert_eq!(
@@ -759,8 +760,9 @@ async fn a_run_that_offers_edits_and_lands_none_does_not_report_success() {
     });
     let capture3 = Capture::default();
     let mut app3 = app_for(root3, &mock3, 6, &capture3, Mode::Oneshot);
-    assert!(
-        !app3.run_once("rename it").await,
+    assert_eq!(
+        app3.run_once("rename it").await,
+        rusta_cli::repl::RunOutcome::NothingApplied,
         "a no-op edit changes no file and is not success: {}",
         capture3.text()
     );
@@ -782,8 +784,9 @@ async fn a_run_that_offers_edits_and_lands_none_does_not_report_success() {
     });
     let capture2 = Capture::default();
     let mut app2 = app_for(root2, &mock2, 6, &capture2, Mode::Oneshot);
-    assert!(
+    assert_eq!(
         app2.run_once("rename it").await,
+        rusta_cli::repl::RunOutcome::Done,
         "a run that applied its edit is a success: {}",
         capture2.text()
     );
@@ -1013,5 +1016,51 @@ async fn a_completion_cannot_execute_an_unbounded_number_of_calls() {
         capture.text().contains("too many tool calls"),
         "and the model must be told why the rest were dropped: {}",
         capture.text()
+    );
+}
+
+/// Round 11c, from the §14.2 Tier 2 pass: a run that applied four edits and
+/// left the validators red exited non-zero — correctly — with the message
+/// "no edits were applied, though the model offered some". Four of four had
+/// changed a file. The exit reason was right and its explanation was false.
+///
+/// Two conditions share one exit path (§6.9), and only one of them was
+/// described. That is the same defect class as A55's note and §16.4's
+/// completeness claim: a true outcome with a false explanation, which is
+/// worse than no explanation because it sends the reader after the wrong
+/// thing.
+#[tokio::test]
+async fn the_failure_reason_matches_the_failure() {
+    if !git_present() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    // Case 1: edits landed, validators red.
+    let dir = init_repo();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    std::fs::write(root.join("src/lib.rs"), "fn one() {}\n").expect("write");
+    // `app_for`'s validator greps for "fn two"; this edit never satisfies it.
+    let mock = Mock::start(|hit| match hit {
+        1 => "src/lib.rs\n<<<<<<< SEARCH\nfn one() {}\n=======\nfn three() {}\n\
+              >>>>>>> REPLACE\n"
+            .to_owned(),
+        _ => "Done.".to_owned(),
+    });
+    let capture = Capture::default();
+    let mut app = app_for(root, &mock, 4, &capture, Mode::Oneshot);
+    assert_eq!(
+        app.run_once("rename it").await,
+        rusta_cli::repl::RunOutcome::ValidatorsRed,
+        "red validators are not success, and are their own reason"
+    );
+    let text = capture.text();
+    assert!(
+        !text.contains("no edits were applied") && !text.contains("0 of"),
+        "an edit DID land — the reason must not claim otherwise: {text}"
+    );
+    assert!(
+        text.contains("validators are still failing"),
+        "and must name the real reason: {text}"
     );
 }

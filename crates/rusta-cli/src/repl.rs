@@ -39,6 +39,17 @@ pub enum Mode {
     Oneshot,
 }
 
+/// How a non-interactive run ended (§6.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOutcome {
+    /// Nothing is outstanding: either the work landed, or none was asked for.
+    Done,
+    /// The model offered edits and none of them changed a file.
+    NothingApplied,
+    /// Work landed but the validators are still failing.
+    ValidatorsRed,
+}
+
 /// One applied edit batch — the `/undo` unit (§6.9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Batch {
@@ -373,11 +384,16 @@ impl App {
     }
 
     /// The `-c` mode (§6.9): one agent request, then the process exits.
-    /// Returns `false` when the model offered edits and none of them
-    /// reached a file — a run that looks successful and changed nothing.
-    pub async fn run_once(&mut self, prompt: &str) -> bool {
+    /// Runs one non-interactive request and reports *why* it did or did not
+    /// accomplish anything (§6.9).
+    ///
+    /// Two conditions share this exit path, and a run that applied four
+    /// edits and left the validators red was reported as "no edits were
+    /// applied" — a true verdict with a false explanation, which sends the
+    /// reader after the wrong thing. The reason is returned so the caller can
+    /// state the one that actually applies.
+    pub async fn run_once(&mut self, prompt: &str) -> RunOutcome {
         self.submit(prompt).await;
-        let stalled = (self.edits_offered > 0 && self.edits_applied == 0) || self.validators_red;
         if self.edits_offered > 0 {
             self.reporter.line(&format!(
                 "{} of {} offered edit(s) changed a file",
@@ -391,7 +407,18 @@ impl App {
         self.reporter
             .line(&format!("session: {}", self.session.path().display()));
         self.end_session().await;
-        !stalled
+        // Order matters, and the first ordering here was wrong. "Did any
+        // work land?" comes before "did the landed work succeed?": when a
+        // no-op edit is followed by a red validation round both conditions
+        // hold, and red validators are the *consequence* of nothing having
+        // changed rather than an independent diagnosis.
+        if self.edits_offered > 0 && self.edits_applied == 0 {
+            RunOutcome::NothingApplied
+        } else if self.validators_red {
+            RunOutcome::ValidatorsRed
+        } else {
+            RunOutcome::Done
+        }
     }
 
     /// The interactive reedline loop (§6.9).

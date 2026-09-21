@@ -103,16 +103,26 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         app.set_auto(true);
     }
     match &cli.prompt {
-        Some(prompt) => {
-            if !app.run_once(prompt).await {
-                // The model offered edits and none landed. Exiting 0 here
-                // let a confident "the fix has been applied" stand as the
-                // result of a run that changed nothing (round 9).
-                return Err(anyhow::Error::msg(
-                    "no edits were applied, though the model offered some —                      the answer above may describe work that did not happen",
-                ));
+        Some(prompt) => match app.run_once(prompt).await {
+            repl::RunOutcome::Done => {}
+            // Exiting 0 here let a confident "the fix has been applied" stand
+            // as the result of a run that changed nothing (round 9). Each
+            // reason now states only what is true of it: a run that applied
+            // four edits and left the validators red was being told no edits
+            // were applied (round 11c).
+            repl::RunOutcome::NothingApplied => {
+                return Err(anyhow::Error::msg(concat!(
+                    "no edits were applied, though the model offered some — ",
+                    "the answer above may describe work that did not happen",
+                )));
             }
-        }
+            repl::RunOutcome::ValidatorsRed => {
+                return Err(anyhow::Error::msg(concat!(
+                    "the validators are still failing — edits were applied but ",
+                    "the task is not done",
+                )));
+            }
+        },
         None => app.run_repl().await,
     }
     Ok(())
