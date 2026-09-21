@@ -1046,6 +1046,59 @@ crate still compiles on the declared 1.85 (I7, with §10's pre-existing `rusta-c
 
 **Standing risk.** The dependency is pre-1.0 with no deprecation shims (§10).
 
+### 14.2 Shipped from this list: the Tier 1 regression suite (`rusta-bench`, 2026-09-21)
+
+Out-of-tree at a sibling `rusta-bench/`, because §4 fences an in-tree benchmark out of scope and
+§12 counts every `*.rs` under the workspace against R1. Six tasks drawn from failures recorded in
+§16.9–§16.10, each with a seeded bug, tests that fail before and pass after, and a `known-good`
+branch whose fix is verified — so every task is provably solvable. One is a **control** that is
+green before and must stay green: a suite that only rewards editing would score a correct refusal
+as a failure.
+
+**First results**, rusta `2fcdcc8`, CPU-only (i7-8700, 6 physical cores, 31 GiB, no usable GPU):
+
+| | 7B (`qwen2.5-coder`) | 30B-A3B (`qwen3-coder`) |
+| --- | --- | --- |
+| Score | **4 / 6** | **5 / 6** |
+| Median task | ~120 s | ~130 s |
+| Only shared failure | `06_cross_file` | `06_cross_file` |
+
+**What the suite found on its first run**, in descending order of value:
+
+1. **A capable model that had solved the problem could not express the edit.** The 30B diagnosed
+   `06_cross_file` exactly right — `RATE_BASIS_POINTS / 10_000`, the known-good fix — then closed
+   with *"I couldn't complete the edit due to interface limitations."* Six malformed blocks, zero
+   edits. The cause is one line of JSON: the model put **raw newlines inside a JSON string
+   value** when passing multi-line code through an `edit` call, and `serde_json` rejects that with
+   `control character (\u0000-\u001F) found while parsing a string` before any other problem can
+   be diagnosed. §6.1 calls the tool-call parser forgiving; it does not forgive the single most
+   likely way a small model malforms a call carrying code. **This is a scaffold failure, not a
+   capability failure, and it cost a solved task.**
+2. **A loop through the other door.** `02_rpn_operands` on the 7B: **13 identical, successful**
+   `map_drill` calls — same window, same content, thirteen times, ended only by the turn cap. The
+   failure bar added in round 10 counts only *failures*, so it never engaged, and the stagnation
+   capsule is advice with no teeth outside `Editing`, where the run never got. The round-10
+   lesson — advice is not a control — holds for successful calls too.
+3. **The failure bar works and does not harm.** `06` barred five invented paths on the 7B rather
+   than letting them loop; `03` passed *with* a barred call.
+4. **`locate-the-cause` cannot fire when it is most needed.** The 7B closed `06` proposing to
+   "update the test to reflect the correct tax calculation" — editing the test to match the bug,
+   the exact thing that card exists to prevent. It triggers on `test_failure`, and a model that
+   never runs the tests never produces that cue.
+
+**And the suite caught itself first.** `01_sum_even` failed — a task the 7B had solved on
+2026-09-15 — which read as a rounds-9/10 regression. It was not: the task had been authored with
+a reworded prompt that dropped "Read src/lib.rs". With the historical prompt restored it passes in
+92 s. A regression task must reuse its prompt verbatim, because small models are acutely sensitive
+to whether the prompt names the file to read. §9's "a benchmark measures the harness too", landing
+on task one.
+
+**Standing limits.** Six tasks is a smoke suite, not a measurement: one flip is 17%, so this
+cannot separate "round 10 helped" from noise and no such claim is made from it. Tier 2 (15–25
+tasks, repeated runs) and Tier 3 (Aider-Polyglot scale, ~37 h per model on this hardware) remain
+open. The instructions that produced this are folded in here and `TODO.md` is deleted, per the
+convention of `fd42f87`.
+
 ## 15. Traceability Matrix
 
 Every row ships and is tested.
