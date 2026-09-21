@@ -868,6 +868,7 @@ impl App {
         let outcome = self.tools.exec(self.machine.state(), name, input).await;
         // Every failed call feeds the §6.6 classifiers: a first bad argument
         // or invented name fires a card, a second fires a capsule.
+        self.guard.observe_call(name, input);
         if outcome.status != Status::Ok {
             self.guard.observe_failed_call(name, input);
             let trip = self.guard.observe_tool_error(name, &outcome.content);
@@ -996,6 +997,9 @@ impl App {
         for applied in &report.applied {
             self.guard
                 .observe_edit_success(&applied.path.display().to_string());
+        }
+        if !report.applied.is_empty() {
+            self.guard.note_progress();
         }
         for failed in &report.failed {
             let trip = self.guard.observe_edit_failure(&failed.path);
@@ -1208,6 +1212,9 @@ impl App {
     fn fire(&mut self, event: PhaseEvent) {
         match self.machine.fire(event) {
             Ok(Some(transition)) => {
+                // A phase change is progress: repetition before it says
+                // nothing about repetition after it.
+                self.guard.note_progress();
                 self.journal(Event::StateChange {
                     from: transition.from,
                     to: transition.to,

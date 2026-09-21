@@ -942,3 +942,54 @@ fn a_call_that_keeps_failing_identically_is_refused_not_rerun() {
         "a new request starts with a clean slate"
     );
 }
+
+/// Round 11, from the §14.2 benchmark: a 7B made **13 identical,
+/// successful** `map_drill` calls — same window, same content, thirteen
+/// times — and was ended only by the turn cap.
+///
+/// Round 10's failure bar counts only failures, so it never engaged, and the
+/// stagnation capsule is advice with no teeth outside `Editing`, where that
+/// run never got. The round-10 lesson holds through the other door:
+/// repetition *without progress* is a loop whether or not the call succeeds.
+///
+/// "Progress" is the discriminator, because re-reading a file after editing
+/// it is ordinary and must never be barred.
+#[test]
+fn identical_calls_without_progress_are_barred_even_when_they_succeed() {
+    use rusta_core::LoopGuard;
+    use serde_json::json;
+
+    let mut guard = LoopGuard::new();
+    let drill = json!({"path": "src/eval.rs", "from": 22, "to": 32});
+
+    // Reading the same window a few times is ordinary exploration —
+    // REPEAT_BAR allows four, one more than the failure bar.
+    for attempt in 1..=4 {
+        assert!(
+            !guard.is_barred("map_drill", &drill),
+            "attempt {attempt} is still exploration"
+        );
+        guard.observe_call("map_drill", &drill);
+    }
+    // The fifth is a loop.
+    assert!(
+        guard.is_barred("map_drill", &drill),
+        "identical calls with nothing changing must stop"
+    );
+
+    // Progress clears it: after an edit lands, re-reading the same window is
+    // a legitimate check, not a loop.
+    guard.note_progress();
+    assert!(
+        !guard.is_barred("map_drill", &drill),
+        "an edit resets the budget — re-reading after a change is ordinary"
+    );
+
+    // Varying the window is exploration, not repetition.
+    let mut guard = LoopGuard::new();
+    for to in 30..40 {
+        let call = json!({"path": "src/eval.rs", "from": 22, "to": to});
+        assert!(!guard.is_barred("map_drill", &call), "to={to}");
+        guard.observe_call("map_drill", &call);
+    }
+}

@@ -302,3 +302,74 @@ async fn persistent_backend_failure_degrades_to_a_failed_report() {
     let text = rusta_dispatch::labeled(&reports);
     assert!(text.contains("SUB-CODER \"research\" REPORT:\nRESEARCH FAILED:"));
 }
+
+/// Round 11, from the §14.2 benchmark: Qwen3-Coder solved `06_cross_file`
+/// and could not express the fix. It emitted
+///
+/// ```text
+/// {"name": "edit", "input": {"path": "src/tax.rs", "content": "! Sales tax.
+/// <literal newline>
+/// pub fn tax_cents(...
+/// ```
+///
+/// — raw newlines inside a JSON string value, which `serde_json` rejects
+/// with `control character (\u0000-\u001F) found while parsing a string`
+/// before any other problem in the call can be diagnosed. Six attempts, zero
+/// edits, and a closing message reading "I couldn't complete the edit due to
+/// interface limitations".
+///
+/// §6.1 calls this parser forgiving. It did not forgive the single most
+/// likely way a small model malforms a call that carries code: writing the
+/// code literally instead of escaping it. That is a scaffold failure, not a
+/// capability failure, and it cost a task the model had already solved.
+#[test]
+fn raw_newlines_inside_a_json_string_are_forgiven() {
+    use rusta_dispatch::parse_tool_calls;
+
+    // The exact shape from the benchmark run.
+    let block = "```tool\n{\"name\": \"edit\", \"input\": {\"path\": \"src/tax.rs\", \
+                 \"search\": \"pub fn tax_cents(c: u64) -> u64 {\n    c * 825 / 1_000\n}\", \
+                 \"replace\": \"pub fn tax_cents(c: u64) -> u64 {\n    c * 825 / 10_000\n}\"}}\n```";
+    let parsed = parse_tool_calls(block);
+    assert_eq!(
+        parsed.calls.len(),
+        1,
+        "a call carrying literal newlines must still parse: {:?}",
+        parsed.notes
+    );
+    let call = &parsed.calls[0];
+    assert_eq!(call.name, "edit");
+    assert_eq!(
+        call.input["search"], "pub fn tax_cents(c: u64) -> u64 {\n    c * 825 / 1_000\n}",
+        "the newlines must survive as newlines, not as the text \\n"
+    );
+    assert!(
+        parsed.notes.iter().any(|note| note.contains("escaped")),
+        "and the model is told what it did: {:?}",
+        parsed.notes
+    );
+
+    // Tabs and carriage returns are the same class.
+    let tabbed = "```tool\n{\"name\": \"write\", \"input\": {\"path\": \"a.rs\", \
+                  \"content\": \"fn a() {\r\n\tb();\r\n}\"}}\n```";
+    assert_eq!(parse_tool_calls(tabbed).calls.len(), 1, "tabs and CR too");
+
+    // Valid JSON is untouched — the repair only runs after a parse failure,
+    // and an escaped \n must stay a newline, not become a literal backslash-n.
+    let valid = "```tool\n{\"name\": \"write\", \"input\": {\"path\": \"a.rs\", \
+                 \"content\": \"line1\\nline2\"}}\n```";
+    let ok = parse_tool_calls(valid);
+    assert_eq!(ok.calls.len(), 1);
+    assert_eq!(ok.calls[0].input["content"], "line1\nline2");
+    assert!(
+        ok.notes.is_empty(),
+        "valid JSON needs no note: {:?}",
+        ok.notes
+    );
+
+    // Genuinely unparseable input still fails, with the JSON advice.
+    let junk = "```tool\nthis is not json at all\n```";
+    let bad = parse_tool_calls(junk);
+    assert!(bad.calls.is_empty());
+    assert!(bad.notes.iter().any(|n| n.contains("must be JSON")));
+}

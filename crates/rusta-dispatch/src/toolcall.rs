@@ -83,10 +83,75 @@ fn parse_block(body: &str, out: &mut ToolCalls) {
             }
         }
         Ok(value) => parse_call(value, out),
-        Err(err) => out.notes.push(format!(
-            "malformed tool block ({err}): the fence body must be JSON like {{\"name\": \"read\", \"input\": {{\"path\": \"src/main.rs\"}}}}."
-        )),
+        Err(err) => {
+            // §6.1 forgiveness. A model carrying code through a JSON call
+            // writes the code *literally* — raw newlines inside the string
+            // value — which `serde_json` rejects before anything else in the
+            // call can be diagnosed. Measured in the §14.2 benchmark: a 30B
+            // that had solved the task emitted six such calls and closed
+            // with "I couldn't complete the edit due to interface
+            // limitations". Escaping and re-parsing recovers the call the
+            // model meant.
+            if let Some(escaped) = escape_control_chars_in_strings(trimmed)
+                && let Ok(value) = serde_json::from_str::<Value>(&escaped)
+            {
+                out.notes.push(
+                    "the tool call contained literal newlines inside a JSON string; they were \
+                     escaped for you. Write \\n (or use a SEARCH/REPLACE block) for multi-line \
+                     code."
+                        .to_owned(),
+                );
+                match value {
+                    Value::Array(items) => {
+                        for item in items {
+                            parse_call(item, out);
+                        }
+                    }
+                    value => parse_call(value, out),
+                }
+                return;
+            }
+            out.notes.push(format!(
+                "malformed tool block ({err}): the fence body must be JSON like {{\"name\": \"read\", \"input\": {{\"path\": \"src/main.rs\"}}}}."
+            ));
+        }
     }
+}
+
+/// Escapes raw control characters that appear *inside* JSON string literals,
+/// returning `None` when there were none to escape.
+///
+/// Only ever called after a parse has already failed, so it cannot change
+/// the meaning of valid JSON. String state is tracked properly — an escaped
+/// `\"` does not end a string — so text outside strings is passed through
+/// untouched and a genuinely unparseable body still fails with the JSON
+/// advice.
+fn escape_control_chars_in_strings(body: &str) -> Option<String> {
+    let mut out = String::with_capacity(body.len() + 16);
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut changed = false;
+    for ch in body.chars() {
+        if in_string && !escaped && ch.is_control() {
+            match ch {
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                other => out.push_str(&format!("\\u{:04x}", other as u32)),
+            }
+            changed = true;
+            continue;
+        }
+        if escaped {
+            escaped = false;
+        } else if ch == '\\' && in_string {
+            escaped = true;
+        } else if ch == '"' {
+            in_string = !in_string;
+        }
+        out.push(ch);
+    }
+    changed.then_some(out)
 }
 
 /// Extract `name`/`input` from one JSON value.

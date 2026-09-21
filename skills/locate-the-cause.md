@@ -1,7 +1,7 @@
 ---
 name: locate-the-cause
 type: recovery
-triggers: [test_failure, patch_target_not_found]
+triggers: [test_failure, patch_target_not_found, failing, test]
 priority: 9
 token_cost: 85
 user-invocable: false

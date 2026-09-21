@@ -966,6 +966,14 @@ pub struct LoopGuard {
     patch_failures: std::collections::BTreeMap<String, u32>,
     /// Tool calls rejected for malformed arguments, this task (§6.6).
     bad_args: u32,
+    /// Identical calls made since anything last changed (§6.6).
+    ///
+    /// Distinct from `failed_calls`: a call that *succeeds* identically over
+    /// and over is also a loop. A 7B made the same successful `map_drill`
+    /// thirteen times in the §14.2 benchmark and was stopped only by the
+    /// turn cap. Cleared by [`LoopGuard::note_progress`], because re-reading
+    /// a file after editing it is ordinary and must never be barred.
+    repeats_since_progress: std::collections::BTreeMap<String, u32>,
     /// Fingerprints of calls that have failed, and how often (§6.6).
     ///
     /// Advice is not a control. A 7B spent a whole turn budget re-issuing
@@ -1006,6 +1014,7 @@ impl LoopGuard {
             patch_failures: std::collections::BTreeMap::new(),
             bad_args: 0,
             failed_calls: std::collections::BTreeMap::new(),
+            repeats_since_progress: std::collections::BTreeMap::new(),
             wrong_paths: 0,
             active: Vec::new(),
             turn: 0,
@@ -1085,12 +1094,38 @@ impl LoopGuard {
     /// before the door closes. A bar at one would punish a typo.
     const FAILURE_BAR: u32 = 3;
 
-    /// Whether this exact call has already failed three times and must not
-    /// be executed again this task (§6.6).
+    /// How many identical calls are allowed between two pieces of progress.
+    ///
+    /// Four, one more than the failure bar: a call that keeps *working* is
+    /// weaker evidence of a loop than one that keeps failing, and a model
+    /// legitimately re-reads while composing an edit.
+    const REPEAT_BAR: u32 = 4;
+
+    /// Records that a call was made, whatever its outcome (§6.6).
+    pub fn observe_call(&mut self, tool: &str, input: &Value) {
+        *self
+            .repeats_since_progress
+            .entry(fingerprint(tool, input))
+            .or_insert(0) += 1;
+    }
+
+    /// Something changed — an edit landed, or the phase moved. Repetition
+    /// before this point says nothing about repetition after it.
+    pub fn note_progress(&mut self) {
+        self.repeats_since_progress.clear();
+    }
+
+    /// Whether this exact call has already failed three times, or repeated
+    /// without progress, and must not be executed again this task (§6.6).
     pub fn is_barred(&self, tool: &str, input: &Value) -> bool {
+        let key = fingerprint(tool, input);
         self.failed_calls
-            .get(&fingerprint(tool, input))
+            .get(&key)
             .is_some_and(|misses| *misses >= Self::FAILURE_BAR)
+            || self
+                .repeats_since_progress
+                .get(&key)
+                .is_some_and(|repeats| *repeats >= Self::REPEAT_BAR)
     }
 
     /// Records that this exact call failed. Only failures count: a call that
@@ -1315,6 +1350,7 @@ impl LoopGuard {
         self.patch_failures.clear();
         self.bad_args = 0;
         self.failed_calls.clear();
+        self.repeats_since_progress.clear();
         self.wrong_paths = 0;
         self.active.clear();
     }
@@ -1514,7 +1550,16 @@ mod tests {
             ("bad_tool_args", &["tool-arguments"]),
             ("past_eof", &["tool-arguments"]),
             ("test_failure", &["locate-the-cause", "verify-focus"]),
-            ("fix the failing test", &["task-decomposition"]),
+            // Round 11: `locate-the-cause` must be reachable from the
+            // *request*, not only from a `test_failure` cue. In the §14.2
+            // benchmark a 7B closed a task proposing to "update the test to
+            // reflect the correct tax calculation" — exactly what that card
+            // prevents — and the card never fired, because the model never
+            // ran the tests and so never produced the cue.
+            (
+                "fix the failing test",
+                &["locate-the-cause", "task-decomposition"],
+            ),
             ("refactor this module", &["task-decomposition"]),
             // Word boundaries still hold for the new keyword triggers.
             ("prefix suffix", &[]),
