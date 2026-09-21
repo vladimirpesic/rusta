@@ -327,6 +327,21 @@ fn describe_offered_edit(blocks: &[EditBlock]) -> String {
     )
 }
 
+/// Most actionable items executed from a single completion (§6.1).
+///
+/// §6.1 caps *turns*; nothing capped the items within one. Measured in the
+/// §14.2 benchmark: a 30B issued 53 and 56 tool calls in two completions,
+/// walking past the end of a 47-line file in 50-line strides — every call
+/// distinct, so the round-10/11 per-fingerprint bars could not see it, and
+/// every card and capsule powerless because none is assembled until the next
+/// prompt. `StreamGuard` bounds runaway text; this bounds runaway actions,
+/// which cost real I/O and context rather than tokens.
+///
+/// Twelve is generous for legitimate interleaving — a handful of reads, a
+/// grep, an edit batch, in document order — and far below what a degenerate
+/// completion produces.
+const MAX_ITEMS_PER_COMPLETION: usize = 12;
+
 /// §6.4 plan detection: a completion with no actionable items counts as a
 /// drafted change-plan when it mentions a plan and carries a numbered list
 /// (the core prompt's format). Conservative by construction — plain answers
@@ -476,6 +491,20 @@ impl App {
                 return; // plain answer: control back to the user
             }
 
+            if parsed.items.len() > MAX_ITEMS_PER_COMPLETION {
+                let dropped = parsed.items.len() - MAX_ITEMS_PER_COMPLETION;
+                parsed.items.truncate(MAX_ITEMS_PER_COMPLETION);
+                self.reporter.line(&format!(
+                    "! too many tool calls in one reply — {dropped} dropped after \
+                     {MAX_ITEMS_PER_COMPLETION}"
+                ));
+                parsed.notes.push(format!(
+                    "too many tool calls in one reply: the first {MAX_ITEMS_PER_COMPLETION} ran \
+                     and {dropped} were dropped. Work in smaller steps — read the results of \
+                     these before asking for more."
+                ));
+            }
+
             let undo_before = self.tools.editor().undo_stack().len();
             // §6.4: "at most one pending `ask` per turn". The bound lives
             // here because turns are this loop's unit — `ask.rs` said so and
@@ -488,6 +517,10 @@ impl App {
                 match item {
                     Item::Blocks(blocks) => self.apply_blocks(blocks),
                     Item::Call { name, input } if name == Tool::Ask.as_str() => {
+                        // This arm never reached `exec_call`, so the §6.6
+                        // repeat counter never saw an `ask`. Sixteen
+                        // identical ones went uncounted in the benchmark.
+                        self.guard.observe_call(&name, &input);
                         if asked {
                             self.push_observation(
                                 &name,

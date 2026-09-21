@@ -957,3 +957,61 @@ async fn a_repeatedly_failing_call_stops_being_executed() {
         "a barred call must not have to run out the turn budget: {text}"
     );
 }
+
+/// Round 11, from the §14.2 benchmark: a 30B issued **53 and 56 tool calls
+/// in two completions** — 109 in a task that had passed with 5 — walking past
+/// the end of a 47-line file in 50-line strides (`50-100`, `100-150`, …).
+///
+/// Nothing could stop it. §6.1 caps *turns* at 16 and places no bound on
+/// items within one turn, and every mitigation this project has is per-turn:
+/// cards and capsules are assembled into the *next* prompt, and the round-10
+/// and round-11 bars are per-fingerprint, which distinct strides evade by
+/// construction. `StreamGuard` bounds runaway *text*; this is the same
+/// failure in *actions*, and it costs real I/O and context per call rather
+/// than tokens.
+#[tokio::test]
+async fn a_completion_cannot_execute_an_unbounded_number_of_calls() {
+    if !git_present() {
+        eprintln!("skipping: git not available");
+        return;
+    }
+    let dir = init_repo();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    std::fs::write(root.join("src/lib.rs"), "fn one() {}\n").expect("write");
+
+    // One completion carrying 40 distinct calls, as the real model did.
+    let mock = Mock::start(|hit| match hit {
+        1 => (1..=40)
+            .map(|i| {
+                format!(
+                    "```tool\n{{\"name\": \"read\", \"input\": {{\"path\": \"src/lib.rs\", \
+                     \"from\": {}, \"to\": {}}}}}\n```\n",
+                    i * 10,
+                    i * 10 + 5
+                )
+            })
+            .collect::<String>(),
+        _ => "Stopping.".to_owned(),
+    });
+    let capture = Capture::default();
+    let mut app = app_for(root, &mock, 4, &capture, Mode::Repl);
+
+    app.handle_line("look at the file").await;
+
+    let executed = app
+        .session
+        .events()
+        .iter()
+        .filter(|event| matches!(event, rusta_core::Event::ToolCall { .. }))
+        .count();
+    assert!(
+        executed <= 20,
+        "a single completion must not execute 40 calls, executed {executed}"
+    );
+    assert!(
+        capture.text().contains("too many tool calls"),
+        "and the model must be told why the rest were dropped: {}",
+        capture.text()
+    );
+}
