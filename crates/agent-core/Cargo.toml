@@ -1,0 +1,45 @@
+[package]
+name = "agent-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+lm-bridge = { path = "../lm-bridge" }
+async-trait.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+toml.workspace = true
+jsonschema.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+globset.workspace = true
+ignore.workspace = true
+regex.workspace = true
+ulid.workspace = true
+reqwest.workspace = true
+url.workspace = true
+base64.workspace = true
+chrono.workspace = true
+image.workspace = true
+fastrand.workspace = true
+dirs.workspace = true
+strsim.workspace = true
+dom_smoothie.workspace = true
+dom_query.workspace = true
+
+[dev-dependencies]
+tokio-test.workspace = true
+assert_fs.workspace = true
+tempfile.workspace = true
+lm-bridge = { path = "../lm-bridge" }
+tokio-util.workspace = true
+tracing-subscriber.workspace = true
+wiremock.workspace = true

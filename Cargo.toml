@@ -1,0 +1,90 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["Rusta Team"]
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.44", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+futures = "0.3"
+tokio-stream = "0.1"
+
+# HTTP / SSE
+# reqwest 0.13's `rustls` feature brings aws-lc (C, a hazard for the
+# glibc-2.17 zigbuild) and verifies against the platform store. Rusta keeps
+# what it had: ring for crypto and the bundled Mozilla roots, configured once
+# in `lm_bridge::http`, which every client is built through.
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "charset", "http2", "socks", "rustls-no-provider", "multipart", "form"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1"
+eventsource-stream = "0.2"
+
+# Serialization
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = { version = "1", features = ["raw_value"] }
+serde_yaml = "0.9"
+toml = "1"
+toml_edit = "0.25"
+
+# Validation / schema
+# No default features: they fetch `$ref`s over HTTP with a blocking client —
+# which panics inside the async runtime that validates tool arguments — read
+# `file://` refs, and bring aws-lc. A tool schema from an MCP server is not
+# allowed to make Rusta fetch URLs or read files; an unresolvable `$ref` now
+# fails validation with `InvalidSchema` instead.
+jsonschema = { version = "0.58", default-features = false, features = ["idna"] }
+
+# Error / logging
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env", "string"] }
+clap_complete = "4.5"
+rpassword = "7"
+
+# Utilities
+regex = "1"
+sha2 = "0.11"
+# Only what `export.rs` writes: a Deflate-compressed archive. The default
+# feature set also pulls in lzma, bzip2, zstd, deflate64 and AES — four native
+# C dependencies for formats Rusta never emits. `lzma-sys` in particular links
+# the *host* liblzma, which breaks a cargo-zigbuild release against an older
+# glibc: the system library references pthread symbols that the target glibc
+# does not have.
+zip = { version = "9", default-features = false, features = ["deflate"] }
+bytes = "1"
+base64 = "0.23"
+chrono = { version = "0.4", features = ["serde"] }
+fastrand = "2"
+rmcp = { version = "3.5", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+dirs = "7"
+ulid = "3"
+url = "2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+globset = "0.4"
+strsim = "0.11"
+# `fetch` gives a web page's readable content, found with Mozilla Readability:
+# dom_smoothie is its Rust port, and dom_query the HTML tree under it, for the
+# page's plain text where Readability finds none.
+dom_smoothie = "0.18"
+dom_query = "0.28"
+ignore = "0.4"
+async-trait = "0.1"
+
+# Testing
+tempfile = "3"
+tokio-test = "0.4"
+wiremock = "0.6"
+assert_fs = "1"
+assert_cmd = "2"
+predicates = "3"

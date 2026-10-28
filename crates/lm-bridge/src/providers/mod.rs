@@ -1,0 +1,21 @@
+pub mod catalog_cache;
+pub mod chat_completions_stream;
+pub mod deepseek;
+pub mod deepseek_catalog;
+pub mod deepseek_tools;
+pub mod glm;
+pub mod kimi;
+pub mod kimi_catalog;
+pub mod kimi_files;
+pub mod kimi_schema;
+pub mod kimi_services;
+pub mod kimi_switch_rules;
+pub mod openai_common;
+pub mod openai_compat;
+pub mod reasoning_key;
+pub mod tool_call_id;
+
+pub use deepseek::DeepseekChatProvider;
+pub use glm::GlmChatProvider;
+pub use kimi::KimiChatProvider;
+pub use openai_compat::OpenAiCompatProvider;
