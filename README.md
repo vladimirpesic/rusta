@@ -29,8 +29,9 @@ A lean, native Rust coding agent for the terminal, built for **Kimi**,
 Download the archive for your platform from the
 [latest release](https://github.com/vladimirpesic/rusta/releases/latest): Linux
 x64 and ARM64 (glibc 2.17 or newer), macOS on Apple Silicon and Intel (macOS 11
-or newer), Windows x64. Each has a `.sha256` beside it. The archive holds one
-file, `rusta` (`rusta.exe` on Windows); put it on your `PATH`:
+or newer), Windows x64. Each has a `.sha256` beside it. The archive holds a
+folder, `rusta-<version>-<target>/`, with the one file `rusta` (`rusta.exe` on
+Windows) in it; put that on your `PATH`:
 
 ```bash
 sha256sum -c rusta-1.0.0-x86_64-unknown-linux-gnu.tar.gz.sha256   # macOS: shasum -a 256 -c
