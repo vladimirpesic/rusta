@@ -5,7 +5,7 @@ A practical, provider-agnostic guide to wiring any AI coding agent or assistant
 harness) to the **Devscriptor MCP server** so that all **75 tools** are used
 correctly, efficiently, and without hallucination.
 
-It describes Devscriptor 1.4.0 and newer, which keeps its index current by
+It describes Devscriptor 1.0.0 and newer, which keeps its index current by
 itself and gives LSP results a quotable `cite`.
 
 ---

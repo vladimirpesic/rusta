@@ -8,7 +8,7 @@ use clap_complete::Shell;
 #[derive(Parser, Debug, Clone, Default)]
 #[command(name = "rusta")]
 #[command(version)]
-#[command(about = "Lean Rust coding agent for Kimi and GLM models")]
+#[command(about = "Lean Rust coding agent for Kimi, GLM and DeepSeek models")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,

@@ -133,7 +133,7 @@ that is done.
 and analysis over a persistent index of the codebase, LSP-backed navigation, and
 a durable Context Graph. Rusta detects an installed Devscriptor and registers it
 as the `devscriptor` server with no configuration. Its guidance for the model
-needs **Devscriptor 1.4.0 or newer**, which keeps its index current by itself:
+needs **Devscriptor 1.0.0 or newer**, which keeps its index current by itself:
 it watches the workspace and re-checks the files behind every answer, and its
 LSP results carry a 1-based `cite` (`path:line:col`) for the model to quote.
 
