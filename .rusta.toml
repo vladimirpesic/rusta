@@ -1,0 +1,96 @@
+# Rusta project configuration.
+#
+# Provider/model/API keys are intentionally left to the environment (.env) and
+# CLI flags.
+
+# ---------------------------------------------------------------------------
+# Devscriptor MCP server (74 tools: 31 core incl. 5 Context Graph, 38 LSP, 5 arch)
+# ---------------------------------------------------------------------------
+#
+# No configuration needed: Rusta discovers an installed Devscriptor automatically
+# and registers it as the `devscriptor` MCP server with the timeouts it needs.
+# Discovery order:
+#
+#   1. $DEVSCRIPTOR_BIN            — an explicit path to the `devscriptor` executable
+#   2. $PATH
+#   3. the platform's install directory:
+#        Linux / macOS : /usr/local/bin, /usr/bin, /opt/homebrew/bin,
+#                        ~/.local/bin, ~/bin, ~/.devscriptor/bin
+#        Windows       : %LOCALAPPDATA%\Programs\devscriptor, %ProgramFiles%\devscriptor,
+#                        %USERPROFILE%\.devscriptor\bin
+#
+# Devscriptor ships a single executable, started with `devscriptor mcp`. Rusta
+# looks for that one name; there is no separate MCP entry point to find.
+#
+# Run `rusta doctor` to confirm the server connects.
+#
+# To override — a custom build, a non-standard location, or to opt out entirely —
+# declare the server yourself; an explicit entry always wins:
+#
+#   [[mcp_servers]]
+#   name = "devscriptor"
+#   command = "/opt/devscriptor/devscriptor"
+#   args = ["mcp"]
+#   startup_timeout_ms = 60000
+#   tool_timeout_ms = 180000
+#   # disabled = true   # opt out of Devscriptor entirely
+
+# ---------------------------------------------------------------------------
+# Permission policy
+# ---------------------------------------------------------------------------
+#
+# Rusta infers an approval rule from a tool's name/description and defaults
+# unknown MCP tools to the user-gated `write_file` rule. Without these rules the
+# agent would prompt on nearly every Devscriptor call, which defeats the point
+# of an indexed code-intelligence server.
+#
+# Rules are evaluated in order and the FIRST match wins, so the mutating tools
+# below must come before the catch-all `allow`.
+#
+# Note: path sandboxing in the MCP tool adapter is enforced independently of
+# these rules, so `allow` never lets a tool escape `allowed_paths`/cwd.
+
+# -- Tools that install software, spawn processes, or rewrite the workspace ---
+
+[[permissions.rules]]
+name = "devscriptor-lsp-setup"
+tool = "mcp__devscriptor__lsp_arch_setup"   # may download/install language servers
+action = "prompt"
+
+[[permissions.rules]]
+name = "devscriptor-rename-symbol"
+tool = "mcp__devscriptor__rename_symbol"    # workspace-wide edit
+action = "prompt"
+
+[[permissions.rules]]
+name = "devscriptor-prune-context"
+tool = "mcp__devscriptor__prune_context"    # archives long-term memory notes
+action = "prompt"
+
+[[permissions.rules]]
+name = "devscriptor-start-server"
+tool = "mcp__devscriptor__start_server"     # spawns a language-server process
+action = "prompt"
+
+[[permissions.rules]]
+name = "devscriptor-stop-server"
+tool = "mcp__devscriptor__stop_server"
+action = "prompt"
+
+[[permissions.rules]]
+name = "devscriptor-restart-server"
+tool = "mcp__devscriptor__restart_server"
+action = "prompt"
+
+# -- Everything else Devscriptor exposes is a query or writes only to its own
+# -- SQLite graph (scan/analyze/search/navigate/context notes/watcher).
+#
+# An `allow` rule in a project config applies only once the folder is trusted:
+# run `rusta trust` here once (see "Workspace trust" in the README). Until
+# then these calls are asked about, like any other.
+
+[[permissions.rules]]
+name = "devscriptor-read-and-index"
+tool = "mcp__devscriptor__*"
+action = "allow"
+scope = "session"

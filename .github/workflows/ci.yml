@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux x64, os: ubuntu-latest }
+          - { name: Linux ARM64, os: ubuntu-24.04-arm }
+          - { name: macOS Apple Silicon, os: macos-latest }
+          - { name: macOS Intel, os: macos-26-intel }
+          - { name: Windows x64, os: windows-latest }
+    steps:
+      # Windows runners check text files out with CRLF line endings; the tests
+      # compare files byte for byte.
+      - name: Keep line endings as committed
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        id: clippy
+        shell: bash
+        run: |
+          {
+            cargo clippy --workspace --all-targets --locked -- -D warnings
+            cargo clippy --workspace --all-targets --locked --features rusta-cli/tui -- -D warnings
+          } 2>&1 | tee "$RUNNER_TEMP/clippy.log"
+      - name: Tests
+        id: test
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          {
+            cargo test --workspace --locked --no-fail-fast
+            cargo test --workspace --locked --no-fail-fast --features rusta-cli/tui
+          } 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Report failures
+        if: failure()
+        shell: bash
+        env:
+          CLIPPY: ${{ steps.clippy.outcome }}
+          TEST: ${{ steps.test.outcome }}
+        run: |
+          py=$(command -v python3 || command -v python)
+          report() { "$py" .github/scripts/annotate-failures.py "${{ matrix.name }} $1" "$RUNNER_TEMP/$1.log"; }
+          if [ "$CLIPPY" = failure ]; then report clippy; fi
+          if [ "$TEST" = failure ]; then report test; fi
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # A known vulnerability in a dependency fails CI.
+      - run: cargo audit

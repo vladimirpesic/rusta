@@ -1,0 +1,32 @@
+[package]
+name = "lm-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+eventsource-stream.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-stream.workspace = true
+bytes.workspace = true
+url.workspace = true
+sha2.workspace = true
+base64.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+tokio-test.workspace = true
+wiremock.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,8 @@
+/target/
+/dist/
+/.claude/
+/.mypy_cache/
+.env
+devscriptor.db
+devscriptor.db-shm
+devscriptor.db-wal
