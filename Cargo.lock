@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "anyhow",
  "assert_fs",
@@ -1897,7 +1897,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "lm-bridge"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1978,7 +1978,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-client"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "agent-core",
  "anyhow",
@@ -3038,7 +3038,7 @@ dependencies = [
 
 [[package]]
 name = "rusta-cli"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "agent-core",
  "anyhow",

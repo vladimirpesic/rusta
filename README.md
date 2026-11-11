@@ -35,9 +35,9 @@ folder, `rusta-<version>-<target>/`, with `rusta` (`rusta.exe` on Windows) and
 the `LICENSE` in it; put `rusta` on your `PATH`:
 
 ```bash
-sha256sum -c rusta-1.0.0-x86_64-unknown-linux-gnu.tar.gz.sha256   # macOS: shasum -a 256 -c
-tar -xzf rusta-1.0.0-x86_64-unknown-linux-gnu.tar.gz
-sudo install rusta-1.0.0-x86_64-unknown-linux-gnu/rusta /usr/local/bin/
+sha256sum -c rusta-1.0.1-x86_64-unknown-linux-gnu.tar.gz.sha256   # macOS: shasum -a 256 -c
+tar -xzf rusta-1.0.1-x86_64-unknown-linux-gnu.tar.gz
+sudo install rusta-1.0.1-x86_64-unknown-linux-gnu/rusta /usr/local/bin/
 ```
 
 The macOS binaries are not signed, so the first launch may need
