@@ -87,6 +87,7 @@ pub fn inject_zai_mcp_servers(
             disabled: false,
             oauth: None,
             deferred: hosted.deferred.then_some(true),
+            preload: None,
             // Searching the web, reading a page and reading a public
             // repository change nothing, but Z.AI does not declare it: the
             // read-only sub-agents would go without them.
@@ -236,6 +237,7 @@ mod tests {
             disabled: false,
             oauth: None,
             deferred: None,
+            preload: None,
             read_only: false,
             env: Default::default(),
             cwd: None,

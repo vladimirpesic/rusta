@@ -220,6 +220,10 @@ url = "http://localhost:8000/mcp"
 # select_tools (true). Unset: the [mcp] default_deferred applies, and when
 # that is unset too, deferred only when the server has more than 10.
 # deferred = false
+# Tools of a deferred server that stay in the tool table all the same, as the
+# server names them; its other tools load on demand. A Devscriptor entry
+# without one gets its twelve most-used tools (see docs/mcp.md).
+# preload = ["search", "read_page"]
 # Tools that only read, though the server does not declare it (MCP's
 # readOnlyHint): taken as declared read-only, so the explore and plan
 # sub-agents get them and they run without approval. A tool that declares

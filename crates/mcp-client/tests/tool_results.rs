@@ -33,6 +33,7 @@ fn fixture_config() -> McpServerConfig {
         disabled: false,
         oauth: None,
         deferred: None,
+        preload: None,
         read_only: false,
         cwd: None,
     }

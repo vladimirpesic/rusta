@@ -225,6 +225,15 @@ set to the workspace's `devscriptor.db` — the index `devscriptor scan` writes 
 an existing one further up the same repository; `$DEVSCRIPTOR_DB` overrides it.
 So the agent reads the index you built, not the server's shared default.
 
+Rusta preloads Devscriptor's twelve most-used tools: `semantic_search`,
+`search_functions`, `search_classes`, `get_entity_details`, `get_relationships`,
+`get_file_context`, `get_definition`, `get_references`, `get_statistics`,
+`lsp_arch_detect`, `search_context` and `add_context_note`. The model holds them
+from its first request, and loads the other 63 with `select_tools`
+([§6](#6-step-5--handling-75-tools-without-hallucination)). Its system prompt
+carries the workflow of [§7](#7-step-6--the-system-prompt-copy-paste) and says which
+tools are already held.
+
 Devscriptor runs one process per workspace. The injected `devscriptor mcp`
 relays to the workspace's `devscriptor serve`, one per workspace and database, and
 starts it when none runs; it stops 10 minutes after its last session. The Rusta
@@ -245,6 +254,8 @@ command = "/opt/devscriptor/devscriptor"
 args = ["mcp"]
 startup_timeout_ms = 60000
 tool_timeout_ms = 180000
+# Unset, the twelve tools above are preloaded; [] loads every tool on demand.
+# preload = ["semantic_search", "search_functions", "get_definition"]
 ```
 
 ### Generic / custom harness
@@ -294,13 +305,24 @@ get_analysis_progress(job_id, wait=true, timeout=30)   # poll until complete
 ## 6. Step 5 — Handling 75 tools without hallucination
 
 Injecting 75 full JSON schemas into every request is the main cause of
-wrong-tool selection, invented tool names, and context bloat. Pick one of these,
-in order of preference:
+wrong-tool selection, invented tool names, and context bloat. Hiding all of them
+behind a loading step fails the other way: a model reaches for the tools it
+already holds. Over 24 coding tasks with three models and every Devscriptor tool
+behind a loading step, the model loaded none in 19, and searched with `grep` and
+read files instead, though its system prompt described Devscriptor's workflow.
+Pick one of these, in order of preference:
 
-**A. Progressive tool disclosure (best).** Advertise only tool *names +
-one-line descriptions*, and let the model load full definitions on demand via a
-`select_tools`-style primitive. This is what Rusta does: MCP tools register as
-*dynamic*, the model receives
+**A. Preload the main tools, disclose the rest (best).** Keep the tools that find
+and follow code in the tool table from the first request — `semantic_search`,
+`search_functions`, `search_classes`, `get_entity_details`,
+`get_relationships`, `get_file_context`, `get_definition`, `get_references` —
+with `get_statistics` and `lsp_arch_detect` for the index and the language
+servers, and `search_context` and `add_context_note` for the Context Graph.
+Together they are about a sixth of the 75 schemas' size. Advertise the others
+by *name and one-line description*, and let the model load their full
+definitions on demand via a `select_tools`-style primitive. This is what Rusta
+does: the twelve tools above register as regular tools, the rest as *dynamic*,
+and the model receives
 
 ```bash
 <tools_added>
@@ -319,11 +341,18 @@ this reliable:
   invented names come from.
 - **Group by server** (`## devscriptor`) so large servers stay navigable.
 
-**B. Tool filtering.** If your client cannot do disclosure, expose a curated
+**B. Disclosure alone.** If your client can only load every tool on demand (a
+tool search), tell the model which tools to load first. The `instructions` of
+Devscriptor 1.0.5 and newer name them, for a client that passes a server's
+instructions to the model, and so does the system prompt in
+[§7](#7-step-6--the-system-prompt-copy-paste). Expect fewer Devscriptor calls than
+with A.
+
+**C. Tool filtering.** If your client cannot do disclosure, expose a curated
 subset per task type — e.g. search + navigation for code Q&A; add the
 Architecture tools only when LSP is needed.
 
-**C. Full exposure.** Only acceptable with a large context window and a model
+**D. Full exposure.** Only acceptable with a large context window and a model
 strong at tool selection. Expect degradation.
 
 Whichever you choose: **validate tool names against the discovered list** and
@@ -343,9 +372,15 @@ client's naming.
 # Devscriptor code intelligence
 
 A Devscriptor MCP server is connected, providing 75 tools over a persistent
-code knowledge graph. Prefer these tools over blind file reading or grepping:
-they are indexed, cheaper, and more precise. Never invent a Devscriptor tool
-name or parameter — use only the tools listed and the parameters in their schema.
+code knowledge graph. Find code with Devscriptor before you reach for `grep`,
+`glob` or file reads: `semantic_search` for a question in words,
+`search_functions` or `search_classes` for a name, `get_file_context` for what a
+file holds. Then read the files and lines its results point to. Follow a symbol
+with `get_definition` and `get_references`, and see what calls what with
+`get_relationships`. These tools are indexed, cheaper and more precise than
+scanning files. If a tool must be loaded before you call it, load these first.
+Never invent a Devscriptor tool name or parameter — use only the tools listed and
+the parameters in their schema.
 
 ## Establish the index first
 `get_statistics` reports whether a codebase has been indexed. If it reports no
@@ -666,22 +701,23 @@ Graph stays empty and the integration is only half of what it can be.
 - [ ] Client follows pagination cursors (or tolerates a single page).
 - [ ] Per-tool timeout ≥ 180 s, startup timeout ≈ 60 s.
 - [ ] Agent waits for tool registration before its first turn.
-- [ ] 75 tools are exposed via progressive disclosure **with descriptions**, not 75 raw schemas.
+- [ ] The main tools of [§6](#6-step-5--handling-75-tools-without-hallucination) are in the tool table from the first request, and the rest are disclosed **with descriptions**, not as 75 raw schemas.
 - [ ] The Devscriptor system-prompt block ([§7](#7-step-6--the-system-prompt-copy-paste)) is installed.
 - [ ] Approval policy distinguishes read-only from mutating tools ([§8](#8-step-7--approval--permission-policy)).
 - [ ] Parameters come from the live schema, not from prose docs ([§10](#10-parameter-reference-and-gotchas)).
 - [ ] The agent searches the Context Graph before, and writes notes after, non-trivial work.
 - [ ] Answers follow the files the agent edits, so later searches do not show the code as it was: Devscriptor does this by itself and names re-checked files in `refreshed_files` / `stale_files`.
 - [ ] A behaviour probe confirms parameters are honoured, not just accepted (e.g. `get_statistics` with an unmatched `path` returns zeros).
-- [ ] Smoke test passes: the model calls `select_tools` (or equivalent), then a real tool, and reports its output.
+- [ ] Smoke test passes: asked where something is done in the code, the model calls `semantic_search` or `search_functions` unprompted, then reads the files it points to; a tool it does not hold it loads with `select_tools` (or equivalent) first.
 
 ---
 
 ## Related documentation
 
-- Devscriptor: `docs/MCP_TOOLS.md` (all 75 tools), `docs/CONTEXT_GRAPH.md`,
-  `docs/LSP_README.md`, `docs/INSTALL.md`.
+- Devscriptor: `docs/mcp.md` (all 75 tools), `docs/context-graph.md`,
+  `docs/lsp.md`, `docs/installation.md`.
 - Rusta's implementation: `crates/mcp-client/` (discovery, arg remap),
   `crates/agent-core/src/tool_disclosure.rs` (announcements),
-  `crates/rusta-cli/src/devscriptor.rs` (system-prompt guidance),
+  `crates/rusta-cli/src/devscriptor.rs` (the preloaded tools and the system-prompt
+  guidance),
   `.rusta.toml` (config + permission policy).

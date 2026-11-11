@@ -244,7 +244,7 @@ A title set with `/title`, or a fork's `fork of …`, is never replaced.
 | Command | Purpose |
 | --- | --- |
 | `rusta init` | Set up a provider, plan, and API key, and save them to the config file |
-| `rusta doctor` | Validate configuration, API keys, MCP servers, and whether Devscriptor was detected. For Kimi, names the host that accepts the key and lists its models. For GLM, checks the models against the Coding Plan and the vision server's environment. For DeepSeek, proves the key with a `GET /models`, lists the account's models and shows its balance. Reports which `.rusta.toml` settings workspace trust left out |
+| `rusta doctor` | Validate configuration, API keys, MCP servers (and any `preload` name a server does not list), and whether Devscriptor was detected. For Kimi, names the host that accepts the key and lists its models. For GLM, checks the models against the Coding Plan and the vision server's environment. For DeepSeek, proves the key with a `GET /models`, lists the account's models and shows its balance. Reports which `.rusta.toml` settings workspace trust left out |
 | `rusta version` | Print version information |
 | `rusta completions <SHELL>` | Emit completions for `bash`, `elvish`, `fish`, `powershell`, `zsh` |
 | `rusta sessions list [--all] [--cwd <DIR>] [--limit <N>] [--json]` | List saved sessions, most recent first: those that ran in the working directory (or `--cwd`), or every one with `--all` |

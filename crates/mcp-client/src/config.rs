@@ -95,13 +95,24 @@ pub struct McpServerConfig {
     pub oauth: Option<McpOAuthConfig>,
 
     /// Whether this server's tools are loadable on demand (`select_tools`)
-    /// rather than always in the tool table. Unset: the global
+    /// rather than always in the tool table, but for those in
+    /// [`preload`](Self::preload). Unset: the global
     /// [`McpDefaults::default_deferred`] applies, and when that is unset too,
     /// deferred only when the server has more than [`DEFER_TOOL_THRESHOLD`]
     /// tools: a small server's tools stay inline, while a large server such
     /// as Devscriptor would crowd the table.
     #[serde(default)]
     pub deferred: Option<bool>,
+
+    /// Tools of a deferred server that sit in the tool table from the start,
+    /// as the server names them (`semantic_search`, not
+    /// `mcp__<server>__semantic_search`); the server's other tools stay
+    /// loadable on demand. A model reaches first for the tools it holds, so a
+    /// server's most-used tools belong here. It changes nothing for a server
+    /// whose tools are not deferred, since those are all in the table. A name
+    /// the server does not list is skipped with a warning.
+    #[serde(default)]
+    pub preload: Option<Vec<String>>,
 
     /// Whether this server's tools only read — they change nothing, here or
     /// elsewhere — though the server does not declare it (MCP's
@@ -158,6 +169,15 @@ impl McpServerConfig {
     pub fn defers_tools(&self, tool_count: usize, default_deferred: Option<bool>) -> bool {
         self.deferred
             .unwrap_or_else(|| default_deferred.unwrap_or(tool_count > DEFER_TOOL_THRESHOLD))
+    }
+
+    /// Whether the tool `name`, as the server names it, is in
+    /// [`preload`](Self::preload).
+    #[must_use]
+    pub fn preloads(&self, name: &str) -> bool {
+        self.preload
+            .as_deref()
+            .is_some_and(|names| names.iter().any(|n| n == name))
     }
 
     /// A tool's annotations as this server's config vouches for them:

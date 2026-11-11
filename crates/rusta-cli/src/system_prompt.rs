@@ -153,8 +153,10 @@ pub fn build(cli: &Cli, config: &Config, profiles: &ProfileRegistry) -> Result<B
         &cli.additional_dirs,
         cli.project_context_budget_tokens,
     );
-    let mcp_guidance = crate::devscriptor::configured_server(&config.mcp_servers)
-        .map(|server| crate::devscriptor::subagent_guidance(&server));
+    let mcp_guidance = crate::devscriptor::configured(&config.mcp_servers).map(|server| {
+        let table = crate::devscriptor::ToolTable::of(server, &config.mcp);
+        crate::devscriptor::subagent_guidance(&server.name, table)
+    });
     let extra: Vec<String> = mcp_guidance.iter().map(|g| g.all.clone()).collect();
     let cwd = std::fs::canonicalize(&cli.cwd).unwrap_or_else(|_| cli.cwd.clone());
     let parts = PromptParts {

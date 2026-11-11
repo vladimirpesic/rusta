@@ -35,6 +35,7 @@ env = { API_TOKEN = "..." }          # only for this server's process
 | `url`, `token` | A server reached over streamable HTTP/SSE, with an optional bearer token |
 | `startup_timeout_ms`, `tool_timeout_ms` | This server's budgets, over the `[mcp]` and `RUSTA_MCP_*` defaults (30 s / 60 s built in) |
 | `deferred` | Load the tools on demand (`true`) or keep them in the tool table (`false`) |
+| `preload` | Tools of a deferred server to keep in the tool table all the same, as the server names them (`["semantic_search"]`); the others load on demand |
 | `read_only` | Treat every tool as read-only, though the server does not declare it |
 | `disabled` | Skip the server |
 | `oauth` | Sign in with OAuth (below) |
@@ -61,6 +62,11 @@ description, and loaded with `select_tools` when the model needs them, which
 keeps the tool table — and with it the prompt cache's prefix — small.
 
 - `deferred = true` or `false` on the server entry overrides the size rule.
+- `preload` names the tools of a deferred server that sit in the tool table from
+  the first request; the rest stay deferred. A model reaches first for the tools
+  it holds, and a tool it must load first often goes unused, so a large server's
+  most-used tools belong here. A name the server does not list is skipped, and
+  `rusta doctor` reports it.
 - `default_deferred = true` under `[mcp]` (or `RUSTA_MCP_DEFAULT_DEFERRED`) defers
   every server's tools by default; a server can still opt out with its own
   `deferred = false`, which always wins. A global `false` keeps even large
@@ -155,14 +161,25 @@ spawned **in the session's `--cwd`** and handed an explicit absolute
 workspace rather than to wherever Rusta was launched from. If the workspace has
 no `devscriptor.db`, an existing index further up the same repository is used,
 so a session inside a monorepo package reads the repository-wide index instead
-of creating an empty one. `$DEVSCRIPTOR_DB` overrides the choice. Devscriptor
-has more than ten tools, so they are deferred and loaded with `select_tools`.
-An explicit `[[mcp_servers]]` entry named `devscriptor` always wins over
-auto-detection.
+of creating an empty one. `$DEVSCRIPTOR_DB` overrides the choice. An explicit
+`[[mcp_servers]]` entry named `devscriptor` always wins over auto-detection.
 
-When Devscriptor is connected, the system prompt carries its workflow: index
-first, search and navigate with it, record durable notes in the Context Graph,
-and handle its failures by the errors it actually returns. The guidance comes in
+Devscriptor has 75 tools, so they are deferred, but its twelve most-used ones are
+preloaded: `semantic_search`, `search_functions`, `search_classes`,
+`get_entity_details`, `get_relationships`, `get_file_context`,
+`get_definition`, `get_references`, `get_statistics`, `lsp_arch_detect`,
+`search_context` and `add_context_note`. The model therefore holds what it needs
+to find and follow code, and the Context Graph, from its first request, and
+loads the rest — analysis jobs, the other language-server tools, refactoring —
+with `select_tools`. A model that had to load every Devscriptor tool first
+mostly searched with `grep` and read files instead. The preloaded tools apply to
+an entry you configure yourself too, unless it sets its own `preload`;
+`preload = []` loads every tool on demand.
+
+When Devscriptor is connected, the system prompt carries its workflow: find code
+with it before `grep` or reading files, index first, navigate with it, record
+durable notes in the Context Graph, and handle its failures by the errors it
+actually returns. It tells the model which tools it already holds. The guidance comes in
 a full form and a read-only form, for sub-agents that get only its read-only
 tools. [devscriptor-mcp-guide.md](devscriptor-mcp-guide.md) explains how to get
 the most out of Devscriptor from any MCP-capable agent.

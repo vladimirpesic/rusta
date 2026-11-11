@@ -198,7 +198,9 @@ repeats its caller's exact prefix.
 **Progressive tool disclosure.** A large MCP server would crowd the tool table
 and every request with definitions the model rarely needs. Its tools are
 announced by name and description instead, and loaded with `select_tools` when
-needed.
+needed, except the ones its `preload` keeps in the table. A model reaches for
+the tools it holds, so a server's most-used tools are preloaded: Devscriptor's
+search, navigation and Context Graph tools are there from the first request.
 
 **The user's machine is not the model's to run freely.** Every call passes the
 permission engine; secrets and history-rewriting git commands ask even in

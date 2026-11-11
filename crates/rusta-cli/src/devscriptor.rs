@@ -4,9 +4,14 @@
 //! Devscriptor exposes a 75-tool code-intelligence MCP server: search and
 //! analysis over a persistent SQLite graph, a five-tool Context Graph, LSP-backed
 //! navigation, six language-server lifecycle tools, and five architecture tools.
-//! Those tools reach the model through progressive disclosure: only their names
-//! and descriptions are announced, and the model must `select_tools` to load a
-//! definition before calling it.
+//!
+//! Its most-used tools, [`PRELOADED_TOOLS`], are in the tool table from the
+//! first request; the rest reach the model through progressive disclosure, which
+//! announces their names and descriptions and has the model `select_tools` a
+//! definition before calling it. The split is what gets the tools used: a model
+//! reaches for the tools it holds, and with every Devscriptor tool behind
+//! `select_tools` it searched with `grep` and read files instead, guidance or
+//! not.
 //!
 //! Without guidance a model does not know that a `scan_codebase` must precede
 //! entity search, that LSP tools need a language server resolved first, or that
@@ -26,7 +31,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mcp_client::config::{McpDefaults, McpServerConfig};
+use mcp_client::config::{DEFER_TOOL_THRESHOLD, McpDefaults, McpServerConfig};
 
 /// Environment variable pointing directly at a `devscriptor` executable.
 /// Takes priority over every search path.
@@ -50,6 +55,26 @@ const STARTUP_TIMEOUT_MS: u64 = 60_000;
 /// `scan_codebase`, a cold `semantic_search`, and the first LSP call (which
 /// lazily boots a language server) routinely exceed the 60s default.
 const TOOL_TIMEOUT_MS: u64 = 180_000;
+
+/// The Devscriptor tools in the tool table from the start, unless the server's
+/// own `preload` says otherwise: finding code by meaning or name, what an
+/// entity is and what it calls, a file's summary, the language server's
+/// definitions and references, the index's state, the servers a project needs,
+/// and the Context Graph's notes. The other tools load on demand.
+pub const PRELOADED_TOOLS: &[&str] = &[
+    "semantic_search",
+    "search_functions",
+    "search_classes",
+    "get_entity_details",
+    "get_relationships",
+    "get_file_context",
+    "get_definition",
+    "get_references",
+    "get_statistics",
+    "lsp_arch_detect",
+    "search_context",
+    "add_context_note",
+];
 
 /// How to spawn the Devscriptor MCP server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,10 +379,80 @@ fn is_devscriptor_server(server: &McpServerConfig) -> bool {
 /// injection but is not recognised here yields a connected Devscriptor server
 /// whose model was never told how to drive it — the worst of both.
 pub fn configured_server(servers: &[McpServerConfig]) -> Option<String> {
+    configured(servers).map(|s| s.name.clone())
+}
+
+/// The configured, enabled Devscriptor MCP server, if any; see
+/// [`configured_server`].
+pub fn configured(servers: &[McpServerConfig]) -> Option<&McpServerConfig> {
     servers
         .iter()
         .find(|s| !s.disabled && is_devscriptor_server(s))
-        .map(|s| s.name.clone())
+}
+
+/// Give every Devscriptor server that names no `preload` of its own
+/// [`PRELOADED_TOOLS`]: the auto-configured one and one the user configured
+/// alike. A `preload` the config sets, `[]` included, is left as it is.
+pub fn preload_main_tools(servers: &mut [McpServerConfig]) {
+    for server in servers
+        .iter_mut()
+        .filter(|s| s.preload.is_none() && is_devscriptor_server(s))
+    {
+        server.preload = Some(PRELOADED_TOOLS.iter().map(ToString::to_string).collect());
+    }
+}
+
+/// Which of the Devscriptor server's tools the model holds from the start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolTable {
+    /// Every tool: the server's tools are not deferred.
+    All,
+    /// The ones in its `preload`; the others load on demand.
+    Preloaded,
+    /// None: every tool loads on demand.
+    OnDemand,
+}
+
+impl ToolTable {
+    /// What `server` puts in the tool table under the global `[mcp]`
+    /// settings. Devscriptor serves more tools than the size rule keeps
+    /// inline, so its tools are deferred unless a setting says otherwise.
+    #[must_use]
+    pub fn of(server: &McpServerConfig, defaults: &McpDefaults) -> Self {
+        if !server.defers_tools(DEFER_TOOL_THRESHOLD + 1, defaults.default_deferred) {
+            Self::All
+        } else if server
+            .preload
+            .as_ref()
+            .is_some_and(|names| !names.is_empty())
+        {
+            Self::Preloaded
+        } else {
+            Self::OnDemand
+        }
+    }
+
+    /// How the model gets the tools of the server named `server`.
+    fn loading(self, server: &str) -> String {
+        match self {
+            Self::All => {
+                format!("All of its tools are in your tool table, named `mcp__{server}__<tool>`.")
+            }
+            Self::Preloaded => format!(
+                "Its most-used tools are in your tool table already, named \
+                 `mcp__{server}__<tool>`. The others are announced by name and description in \
+                 `<tools_added>` blocks; load one with `select_tools` (exact name, e.g. \
+                 `mcp__{server}__find_dead_code`) before calling it, and only when the task \
+                 needs it."
+            ),
+            Self::OnDemand => format!(
+                "Its tools are announced by name and description in `<tools_added>` blocks and \
+                 must be loaded with `select_tools` (exact name, e.g. \
+                 `mcp__{server}__semantic_search`) before you can call them. Load the search \
+                 tools first, and otherwise only what the current task needs."
+            ),
+        }
+    }
 }
 
 /// How to find code, the same for every agent that has the tools.
@@ -383,21 +478,26 @@ const FINDING_CODE: &str = r#"## Finding code
 
 /// Build the Devscriptor workflow guidance block for the system prompt.
 ///
-/// `server` is the configured MCP server name; tools are addressed as
-/// `mcp__<server>__<tool>` once loaded via `select_tools`.
-pub fn guidance(server: &str) -> String {
+/// `server` is the configured MCP server name; its tools are addressed as
+/// `mcp__<server>__<tool>`. `table` says which of them the model holds from
+/// the start.
+pub fn guidance(server: &str, table: ToolTable) -> String {
+    let loading = table.loading(server);
     format!(
         r#"# Devscriptor code intelligence
 
 A Devscriptor MCP server named `{server}` is connected. It provides 75 tools for
-code intelligence over a persistent SQLite knowledge graph. Its tools are
-announced by name and description in `<tools_added>` blocks and must be loaded
-with `select_tools` (exact name, e.g. `mcp__{server}__semantic_search`) before
-you can call them. Load only the tools the current task needs.
+code intelligence over a persistent SQLite knowledge graph of the workspace.
+{loading}
 
-Prefer these tools over blind file reading or grepping: they are indexed,
-cheaper, and more precise. Never invent a Devscriptor tool name or parameter —
-use only names from the announcements and the parameters in the loaded schema.
+Find code with Devscriptor before you reach for `grep`, `glob` or file reads:
+`semantic_search` for a question in words, `search_functions` or
+`search_classes` for a name, `get_file_context` for what a file holds. Then read
+the files and lines its results point to. Follow a symbol with `get_definition`
+and `get_references`, and see what calls what with `get_relationships`. These
+tools are indexed, cheaper and more precise than scanning files. Never invent a
+Devscriptor tool name or parameter — use only names from your tool table and
+the announcements, and the parameters in each tool's schema.
 
 ## Establish the index first
 `mcp__{server}__get_statistics` reports whether a codebase has been indexed.
@@ -481,25 +581,25 @@ identical failing call."#
 
 /// The guidance for a sub-agent that has only Devscriptor's read-only tools
 /// (`explore`, `plan`): the same search and navigation, and nothing about
-/// scanning, editing or recording notes, which it cannot do.
-pub fn read_only_guidance(server: &str) -> String {
+/// scanning, editing or recording notes, which it cannot do. `table` is as for
+/// [`guidance`]: a sub-agent holds the read-only ones of the tools the session
+/// holds.
+pub fn read_only_guidance(server: &str, table: ToolTable) -> String {
+    let loading = table.loading(server);
     format!(
         r#"# Devscriptor code intelligence
 
 A Devscriptor MCP server named `{server}` is connected. You have its read-only
 tools: code search, LSP navigation and the Context Graph's notes, over a
-persistent SQLite knowledge graph of the workspace. They are announced by name
-and description in `<tools_added>` blocks and must be loaded with
-`select_tools` (exact name, e.g. `mcp__{server}__semantic_search`) before you
-can call them. Load only the tools the current task needs.
+persistent SQLite knowledge graph of the workspace. {loading}
 
-Prefer these tools over blind file reading or grepping: they are indexed,
-cheaper, and more precise. To map an area, load them first and start there —
-`get_file_context` for a file, `semantic_search` or `search_functions` for code
-by meaning or name, `get_entity_details` and `get_relationships` for what an
-entity is and who calls it — then read files for the detail they point to.
-Never invent a Devscriptor tool name or parameter — use only names from the
-announcements and the parameters in the loaded schema.
+Find code with them before you reach for `grep`, `glob` or file reads: they are
+indexed, cheaper and more precise than scanning files. To map an area, start
+there — `get_file_context` for a file, `semantic_search` or `search_functions`
+for code by meaning or name, `get_entity_details` and `get_relationships` for
+what an entity is and who calls it — then read files for the detail they point
+to. Never invent a Devscriptor tool name or parameter — use only names from your
+tool table and the announcements, and the parameters in each tool's schema.
 
 ## The index
 `mcp__{server}__get_statistics` reports whether the codebase has been indexed.
@@ -547,10 +647,10 @@ call."#
 }
 
 /// The guidance in both forms, for the session's sub-agents.
-pub fn subagent_guidance(server: &str) -> agent_core::McpGuidance {
+pub fn subagent_guidance(server: &str, table: ToolTable) -> agent_core::McpGuidance {
     agent_core::McpGuidance {
-        all: guidance(server),
-        read_only: read_only_guidance(server),
+        all: guidance(server, table),
+        read_only: read_only_guidance(server, table),
     }
 }
 
@@ -1004,19 +1104,50 @@ mod tests {
         assert!(configured_server(&servers).is_none());
     }
 
+    /// The three ways the model can hold Devscriptor's tools.
+    const TABLES: [ToolTable; 3] = [ToolTable::All, ToolTable::Preloaded, ToolTable::OnDemand];
+
+    /// Devscriptor's tools as `devscriptor mcp` serves them: each name, and
+    /// whether the tool declares itself read-only.
+    fn served_tools() -> Vec<(String, bool)> {
+        include_str!("../tests/fixtures/devscriptor_tools.tsv")
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| {
+                let (name, kind) = line.split_once('\t').expect("name, a tab, its kind");
+                (name.to_string(), kind == "read-only")
+            })
+            .collect()
+    }
+
+    /// Every tool `text` names as `mcp__<server>__<tool>`.
+    fn named_tools(text: &str, server: &str) -> Vec<String> {
+        let prefix = format!("mcp__{server}__");
+        text.match_indices(&prefix)
+            .map(|(at, _)| {
+                text[at + prefix.len()..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                    .collect::<String>()
+            })
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+
     #[test]
     fn test_guidance_uses_configured_server_name_in_tool_prefix() {
-        let text = guidance("code-intel");
-        assert!(text.contains("mcp__code-intel__semantic_search"));
-        assert!(text.contains("mcp__code-intel__lsp_arch_setup"));
-        assert!(text.contains("mcp__code-intel__add_context_note"));
-        // Must not leak a hardcoded server name.
-        assert!(!text.contains("mcp__devscriptor__"));
+        for table in TABLES {
+            let text = guidance("code-intel", table);
+            assert!(text.contains("mcp__code-intel__lsp_arch_setup"));
+            assert!(text.contains("mcp__code-intel__add_context_note"));
+            // Must not leak a hardcoded server name.
+            assert!(!text.contains("mcp__devscriptor__"), "{table:?}");
+        }
     }
 
     #[test]
     fn test_guidance_covers_the_three_tool_families_and_context_graph() {
-        let text = guidance("devscriptor");
+        let text = guidance("devscriptor", ToolTable::Preloaded);
         assert!(text.contains("scan_codebase"));
         assert!(text.contains("lsp_arch_detect"));
         assert!(text.contains("search_context"));
@@ -1040,7 +1171,7 @@ mod tests {
     /// them, not converted from 0-based by hand.
     #[test]
     fn test_guidance_says_the_index_follows_edits_and_to_quote_cite() {
-        let text = guidance("devscriptor");
+        let text = guidance("devscriptor", ToolTable::Preloaded);
         assert!(text.contains("The index follows your edits"));
         assert!(
             !text.contains("start_watching"),
@@ -1050,37 +1181,213 @@ mod tests {
         assert!(text.contains("quote it as is"));
     }
 
+    /// The guidance tells the model how it holds the tools, which differs
+    /// with the configuration: all of them, the preloaded ones, or none until
+    /// it loads them. It never sends it to `select_tools` for tools it holds.
+    #[test]
+    fn each_tool_table_says_how_the_tools_are_held() {
+        for text in [
+            guidance("devscriptor", ToolTable::All),
+            read_only_guidance("devscriptor", ToolTable::All),
+        ] {
+            assert!(
+                text.contains("All of its tools are in your tool table"),
+                "{text}"
+            );
+            assert!(!text.contains("select_tools"), "{text}");
+        }
+        for text in [
+            guidance("devscriptor", ToolTable::Preloaded),
+            read_only_guidance("devscriptor", ToolTable::Preloaded),
+        ] {
+            assert!(
+                text.contains("Its most-used tools are in your tool table already"),
+                "{text}"
+            );
+            assert!(text.contains("load one with `select_tools`"), "{text}");
+        }
+        for text in [
+            guidance("devscriptor", ToolTable::OnDemand),
+            read_only_guidance("devscriptor", ToolTable::OnDemand),
+        ] {
+            assert!(
+                text.contains("must be loaded with `select_tools`"),
+                "{text}"
+            );
+            assert!(!text.contains("in your tool table already"), "{text}");
+        }
+    }
+
+    /// Both forms send the model to Devscriptor before `grep`, `glob` and
+    /// file reads, naming the search tools to start with.
+    #[test]
+    fn the_guidance_puts_devscriptor_before_grep() {
+        for table in TABLES {
+            for text in [
+                guidance("devscriptor", table),
+                read_only_guidance("devscriptor", table),
+            ] {
+                assert!(text.contains("before you reach for `grep`, `glob` or file reads"));
+                assert!(text.contains("`semantic_search`"));
+                assert!(text.contains("`search_functions`"));
+            }
+        }
+    }
+
+    /// Every tool the guidance names is one Devscriptor serves, and the
+    /// read-only form names only read-only tools, whatever the tool table.
+    #[test]
+    fn the_guidance_names_only_tools_devscriptor_serves() {
+        let served = served_tools();
+        for table in TABLES {
+            for name in named_tools(&guidance("code-intel", table), "code-intel") {
+                assert!(served.iter().any(|(s, _)| *s == name), "{name}");
+            }
+            for name in named_tools(&read_only_guidance("code-intel", table), "code-intel") {
+                assert!(
+                    served.iter().any(|(s, read_only)| *s == name && *read_only),
+                    "{name} is not a read-only tool"
+                );
+            }
+        }
+    }
+
+    /// The preloaded tools are tools Devscriptor serves, each listed once,
+    /// and they cover what the guidance tells the model to start with.
+    #[test]
+    fn the_preloaded_tools_are_served_and_cover_the_starting_points() {
+        let served = served_tools();
+        for name in PRELOADED_TOOLS {
+            assert!(served.iter().any(|(s, _)| s == name), "{name}");
+        }
+        let unique: std::collections::BTreeSet<_> = PRELOADED_TOOLS.iter().collect();
+        assert_eq!(unique.len(), PRELOADED_TOOLS.len());
+        for name in [
+            "semantic_search",
+            "search_functions",
+            "search_classes",
+            "get_file_context",
+            "get_definition",
+            "get_references",
+            "get_relationships",
+            "get_statistics",
+            "search_context",
+        ] {
+            assert!(PRELOADED_TOOLS.contains(&name), "{name}");
+        }
+    }
+
+    /// The auto-configured server and one the user configured both get the
+    /// preloaded tools; a `preload` the config sets, `[]` included, stays, and
+    /// another server gets none.
+    #[test]
+    fn devscriptor_servers_preload_the_main_tools_unless_configured_otherwise() {
+        let mut servers = Vec::new();
+        inject(
+            &mut servers,
+            launch(),
+            Path::new("/srv/app"),
+            &McpDefaults::default(),
+        );
+        servers.push(server("my-devscriptor", Some("/opt/ds/devscriptor"), false));
+        let mut chosen = server("devscriptor-pinned", Some("devscriptor"), false);
+        chosen.preload = Some(vec!["semantic_search".into()]);
+        servers.push(chosen);
+        let mut none = server("devscriptor-lean", Some("devscriptor"), false);
+        none.preload = Some(Vec::new());
+        servers.push(none);
+        servers.push(server("other", Some("/usr/bin/other-mcp"), false));
+
+        preload_main_tools(&mut servers);
+
+        let main: Vec<String> = PRELOADED_TOOLS.iter().map(ToString::to_string).collect();
+        assert_eq!(servers[0].preload.as_ref(), Some(&main), "auto-configured");
+        assert_eq!(servers[1].preload.as_ref(), Some(&main), "user-configured");
+        assert_eq!(
+            servers[2].preload,
+            Some(vec!["semantic_search".to_string()])
+        );
+        assert_eq!(servers[3].preload, Some(Vec::new()));
+        assert_eq!(servers[4].preload, None);
+    }
+
+    /// Devscriptor's tools are deferred unless a setting keeps them inline;
+    /// deferred, the model holds the preloaded ones, or none with an empty
+    /// `preload`.
+    #[test]
+    fn the_tool_table_follows_the_deferral_settings_and_the_preload() {
+        let preloaded = |deferred: Option<bool>, preload: Option<Vec<String>>| McpServerConfig {
+            deferred,
+            preload,
+            ..server("devscriptor", Some("devscriptor"), false)
+        };
+        let main = Some(PRELOADED_TOOLS.iter().map(ToString::to_string).collect());
+        let unset = McpDefaults::default();
+        let inline = McpDefaults {
+            default_deferred: Some(false),
+            ..McpDefaults::default()
+        };
+
+        assert_eq!(
+            ToolTable::of(&preloaded(None, main.clone()), &unset),
+            ToolTable::Preloaded
+        );
+        assert_eq!(
+            ToolTable::of(&preloaded(None, Some(Vec::new())), &unset),
+            ToolTable::OnDemand
+        );
+        assert_eq!(
+            ToolTable::of(&preloaded(None, None), &unset),
+            ToolTable::OnDemand
+        );
+        assert_eq!(
+            ToolTable::of(&preloaded(Some(false), main.clone()), &unset),
+            ToolTable::All
+        );
+        assert_eq!(
+            ToolTable::of(&preloaded(None, main.clone()), &inline),
+            ToolTable::All
+        );
+        assert_eq!(
+            ToolTable::of(&preloaded(Some(true), main), &inline),
+            ToolTable::Preloaded,
+            "the server's own setting wins over the global one"
+        );
+    }
+
     /// A sub-agent with only the read-only tools is shown how to search,
     /// navigate and recall notes, and is never told to use a tool it lacks.
     #[test]
     fn the_read_only_guidance_names_only_read_only_tools() {
-        let text = read_only_guidance("code-intel");
-        for tool in [
-            "mcp__code-intel__semantic_search",
-            "mcp__code-intel__get_statistics",
-            "mcp__code-intel__lsp_arch_detect",
-            "mcp__code-intel__search_context",
-            "get_references",
-            "query_with_context",
-        ] {
-            assert!(text.contains(tool), "{tool}");
-        }
-        for tool in [
-            "scan_codebase",
-            "start_analysis",
-            "lsp_arch_setup",
-            "rename_symbol",
-            "format_document",
-            "add_context_note",
-            "prune_context",
-        ] {
-            assert!(!text.contains(tool), "{tool}");
-        }
-        assert!(!text.contains("mcp__devscriptor__"));
+        for table in TABLES {
+            let text = read_only_guidance("code-intel", table);
+            for tool in [
+                "mcp__code-intel__get_statistics",
+                "mcp__code-intel__lsp_arch_detect",
+                "mcp__code-intel__search_context",
+                "semantic_search",
+                "get_references",
+                "query_with_context",
+            ] {
+                assert!(text.contains(tool), "{tool}");
+            }
+            for tool in [
+                "scan_codebase",
+                "start_analysis",
+                "lsp_arch_setup",
+                "rename_symbol",
+                "format_document",
+                "add_context_note",
+                "prune_context",
+            ] {
+                assert!(!text.contains(tool), "{tool}");
+            }
+            assert!(!text.contains("mcp__devscriptor__"));
 
-        let both = subagent_guidance("code-intel");
-        assert_eq!(both.all, guidance("code-intel"));
-        assert_eq!(both.read_only, text);
+            let both = subagent_guidance("code-intel", table);
+            assert_eq!(both.all, guidance("code-intel", table));
+            assert_eq!(both.read_only, text);
+        }
     }
 
     /// The agent briefing a sub-agent is told that `explore` and `plan` have
@@ -1090,18 +1397,15 @@ mod tests {
     /// language server.
     #[test]
     fn sub_agents_are_briefed_to_start_from_the_index() {
-        let main = guidance("code-intel");
+        let main = guidance("code-intel", ToolTable::Preloaded);
         assert!(
             main.contains(
                 "Your `explore` and `plan` sub-agents have Devscriptor's read-only tools"
             ),
             "{main}"
         );
-        let read_only = read_only_guidance("code-intel");
-        assert!(
-            read_only.contains("To map an area, load them first and start there"),
-            "{read_only}"
-        );
+        let read_only = read_only_guidance("code-intel", ToolTable::Preloaded);
+        assert!(read_only.contains("To map an area, start"), "{read_only}");
         assert!(
             !read_only.contains("## Delegating"),
             "a sub-agent briefs none"
@@ -1119,7 +1423,10 @@ mod tests {
     /// `index_calls`, both to be checked.
     #[test]
     fn the_guidance_names_what_the_index_adds() {
-        for text in [guidance("devscriptor"), read_only_guidance("devscriptor")] {
+        for text in [
+            guidance("devscriptor", ToolTable::Preloaded),
+            read_only_guidance("devscriptor", ToolTable::Preloaded),
+        ] {
             assert!(text.contains("`index_locations`"), "{text}");
             assert!(
                 text.contains("`get_incoming_calls`, in `index_calls`"),
@@ -1130,7 +1437,7 @@ mod tests {
 
     #[test]
     fn test_guidance_names_the_lsp_errors_devscriptor_returns() {
-        let text = guidance("devscriptor");
+        let text = guidance("devscriptor", ToolTable::Preloaded);
         assert!(text.contains("No LSP server available"));
         assert!(text.contains("the error names the server and says why"));
         assert!(text.contains("no project root above"));

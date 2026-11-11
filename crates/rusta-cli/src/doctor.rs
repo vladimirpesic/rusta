@@ -5,7 +5,8 @@ use lm_bridge::providers::catalog_cache::CatalogCache;
 use lm_bridge::providers::deepseek_catalog::DeepseekModelInfo;
 use lm_bridge::providers::glm::{CodingPlanModel, GlmChatProvider};
 use lm_bridge::providers::kimi_catalog::KimiModelInfo;
-use mcp_client::manager::{McpConnectionManager, McpStatus};
+use mcp_client::config::McpServerConfig;
+use mcp_client::manager::{McpConnectionManager, McpEvent, McpStatus};
 
 use crate::kimi::{Probe, describe_models, probe};
 
@@ -834,7 +835,7 @@ async fn check_mcp_servers(config: &Config) -> Check {
         };
     }
 
-    let (manager, _rx) = McpConnectionManager::new(config.mcp_servers.clone(), config.mcp);
+    let (manager, mut events) = McpConnectionManager::new(config.mcp_servers.clone(), config.mcp);
     manager.start_all().await;
 
     // Wait as long as the slowest server is allowed to take to start, capped so
@@ -866,6 +867,7 @@ async fn check_mcp_servers(config: &Config) -> Check {
 
     let statuses = manager.statuses().await;
     manager.stop_all();
+    let unserved = unserved_preloads(&config.mcp_servers, &mut events);
 
     let names = |want: fn(&McpStatus) -> bool| -> Vec<&str> {
         statuses
@@ -902,7 +904,17 @@ async fn check_mcp_servers(config: &Config) -> Check {
         ));
     }
 
-    let status = if !failed.is_empty() || !needs_auth.is_empty() || !pending.is_empty() {
+    if !unserved.is_empty() {
+        parts.push(format!(
+            "| preload names no server lists: {}",
+            unserved.join(", ")
+        ));
+    }
+    let status = if !failed.is_empty()
+        || !needs_auth.is_empty()
+        || !pending.is_empty()
+        || !unserved.is_empty()
+    {
         Status::Warn
     } else {
         Status::Ok
@@ -913,6 +925,41 @@ async fn check_mcp_servers(config: &Config) -> Check {
         status,
         message: parts.join(" "),
     }
+}
+
+/// The `preload` names, as `server: name`, that a deferred server connected
+/// without listing. A misspelt name preloads nothing, and a session says so
+/// only in its log.
+fn unserved_preloads(
+    servers: &[McpServerConfig],
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<McpEvent>,
+) -> Vec<String> {
+    let mut unserved = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        let McpEvent::ToolsAdded {
+            server,
+            deferred: true,
+            preloaded,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        let Some(names) = servers
+            .iter()
+            .find(|s| s.name == server)
+            .and_then(|s| s.preload.as_ref())
+        else {
+            continue;
+        };
+        for name in names {
+            let suffix = format!("__{name}");
+            if !preloaded.iter().any(|tool| tool.ends_with(&suffix)) {
+                unserved.push(format!("{server}: {name}"));
+            }
+        }
+    }
+    unserved
 }
 
 impl Check {
@@ -933,6 +980,44 @@ impl Check {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A deferred server that lists none of a `preload` name has it reported;
+    /// a name it preloaded, an inline server and a server without `preload`
+    /// are not.
+    #[test]
+    fn preload_names_a_deferred_server_does_not_list_are_reported() {
+        let configured = |name: &str, preload: &[&str]| McpServerConfig {
+            name: name.to_string(),
+            command: Some("server".to_string()),
+            preload: Some(preload.iter().map(ToString::to_string).collect()),
+            ..Default::default()
+        };
+        let servers = vec![
+            configured("code", &["semantic_search", "semantic_serach"]),
+            configured("inline", &["anything"]),
+            McpServerConfig {
+                name: "plain".to_string(),
+                ..Default::default()
+            },
+        ];
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let added = |server: &str, deferred: bool, preloaded: &[&str]| McpEvent::ToolsAdded {
+            server: server.to_string(),
+            tools: Vec::new(),
+            deferred,
+            preloaded: preloaded.iter().map(ToString::to_string).collect(),
+        };
+        tx.send(added("code", true, &["mcp__code__semantic_search"]))
+            .unwrap();
+        tx.send(added("inline", false, &[])).unwrap();
+        tx.send(added("plain", true, &[])).unwrap();
+        drop(tx);
+
+        assert_eq!(
+            unserved_preloads(&servers, &mut rx),
+            ["code: semantic_serach"]
+        );
+    }
 
     fn empty_cli() -> Cli {
         Cli {

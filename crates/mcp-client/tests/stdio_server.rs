@@ -32,6 +32,7 @@ fn echo_config() -> McpServerConfig {
         disabled: false,
         oauth: None,
         deferred: None,
+        preload: None,
         read_only: false,
         cwd: None,
     }
@@ -68,6 +69,7 @@ async fn test_stdio_mcp_server_discovery_and_call() {
         disabled: false,
         oauth: None,
         deferred: None,
+        preload: None,
         read_only: false,
         cwd: None,
     };
@@ -301,6 +303,52 @@ async fn tools_are_deferred_by_size_unless_configured() {
         !deferred_flag(echo_config(), global_off, 11).await,
         "a global default_deferred = false keeps even a large server inline"
     );
+}
+
+/// A deferred server's `preload` tools are announced with the others and
+/// named as preloaded, as the tool table names them; a name the server does
+/// not list is skipped. A server whose tools are inline preloads nothing,
+/// since they are all in the table already.
+#[tokio::test]
+async fn a_deferred_server_names_its_preloaded_tools() {
+    use mcp_client::manager::McpEvent;
+
+    async fn added(config: McpServerConfig) -> (usize, bool, Vec<String>) {
+        let (manager, mut events) = McpConnectionManager::new(vec![config], Default::default());
+        manager.start_all().await;
+        let deadline = tokio::time::Instant::now() + STARTUP;
+        let added = loop {
+            let event = tokio::time::timeout_at(deadline, events.recv())
+                .await
+                .expect("tools were never announced")
+                .expect("event channel open");
+            if let McpEvent::ToolsAdded {
+                tools,
+                deferred,
+                preloaded,
+                ..
+            } = event
+            {
+                break (tools.len(), deferred, preloaded);
+            }
+        };
+        manager.stop_all();
+        added
+    }
+
+    let mut preloading = echo_config();
+    preloading.preload = Some(vec!["cwd".into(), "echo".into(), "not_served".into()]);
+    let (count, deferred, mut preloaded) = added(preloading.clone()).await;
+    preloaded.sort();
+    assert_eq!(count, 11, "every tool is announced");
+    assert!(deferred);
+    assert_eq!(preloaded, ["mcp__echo__cwd", "mcp__echo__echo"]);
+
+    preloading.deferred = Some(false);
+    let (count, deferred, preloaded) = added(preloading).await;
+    assert_eq!(count, 11);
+    assert!(!deferred);
+    assert!(preloaded.is_empty(), "{preloaded:?}");
 }
 
 /// A server running `script` from the fixtures, named `name`.

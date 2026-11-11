@@ -240,6 +240,10 @@ async fn main() -> anyhow::Result<()> {
             devscriptor::SERVER_NAME
         );
     }
+    // Devscriptor's most-used tools sit in the tool table from the first
+    // request, whether Rusta configured the server or the user did; a model
+    // that must load a tool first mostly searches with `grep` instead.
+    devscriptor::preload_main_tools(&mut config.mcp_servers);
 
     // Z.AI's web-search/reader/vision servers are injected for GLM Coding Plan
     // keys. This must happen before `doctor` runs: otherwise the diagnostic
@@ -564,18 +568,21 @@ async fn main() -> anyhow::Result<()> {
                     server,
                     tools,
                     deferred,
+                    preloaded,
                 } => {
-                    // A large server's tools load on demand (`select_tools`); a
-                    // small one's sit in the tool table like built-ins.
+                    // A large server's tools load on demand (`select_tools`),
+                    // but for the ones it preloads; a small one's sit in the
+                    // tool table like built-ins.
                     let mut agent = agent_for_mcp.lock().await;
                     for tool in tools {
                         let name = tool.tool_definition().name.clone();
-                        if deferred {
+                        let on_demand = deferred && !preloaded.contains(&name);
+                        if on_demand {
                             agent.register_dynamic_tool(tool);
                         } else {
                             agent.register_tool(tool);
                         }
-                        info!("[mcp:{server}] registered tool {name} (deferred: {deferred})");
+                        info!("[mcp:{server}] registered tool {name} (deferred: {on_demand})");
                     }
                 }
                 McpEvent::ToolsRemoved { server, tools } => {

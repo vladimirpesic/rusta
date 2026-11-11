@@ -955,3 +955,74 @@ async fn provider_refresh_fetches_the_list_now_and_says_what_changed() {
     assert!(after.contains("deepseek-v4-pro"), "{after}");
     assert!(!after.contains("deepseek-old"), "{after}");
 }
+
+/// A deferred MCP server's preloaded tools are in the first request's tool
+/// table, beside `select_tools`; its other tools are announced by name, to be
+/// loaded on demand.
+#[tokio::test]
+async fn a_deferred_servers_preloaded_tools_are_in_the_first_request() {
+    let server = mock_endpoint("done").await;
+    let home = tempfile::tempdir().unwrap();
+    let workdir = tempfile::tempdir().unwrap();
+    // The MCP client's fixture: eleven tools, more than an inline server has.
+    let echo =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../mcp-client/tests/fixtures/echo_server.py");
+    let config_dir = home.path().join(".config/rusta");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        format!(
+            "[[mcp_servers]]\nname = \"echo\"\ncommand = \"python3\"\nargs = ['{}']\n\
+             preload = [\"echo\", \"cwd\"]\nstartup_timeout_ms = 30000\n",
+            echo.display()
+        ),
+    )
+    .unwrap();
+    let base_url = server.uri();
+    let output = run_rusta_with_path(
+        home.path(),
+        workdir.path(),
+        &[
+            "--provider",
+            "kimi",
+            "--base-url",
+            &base_url,
+            "--api-key",
+            "sk-test",
+            "-p",
+            "hi",
+        ],
+        "/usr/bin:/bin",
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    let first = requests
+        .iter()
+        .find(|request| request.url.path() == "/chat/completions")
+        .expect("the model was asked");
+    let body: Value = serde_json::from_slice(&first.body).unwrap();
+    let tools: Vec<&str> = body["tools"]
+        .as_array()
+        .expect("a tool table")
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str())
+        .collect();
+    for name in ["mcp__echo__echo", "mcp__echo__cwd", "select_tools"] {
+        assert!(tools.contains(&name), "{name} missing from {tools:?}");
+    }
+    assert!(
+        !tools.contains(&"mcp__echo__fail"),
+        "a tool not preloaded waits for select_tools: {tools:?}"
+    );
+    let announced = String::from_utf8_lossy(&first.body);
+    assert!(
+        announced.contains("mcp__echo__fail"),
+        "the other tools are announced"
+    );
+}

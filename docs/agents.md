@@ -69,8 +69,9 @@ mcp_tools: read_only
 A profile narrows the tool table by listing what stays (`allowed_tools`) or what
 goes (`denied_tools`); both combine, and `extends` inherits them additively.
 `git_context: true` prepends the repository's git context to the first message.
-`mcp_tools: true` gives the profile the session's MCP tools, deferred as they are
-for the session and loaded with `select_tools`, with the Devscriptor guidance;
+`mcp_tools: true` gives the profile the session's MCP tools, held as the session
+holds them (the preloaded ones in the tool table, the rest loaded with
+`select_tools`), with the Devscriptor guidance;
 `mcp_tools: read_only` gives only the tools whose server declares them read-only
 (MCP's `readOnlyHint`; Devscriptor declares 59 of its 75), or whose server entry
 sets `read_only = true`, with guidance that leaves out scanning, editing and

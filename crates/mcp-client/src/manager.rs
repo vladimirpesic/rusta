@@ -59,11 +59,15 @@ pub enum McpEvent {
     /// Tools became available for the first time or after a reconnect.
     /// `deferred` says whether they are loadable on demand (`select_tools`)
     /// rather than always in the tool table; see
-    /// [`McpServerConfig::defers_tools`].
+    /// [`McpServerConfig::defers_tools`]. `preloaded` names those of `tools`
+    /// that go in the tool table all the same: the server's
+    /// [`preload`](McpServerConfig::preload) list, empty when nothing is
+    /// deferred.
     ToolsAdded {
         server: String,
         tools: Vec<Arc<dyn ExecutableTool>>,
         deferred: bool,
+        preloaded: Vec<String>,
     },
     /// Tools are no longer available because the server disconnected.
     ToolsRemoved { server: String, tools: Vec<String> },
@@ -93,6 +97,7 @@ impl std::fmt::Debug for McpEvent {
                 server,
                 tools,
                 deferred,
+                preloaded,
             } => f
                 .debug_struct("ToolsAdded")
                 .field("server", server)
@@ -104,6 +109,7 @@ impl std::fmt::Debug for McpEvent {
                         .collect::<Vec<_>>(),
                 )
                 .field("deferred", deferred)
+                .field("preloaded", preloaded)
                 .finish(),
             Self::ToolsRemoved { server, tools } => f
                 .debug_struct("ToolsRemoved")
@@ -249,6 +255,15 @@ pub struct ServerHandle {
     /// A browser authorization is under way; a second is not started.
     authorizing: AtomicBool,
     self_ref: StdMutex<Weak<ServerHandle>>,
+}
+
+/// Tools a listing found that were not known before.
+struct Discovered {
+    tools: Vec<Arc<dyn ExecutableTool>>,
+    /// Whether the server's tools load on demand.
+    deferred: bool,
+    /// Those of `tools` that are in the tool table all the same.
+    preloaded: Vec<String>,
 }
 
 /// Why the watch over a live connection ended.
@@ -730,23 +745,24 @@ impl ServerHandle {
     }
 
     /// Announce newly discovered tools.
-    fn emit_added(&self, (tools, deferred): (Vec<Arc<dyn ExecutableTool>>, bool)) {
-        if !tools.is_empty() {
+    fn emit_added(&self, discovered: Discovered) {
+        if !discovered.tools.is_empty() {
             self.emit(McpEvent::ToolsAdded {
                 server: self.config.name.clone(),
-                tools,
-                deferred,
+                tools: discovered.tools,
+                deferred: discovered.deferred,
+                preloaded: discovered.preloaded,
             });
         }
     }
 
     /// List the server's tools, remember them in place of the ones known
-    /// before, and return the new ones and whether this server's tools are
-    /// deferred. A known tool the server no longer lists is reported removed.
-    async fn discover_and_emit(
-        &self,
-        client: &Arc<McpClient>,
-    ) -> Result<(Vec<Arc<dyn ExecutableTool>>, bool), McpError> {
+    /// before, and return the new ones, whether this server's tools are
+    /// deferred, and which of the new ones are preloaded all the same. A known
+    /// tool the server no longer lists is reported removed, and a
+    /// [`preload`](McpServerConfig::preload) name it does not list is warned
+    /// about.
+    async fn discover_and_emit(&self, client: &Arc<McpClient>) -> Result<Discovered, McpError> {
         let infos = tokio::time::timeout(self.config.tool_timeout(), client.list_tools())
             .await
             .map_err(|_| {
@@ -766,6 +782,17 @@ impl ServerHandle {
         guard.clear();
 
         let mut taken = std::collections::HashSet::new();
+        let mut preloaded = Vec::new();
+        if deferred {
+            for name in self.config.preload.iter().flatten() {
+                if !infos.iter().any(|info| &info.tool.name == name) {
+                    tracing::warn!(
+                        "[mcp:{}] preload names `{name}`, which the server does not list",
+                        self.config.name
+                    );
+                }
+            }
+        }
         for McpToolInfo { tool, annotations } in infos {
             let annotations = self.config.effective_annotations(annotations);
             let qualified =
@@ -777,6 +804,9 @@ impl ServerHandle {
                 parameters: tool.parameters.clone(),
             };
             if !old_names.contains(&qualified) {
+                if deferred && self.config.preloads(&tool.name) {
+                    preloaded.push(qualified.clone());
+                }
                 let mcp_tool = Arc::new(McpTool::new(
                     self_arc.clone(),
                     tool.name.clone(),
@@ -796,7 +826,11 @@ impl ServerHandle {
                 tools: removed,
             });
         }
-        Ok((added, deferred))
+        Ok(Discovered {
+            tools: added,
+            deferred,
+            preloaded,
+        })
     }
 
     async fn clear_tools(&self) {
@@ -1389,6 +1423,7 @@ mod tests {
             disabled: false,
             oauth: None,
             deferred: None,
+            preload: None,
             read_only: false,
             cwd: None,
         };
