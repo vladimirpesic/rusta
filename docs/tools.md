@@ -81,6 +81,8 @@ names it in a reminder (see [Architecture](architecture.md#the-system-prompt)).
 
 `bash` runs a command with `sh -c` (Git Bash on Windows) in the working
 directory, or in its `cwd`. A command's stdin is the call's `stdin`, or empty.
+It inherits Rusta's environment without the variables Rusta reads its keys
+from (see [Keys stay with Rusta](permissions.md#keys-stay-with-rusta)).
 
 A command is stopped with what it started. Each command runs in a process group
 of its own (on Windows, a process tree): `task_stop` and a background task's

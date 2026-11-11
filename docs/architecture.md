@@ -202,7 +202,8 @@ needed.
 
 **The user's machine is not the model's to run freely.** Every call passes the
 permission engine; secrets and history-rewriting git commands ask even in
-bypass mode; dangerous shell commands ask outside it; a cloned repository's
+bypass mode; dangerous shell commands ask outside it; no command, hook or MCP
+server sees the variables Rusta reads its keys from; a cloned repository's
 config cannot start servers or redirect requests until its folder is trusted,
 and cannot declare hooks at all; `fetch` refuses private and metadata
 addresses; and web content cannot pose as the harness.

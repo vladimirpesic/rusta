@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use lm_bridge::tool::Tool;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 
 use crate::agent_loop::types::{
     ExecutableTool, ExecutableToolContext, ExecutableToolResult, ToolAccesses, ToolEvent,
@@ -142,7 +141,7 @@ impl ExecutableTool for BashTool {
             normalize_timeout(input.get("timeout").and_then(|v| v.as_u64()), false, false)
                 .expect("foreground timeout is always bounded");
 
-        let mut cmd = Command::new("sh");
+        let mut cmd = crate::child_env::command("sh");
         cmd.arg("-c").arg(command).current_dir(&cwd);
         cmd.envs(collect_env(&input));
 

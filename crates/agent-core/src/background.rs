@@ -12,7 +12,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use tokio::{
     io::{AsyncBufReadExt, BufReader, Lines},
-    process::{Child, ChildStderr, ChildStdout, Command},
+    process::{Child, ChildStderr, ChildStdout},
     sync::{Notify, Semaphore},
     task::JoinHandle,
 };
@@ -920,7 +920,7 @@ async fn run_task(
     max_tracked_tasks: usize,
     tasks: Arc<Mutex<HashMap<String, BackgroundTask>>>,
 ) {
-    let mut cmd = Command::new("sh");
+    let mut cmd = crate::child_env::command("sh");
     cmd.arg("-c")
         .arg(&command)
         .current_dir(&cwd)

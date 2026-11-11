@@ -404,16 +404,16 @@ impl McpClient {
                         e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat")
                     });
                 if is_batch {
-                    let mut command = Command::new("cmd");
+                    let mut command = agent_core::child_env::command("cmd");
                     command.arg("/C").arg(&resolved).args(args);
                     return command;
                 }
-                let mut command = Command::new(&resolved);
+                let mut command = agent_core::child_env::command(&resolved);
                 command.args(args);
                 return command;
             }
         }
-        let mut command = Command::new(cmd);
+        let mut command = agent_core::child_env::command(cmd);
         command.args(args);
         command
     }

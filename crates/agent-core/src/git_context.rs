@@ -8,8 +8,6 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use tokio::process::Command;
-
 /// Per-command ceiling: a slow or hanging `git` must not stall the spawn of a
 /// sub-agent.
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -117,7 +115,7 @@ pub async fn collect(cwd: &Path) -> String {
 
 /// Run one git command in `cwd`, capped at [`GIT_TIMEOUT`].
 async fn run_git(cwd: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
-    let child = Command::new("git")
+    let child = crate::child_env::command("git")
         .args(["-C"])
         .arg(cwd)
         .args(args)

@@ -100,6 +100,24 @@ Your own rules are checked first, so an `allow` rule lets a specific case
 through; `dangerous_command_guard = false` turns both off. The REPL and the TUI
 ask in every mode, `--yes` included, when a guardrail or a plan review applies.
 
+## Keys stay with Rusta
+
+No process Rusta starts sees the variables it reads its keys from. This covers
+`bash` commands, background tasks, hooks, MCP servers and `git`. The variables
+are:
+
+- `RUSTA_API_KEY` and `RUSTA_ZAI_API_KEY`;
+- `KIMI_API_KEY`, `ZAI_API_KEY`, `DEEPSEEK_API_KEY` and `OPENAI_API_KEY`;
+- the variable named by the config's `api_key_env`;
+- `RUSTA_CUSTOM_HEADERS`, whose headers may carry a token.
+
+A command's output goes to the model and into the session records. Without
+this, a command that printed its environment would send the key along with it.
+Every other variable is passed on unchanged.
+
+An MCP server that needs one of these variables can be given it in its own
+`env` ([MCP](mcp.md)), which applies on top.
+
 ## Plan mode
 
 In plan mode the agent researches and writes a plan, and waits for your review

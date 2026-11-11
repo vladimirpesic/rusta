@@ -32,6 +32,9 @@ payload on stdin:
 `session_title` is the session's title as it stands, empty while it has none: one
 on record, one set with `/title`, or one made after a turn.
 
+The command inherits Rusta's environment without the variables Rusta reads its
+keys from (see [Keys stay with Rusta](permissions.md#keys-stay-with-rusta)).
+
 ## Verdicts
 
 The verdict comes from the exit code and stdout:

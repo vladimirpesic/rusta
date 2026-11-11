@@ -31,7 +31,7 @@ env = { API_TOKEN = "..." }          # only for this server's process
 | Field | Meaning |
 | --- | --- |
 | `name` | Unique name; it prefixes the server's tools |
-| `command`, `args`, `cwd`, `env` | A server spawned over stdio. On Windows a bare command is resolved through `PATH` × `PATHEXT`, so `npx` finds `npx.cmd`. Without `cwd` the server inherits Rusta's own directory, not the session's |
+| `command`, `args`, `cwd`, `env` | A server spawned over stdio. On Windows a bare command is resolved through `PATH` × `PATHEXT`, so `npx` finds `npx.cmd`. Without `cwd` the server inherits Rusta's own directory, not the session's. It inherits Rusta's environment without the variables Rusta reads its keys from ([Keys stay with Rusta](permissions.md#keys-stay-with-rusta)); `env` sets variables on top, any of those included |
 | `url`, `token` | A server reached over streamable HTTP/SSE, with an optional bearer token |
 | `startup_timeout_ms`, `tool_timeout_ms` | This server's budgets, over the `[mcp]` and `RUSTA_MCP_*` defaults (30 s / 60 s built in) |
 | `deferred` | Load the tools on demand (`true`) or keep them in the tool table (`false`) |

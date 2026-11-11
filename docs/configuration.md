@@ -331,6 +331,10 @@ config type.
 | `ACP_GLM_THINKING` | `1`/`true` or `0`/`false`: switch GLM thinking on or off whatever the settings say. Models that cannot turn it off still think, at the lowest effort |
 | `Z_AI_VISION_MCP_URL` | Remote Z.AI vision MCP server, used instead of starting `@z_ai/mcp-server` with `npx` |
 
+No process Rusta starts sees the key variables above. The same holds for
+`RUSTA_API_KEY`, `RUSTA_CUSTOM_HEADERS` and the variable named by `api_key_env`.
+See [Keys stay with Rusta](permissions.md#keys-stay-with-rusta).
+
 ### Kimi tuning
 
 These are read by the agent loop regardless of provider, and are the

@@ -54,9 +54,12 @@ pub struct McpServerConfig {
     pub cwd: Option<PathBuf>,
 
     /// Extra environment variables for stdio (command) servers. Applied on top
-    /// of the inherited environment. Used to hand a spawned server its
-    /// credentials without exporting them into every child process — e.g. the
-    /// Z.AI vision server reads `Z_AI_API_KEY` from its own environment.
+    /// of the environment the server inherits, which lacks the variables Rusta
+    /// reads its keys from (see `agent_core::child_env`), so a variable named
+    /// here reaches the server even if it is one of those. Used to hand a
+    /// spawned server its credentials without exporting them into every child
+    /// process — e.g. the Z.AI vision server reads `Z_AI_API_KEY` from its own
+    /// environment.
     #[serde(default)]
     pub env: HashMap<String, String>,
 

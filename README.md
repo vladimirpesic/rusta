@@ -19,7 +19,8 @@ A lean, native Rust coding agent for the terminal, built for **Kimi**,
 - **MCP client** for stdio and HTTP servers, with OAuth and progressive tool
   disclosure, so large servers don't flood the tool table.
 - **Safety by default:** permission modes and rules, guards for dangerous
-  commands and secrets, a write guard, and workspace trust for project config.
+  commands and secrets, API keys kept from every command and server it starts,
+  a write guard, and workspace trust for project config.
 - **Durable sessions:** JSONL records, resume, fork, export, and automatic
   context compaction.
 - A **single self-contained binary** for Linux, macOS and Windows.

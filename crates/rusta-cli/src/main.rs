@@ -955,12 +955,23 @@ fn load_config(cli: &Cli, gate: &mut trust::Gate) -> config::Config {
         Ok(gate.settle(trust::ProjectLayer::split(path, layer, lower)?))
     });
     match loaded {
-        Ok(config) => config,
+        Ok(config) => {
+            withhold_credentials(&config);
+            config
+        }
         Err(e) => {
             eprintln!("Error: {e}");
             std::process::exit(2);
         }
     }
+}
+
+/// Keep Rusta's keys out of every process it starts: no command, hook or MCP
+/// server sees a variable Rusta reads a key from, `config`'s `api_key_env`
+/// included. Registered as each config is loaded, before anything is started.
+fn withhold_credentials(config: &config::Config) {
+    agent_core::child_env::withhold(endpoints::credential_env_vars());
+    agent_core::child_env::withhold(config.api_key_env.clone());
 }
 
 /// How this run settles project settings that need trust: an interactive

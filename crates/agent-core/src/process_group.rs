@@ -72,7 +72,7 @@ fn kill_pid(pid: u32) {
     signal(pid, "KILL");
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("taskkill")
+        let _ = crate::child_env::std_command("taskkill")
             .args(["/T", "/F", "/PID", &pid.to_string()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -116,7 +116,7 @@ fn kill_command(name: &str, group: u32) -> std::process::Command {
     } else {
         "kill"
     };
-    let mut command = std::process::Command::new(program);
+    let mut command = crate::child_env::std_command(program);
     command
         .arg(format!("-{name}"))
         .arg("--")

@@ -3,6 +3,7 @@ pub mod agent_loop;
 pub mod agents_md;
 pub mod background;
 pub mod blob;
+pub mod child_env;
 pub mod completion_budget;
 pub mod context;
 pub mod context_compaction;

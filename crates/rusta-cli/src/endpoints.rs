@@ -231,6 +231,22 @@ pub fn api_key_env_var(provider: &str) -> Option<&'static str> {
     })
 }
 
+/// Every variable Rusta reads a credential from, sorted: each provider's
+/// key variable, `RUSTA_API_KEY`, `RUSTA_ZAI_API_KEY`, and
+/// `RUSTA_CUSTOM_HEADERS`, whose headers may carry a gateway's token. A
+/// config's `api_key_env` names one more.
+#[must_use]
+pub fn credential_env_vars() -> Vec<&'static str> {
+    let mut vars: Vec<&'static str> = crate::provider_defaults::VALID_PROVIDERS
+        .iter()
+        .filter_map(|provider| api_key_env_var(provider))
+        .chain(["RUSTA_API_KEY", "RUSTA_ZAI_API_KEY", "RUSTA_CUSTOM_HEADERS"])
+        .collect();
+    vars.sort_unstable();
+    vars.dedup();
+    vars
+}
+
 /// Where the user creates a key for this provider and billing.
 #[must_use]
 pub fn signup_url(provider: &str, billing: Billing) -> Option<&'static str> {
@@ -460,6 +476,21 @@ mod tests {
         );
         assert_eq!(default_model("mock", Billing::Subscription), None);
         assert_eq!(api_key_env_var("mock"), None);
+    }
+
+    /// Every variable a key is read from is a credential variable: each
+    /// provider's, Rusta's own, and the custom headers. Each is listed once.
+    #[test]
+    fn every_key_variable_is_a_credential_variable() {
+        let vars = credential_env_vars();
+        for p in VALID_PROVIDERS {
+            let var = api_key_env_var(p).expect("a key variable");
+            assert!(vars.contains(&var), "{p}: {var} missing from {vars:?}");
+        }
+        for var in ["RUSTA_API_KEY", "RUSTA_ZAI_API_KEY", "RUSTA_CUSTOM_HEADERS"] {
+            assert!(vars.contains(&var), "{var} missing from {vars:?}");
+        }
+        assert!(vars.windows(2).all(|w| w[0] < w[1]), "{vars:?}");
     }
 
     /// The defaults must be the flagships the user asked for, at full context.

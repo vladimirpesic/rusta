@@ -362,7 +362,7 @@ fn unknown_holder() -> LockHolder {
 /// What the lock asks of the system, without `unsafe` code: `/proc` on
 /// Linux, `ps`, `sysctl` and `hostname` elsewhere.
 mod system {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     /// Whether process `pid` exists and is not a zombie. A process that
     /// cannot be inspected is taken to be alive.
@@ -384,7 +384,7 @@ mod system {
         }
         #[cfg(all(unix, not(target_os = "linux")))]
         {
-            match Command::new("ps")
+            match crate::child_env::std_command("ps")
                 .args(["-p", &pid.to_string(), "-o", "stat="])
                 .stdin(Stdio::null())
                 .stderr(Stdio::null())
@@ -400,7 +400,7 @@ mod system {
         }
         #[cfg(windows)]
         {
-            match Command::new("tasklist")
+            match crate::child_env::std_command("tasklist")
                 .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
                 .stdin(Stdio::null())
                 .stderr(Stdio::null())
@@ -429,7 +429,7 @@ mod system {
         #[cfg(target_os = "macos")]
         {
             // `{ sec = 1729500000, usec = 0 } Mon Oct 21 …`
-            let out = Command::new("sysctl")
+            let out = crate::child_env::std_command("sysctl")
                 .args(["-n", "kern.boottime"])
                 .stdin(Stdio::null())
                 .stderr(Stdio::null())
@@ -458,7 +458,7 @@ mod system {
         if let Ok(name) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
             return name.trim().to_string();
         }
-        Command::new("hostname")
+        crate::child_env::std_command("hostname")
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()

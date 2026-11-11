@@ -19,7 +19,6 @@ use std::{
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use tokio::process::Command;
 use tokio::{io::AsyncWriteExt, process::Child};
 
 /// Every hook event. `UserPromptQueued` fires when the TUI queues a prompt
@@ -432,7 +431,7 @@ async fn run_hook_command(
     cwd: &Path,
     on_start: &impl Fn(&str),
 ) -> HookRun {
-    let mut cmd = Command::new("sh");
+    let mut cmd = crate::child_env::command("sh");
     cmd.arg("-c")
         .arg(command)
         .current_dir(cwd)
