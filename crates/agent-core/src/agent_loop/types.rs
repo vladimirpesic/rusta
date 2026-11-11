@@ -419,6 +419,11 @@ pub struct ExecutableToolContext {
     /// Devscriptor's workflow, in the form for all of them and for the
     /// read-only ones; the session's own prompt carries the first.
     pub subagent_mcp_guidance: Option<Arc<crate::McpGuidance>>,
+    /// The reminder of where to start with the MCP tools this agent holds,
+    /// which rides with the first prompt of its conversation, and with the
+    /// next one after compaction drops it: [`crate::McpGuidance::reminder`].
+    /// `None` for an agent without them.
+    pub tools_reminder: Option<Arc<str>>,
     /// The session's prompt as its sub-agents get it, with their role in its
     /// slot. `None` gives them their role and the environment section alone.
     pub subagent_prompt: Option<Arc<crate::prompt::SubagentPrompt>>,
@@ -479,6 +484,7 @@ impl Default for ExecutableToolContext {
             approval: crate::permissions::InheritedApproval::default(),
             tool_registry: None,
             subagent_mcp_guidance: None,
+            tools_reminder: None,
             subagent_prompt: None,
             skill_registry: None,
             profile: None,

@@ -146,6 +146,11 @@ pub struct McpGuidance {
     pub all: String,
     /// For a sub-agent with the read-only ones.
     pub read_only: String,
+    /// A short `<system-reminder>` of where to start, which rides with the
+    /// first prompt of every conversation that has the tools. The guidance
+    /// sits deep in a long system prompt; a model weighs what comes with its
+    /// task, and with the guidance alone it mostly searched with `grep`.
+    pub reminder: String,
 }
 
 impl McpGuidance {

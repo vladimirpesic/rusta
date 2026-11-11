@@ -71,7 +71,8 @@ goes (`denied_tools`); both combine, and `extends` inherits them additively.
 `git_context: true` prepends the repository's git context to the first message.
 `mcp_tools: true` gives the profile the session's MCP tools, held as the session
 holds them (the preloaded ones in the tool table, the rest loaded with
-`select_tools`), with the Devscriptor guidance;
+`select_tools`), with the Devscriptor guidance and, with its task, the reminder
+of where to start;
 `mcp_tools: read_only` gives only the tools whose server declares them read-only
 (MCP's `readOnlyHint`; Devscriptor declares 59 of its 75), or whose server entry
 sets `read_only = true`, with guidance that leaves out scanning, editing and

@@ -232,7 +232,8 @@ Rusta preloads Devscriptor's twelve most-used tools: `semantic_search`,
 from its first request, and loads the other 63 with `select_tools`
 ([§6](#6-step-5--handling-75-tools-without-hallucination)). Its system prompt
 carries the workflow of [§7](#7-step-6--the-system-prompt-copy-paste) and says which
-tools are already held.
+tools are already held, and the first prompt of each conversation comes with a
+short reminder to start with them.
 
 Devscriptor runs one process per workspace. The injected `devscriptor mcp`
 relays to the workspace's `devscriptor serve`, one per workspace and database, and
@@ -367,6 +368,21 @@ Tool schemas tell a model *how* to call a tool, never *when*. Without the block
 below, agents read files blindly, call LSP tools before a language server exists,
 and never use the Context Graph. Adapt the `mcp__devscriptor__` prefix to your
 client's naming.
+
+The block alone is not enough. Deep in a long system prompt it competes with
+everything else there, and a model weighs what comes with its task. Told in the
+task itself to find the code with Devscriptor, three models called it in 80% to
+92% of 300 tasks; with the workflow in the system prompt alone, in 5 of 24. So also put a short
+reminder beside the first prompt of each conversation, and again after the
+conversation is compacted, for example:
+
+```text
+Devscriptor's code intelligence is connected to this workspace. To find the code a
+task concerns, start with it rather than grep, glob or reading files:
+semantic_search for a question in words, search_functions or search_classes for a
+name. Then read what its results point to, and follow symbols with get_definition
+and get_references.
+```
 
 ```markdown
 # Devscriptor code intelligence
@@ -702,7 +718,7 @@ Graph stays empty and the integration is only half of what it can be.
 - [ ] Per-tool timeout ≥ 180 s, startup timeout ≈ 60 s.
 - [ ] Agent waits for tool registration before its first turn.
 - [ ] The main tools of [§6](#6-step-5--handling-75-tools-without-hallucination) are in the tool table from the first request, and the rest are disclosed **with descriptions**, not as 75 raw schemas.
-- [ ] The Devscriptor system-prompt block ([§7](#7-step-6--the-system-prompt-copy-paste)) is installed.
+- [ ] The Devscriptor system-prompt block ([§7](#7-step-6--the-system-prompt-copy-paste)) is installed, and a short reminder to start with Devscriptor comes with the first prompt of each conversation.
 - [ ] Approval policy distinguishes read-only from mutating tools ([§8](#8-step-7--approval--permission-policy)).
 - [ ] Parameters come from the live schema, not from prose docs ([§10](#10-parameter-reference-and-gotchas)).
 - [ ] The agent searches the Context Graph before, and writes notes after, non-trivial work.

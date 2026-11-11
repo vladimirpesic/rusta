@@ -934,6 +934,7 @@ async fn reload_context(ctx: &mut CommandContext) -> Result<String, String> {
         }
         agent.set_system_prompt(built.text);
         agent.set_subagent_prompt(Some(built.subagent_prompt));
+        agent.set_tools_reminder(built.mcp_guidance.as_ref().map(|g| g.reminder.clone()));
         agent.set_subagent_mcp_guidance(built.mcp_guidance);
         if let Some(reminder) = &reminder {
             agent.add_system_reminder(reminder);

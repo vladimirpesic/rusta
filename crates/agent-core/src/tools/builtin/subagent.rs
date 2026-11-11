@@ -96,17 +96,18 @@ pub(crate) fn spawn_with_profile(
         Some(prompt) => prompt.render(role),
         None => crate::prompt::subagent_prompt(role, &ctx.cwd),
     };
-    if let Some(guidance) = ctx
+    let guidance = ctx
         .subagent_mcp_guidance
         .as_deref()
-        .and_then(|guidance| guidance.for_tools(mcp))
-    {
+        .filter(|guidance| guidance.for_tools(mcp).is_some());
+    if let Some(text) = guidance.and_then(|guidance| guidance.for_tools(mcp)) {
         system_prompt.truncate(system_prompt.trim_end().len());
         system_prompt.push_str("\n\n");
-        system_prompt.push_str(guidance.trim());
+        system_prompt.push_str(text.trim());
         system_prompt.push('\n');
     }
     let mut agent = Agent::spawn_child(ctx, system_prompt, llm);
+    agent.set_tools_reminder(guidance.map(|guidance| guidance.reminder.clone()));
     if !profile.allowed_tools.is_empty() {
         let allowed: std::collections::HashSet<String> =
             profile.allowed_tools.iter().cloned().collect();
@@ -190,6 +191,9 @@ pub(crate) fn fork_agent(
     llm: Option<Arc<dyn Llm>>,
 ) -> Agent {
     let mut agent = Agent::spawn_child(ctx, instructions, llm);
+    // The caller continuing: its reminder of where to start with the tools
+    // comes along, as its conversation and its tool table do.
+    agent.tool_ctx.tools_reminder = ctx.tools_reminder.clone();
     // The fork's whole table is the caller's — same order, same definitions,
     // deferred where the caller defers — so its first request hits the
     // caller's prompt cache. Covers the MCP tools

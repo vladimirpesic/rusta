@@ -16,8 +16,9 @@
 //! Without guidance a model does not know that a `scan_codebase` must precede
 //! entity search, that LSP tools need a language server resolved first, or that
 //! the Context Graph is durable cross-session memory. This module supplies that
-//! workflow as a system-prompt section, gated on a Devscriptor server actually
-//! being configured and enabled.
+//! workflow as a system-prompt section, and a short reminder that rides with the
+//! first prompt of a conversation to start with Devscriptor's tools, both gated
+//! on a Devscriptor server actually being configured and enabled.
 //!
 //! # Discovery
 //!
@@ -646,11 +647,35 @@ call."#
     )
 }
 
-/// The guidance in both forms, for the session's sub-agents.
+/// The reminder that rides with the first prompt of every conversation that
+/// has Devscriptor's tools ([`agent_core::McpGuidance::reminder`]): find code
+/// with it before `grep`, `glob` or file reads, starting with which tools. The
+/// workflow is in the system prompt, but a model weighs what comes with its
+/// task: with the guidance alone it mostly searched with `grep`. Every tool it
+/// names is read-only, so it holds for a read-only sub-agent too.
+pub fn reminder(server: &str, table: ToolTable) -> String {
+    let load = match table {
+        ToolTable::OnDemand => " Load them with `select_tools` first.",
+        ToolTable::All | ToolTable::Preloaded => "",
+    };
+    format!(
+        "<system-reminder>\nDevscriptor's code intelligence is connected to this workspace. To \
+         find the code a task concerns, start with it rather than `grep`, `glob` or reading \
+         files: `mcp__{server}__semantic_search` for a question in words, \
+         `mcp__{server}__search_functions` or `mcp__{server}__search_classes` for a name. Then \
+         read what its results point to, and follow symbols with \
+         `mcp__{server}__get_definition` and `mcp__{server}__get_references`.{load}\n\
+         </system-reminder>"
+    )
+}
+
+/// The guidance in both forms, and the reminder, for the session and its
+/// sub-agents.
 pub fn subagent_guidance(server: &str, table: ToolTable) -> agent_core::McpGuidance {
     agent_core::McpGuidance {
         all: guidance(server, table),
         read_only: read_only_guidance(server, table),
+        reminder: reminder(server, table),
     }
 }
 
@@ -1353,6 +1378,36 @@ mod tests {
             ToolTable::Preloaded,
             "the server's own setting wins over the global one"
         );
+    }
+
+    /// The reminder is a `<system-reminder>` that sends the model to
+    /// Devscriptor before `grep`; every tool it names is a read-only tool
+    /// Devscriptor serves, and one Rusta preloads, so the model holds what it
+    /// is told to start with. It says to load them only where they must be.
+    #[test]
+    fn the_reminder_names_where_to_start() {
+        let served = served_tools();
+        for table in TABLES {
+            let text = reminder("code-intel", table);
+            assert!(text.starts_with("<system-reminder>\n"), "{text}");
+            assert!(text.ends_with("\n</system-reminder>"), "{text}");
+            assert!(text.contains("rather than `grep`, `glob` or reading files"));
+            let named = named_tools(&text, "code-intel");
+            assert!(named.len() >= 5, "{named:?}");
+            for name in &named {
+                assert!(
+                    served.iter().any(|(s, read_only)| s == name && *read_only),
+                    "{name} is not a read-only tool Devscriptor serves"
+                );
+                assert!(PRELOADED_TOOLS.contains(&name.as_str()), "{name}");
+            }
+            assert_eq!(
+                text.contains("select_tools"),
+                table == ToolTable::OnDemand,
+                "{table:?}"
+            );
+            assert_eq!(subagent_guidance("code-intel", table).reminder, text);
+        }
     }
 
     /// A sub-agent with only the read-only tools is shown how to search,

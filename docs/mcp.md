@@ -179,7 +179,13 @@ an entry you configure yourself too, unless it sets its own `preload`;
 When Devscriptor is connected, the system prompt carries its workflow: find code
 with it before `grep` or reading files, index first, navigate with it, record
 durable notes in the Context Graph, and handle its failures by the errors it
-actually returns. It tells the model which tools it already holds. The guidance comes in
+actually returns. It tells the model which tools it already holds. The first
+prompt of every conversation that has the tools, a sub-agent's included, comes
+with a short reminder to find code with Devscriptor first, naming the search and
+navigation tools to start with; it comes again after a compaction. A model
+weighs what comes with its task over a long system prompt: with every
+Devscriptor tool on demand and the workflow in the system prompt alone, models
+called Devscriptor in 5 of 24 coding tasks. The guidance comes in
 a full form and a read-only form, for sub-agents that get only its read-only
 tools. [devscriptor-mcp-guide.md](devscriptor-mcp-guide.md) explains how to get
 the most out of Devscriptor from any MCP-capable agent.

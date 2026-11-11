@@ -505,6 +505,16 @@ impl Agent {
         self.tool_ctx.subagent_tool_events = Some(sender);
     }
 
+    /// The reminder of where to start with the MCP tools this agent holds
+    /// ([`crate::McpGuidance::reminder`]): it rides with the first prompt of
+    /// the conversation, and with the next one after compaction drops it.
+    /// `None`, or an empty text, adds none.
+    pub fn set_tools_reminder(&mut self, reminder: Option<String>) {
+        self.tool_ctx.tools_reminder = reminder
+            .filter(|text| !text.trim().is_empty())
+            .map(Arc::from);
+    }
+
     /// Guidance for the system prompt of a sub-agent that gets MCP tools —
     /// Devscriptor's workflow, when its server is configured.
     pub fn set_subagent_mcp_guidance(&mut self, guidance: Option<crate::McpGuidance>) {
@@ -1621,6 +1631,14 @@ impl Agent {
         {
             self.context
                 .add_message(crate::plan_mode::reminder_message(reminder));
+        }
+        // Where to start with the MCP tools, beside the first prompt and again
+        // once compaction has dropped it.
+        if let Some(reminder) = self.tool_ctx.tools_reminder.clone()
+            && !self.context.has_user_message(&reminder)
+        {
+            self.context
+                .add_message(Message::user(reminder.to_string()));
         }
         self.tool_ctx = ExecutableToolContext {
             prompt: Some(prompt),
@@ -2851,15 +2869,24 @@ mod tests {
         parent.register_dynamic_tool(Arc::new(Reading(tool("mcp__code__search"))));
         parent.register_dynamic_tool(Arc::new(tool("mcp__code__rename")));
         parent.register_tool(Arc::new(tool("mcp__small__ping")));
+        // A deferred server's preloaded tool: in the table, and read-only.
+        parent.register_tool(Arc::new(Reading(tool("mcp__code__find"))));
+        let reminder = "<system-reminder>\nStart with the index.\n</system-reminder>";
         parent.set_subagent_mcp_guidance(Some(crate::McpGuidance {
             all: "# Devscriptor code intelligence\nUse it.".into(),
             read_only: "# Devscriptor code intelligence\nRead with it.".into(),
+            reminder: reminder.into(),
         }));
         let mut profiles = ProfileRegistry::with_builtin_profiles();
         profiles.register(crate::Profile {
             name: "narrow".into(),
             allowed_tools: vec!["read_file".into()],
             mcp_tools: Some(McpTools::All),
+            ..Default::default()
+        });
+        profiles.register(crate::Profile {
+            name: "plain".into(),
+            mcp_tools: Some(McpTools::None),
             ..Default::default()
         });
         let ctx = parent.tool_ctx.clone();
@@ -2871,7 +2898,13 @@ mod tests {
             assert!(reg.is_dynamic("mcp__code__rename"), "{name}");
             assert!(reg.get("mcp__small__ping").is_some(), "{name}");
             assert!(!reg.is_dynamic("mcp__small__ping"), "{name}");
+            assert!(reg.get("mcp__code__find").is_some(), "{name}");
+            assert!(
+                !reg.is_dynamic("mcp__code__find"),
+                "{name}: held as preloaded"
+            );
             assert!(child.context.system_prompt().contains("Use it."), "{name}");
+            assert_eq!(child.tool_ctx.tools_reminder.as_deref(), Some(reminder));
         }
         for name in ["explore", "plan"] {
             let child = spawn_with_profile(&ctx, &profiles.resolve(name).unwrap(), None);
@@ -2883,10 +2916,27 @@ mod tests {
                 reg.get("select_tools").is_some(),
                 "{name} loads the deferred"
             );
+            assert!(reg.get("mcp__code__find").is_some(), "{name}");
+            assert!(
+                !reg.is_dynamic("mcp__code__find"),
+                "{name}: held as preloaded"
+            );
             let prompt = child.context.system_prompt();
             assert!(prompt.contains("Read with it."), "{name}");
             assert!(!prompt.contains("Use it."), "{name}");
+            assert_eq!(child.tool_ctx.tools_reminder.as_deref(), Some(reminder));
         }
+
+        let plain = spawn_with_profile(&ctx, &profiles.resolve("plain").unwrap(), None);
+        assert!(
+            plain
+                .registry
+                .lock()
+                .unwrap()
+                .get("mcp__code__find")
+                .is_none()
+        );
+        assert_eq!(plain.tool_ctx.tools_reminder, None, "no tools, no reminder");
 
         let narrow = spawn_with_profile(&ctx, &profiles.resolve("narrow").unwrap(), None);
         let reg = narrow.registry.lock().unwrap();
@@ -2897,6 +2947,53 @@ mod tests {
             reg.get("select_tools").is_some(),
             "deferred tools need select_tools"
         );
+    }
+
+    /// The reminder of where to start with the MCP tools rides with the first
+    /// prompt of a conversation, before it, and only once; a context that
+    /// lost it, as a cleared or compacted one does, is told again. An empty
+    /// reminder adds nothing.
+    #[tokio::test]
+    async fn the_tools_reminder_rides_with_the_first_prompt() {
+        let reminder = "<system-reminder>\nStart with the index.\n</system-reminder>";
+        let llm = MockLlm::new(Vec::new());
+        let cancel = CancellationToken::new();
+        let count = |agent: &Agent| {
+            agent
+                .context
+                .build_history()
+                .iter()
+                .map(|m| m.text_content().matches(reminder).count())
+                .sum::<usize>()
+        };
+
+        let mut agent = Agent::new(std::env::temp_dir(), "sys");
+        agent.set_tools_reminder(Some(reminder.into()));
+        agent.prompt(&llm, "first", &cancel).await.unwrap();
+        assert_eq!(count(&agent), 1);
+        let first = agent
+            .context
+            .build_history()
+            .into_iter()
+            .find(|m| m.text_content().contains("first"))
+            .unwrap()
+            .text_content();
+        assert!(
+            first.find(reminder) < first.find("\n\nfirst"),
+            "the reminder comes before the prompt: {first}"
+        );
+
+        agent.prompt(&llm, "second", &cancel).await.unwrap();
+        assert_eq!(count(&agent), 1, "once per conversation");
+
+        agent.clear_context();
+        agent.prompt(&llm, "third", &cancel).await.unwrap();
+        assert_eq!(count(&agent), 1, "told again once the context lost it");
+
+        let mut blank = Agent::new(std::env::temp_dir(), "sys");
+        blank.set_tools_reminder(Some("  ".into()));
+        blank.prompt(&llm, "first", &cancel).await.unwrap();
+        assert_eq!(blank.tool_ctx.tools_reminder, None);
     }
 
     /// A coder or default sub-agent gets the session's skills through its own
@@ -2946,6 +3043,7 @@ mod tests {
         parent.set_subagent_mcp_guidance(Some(crate::McpGuidance {
             all: "# Devscriptor code intelligence\nUse it.".into(),
             read_only: "# Devscriptor code intelligence\nRead with it.".into(),
+            reminder: "<system-reminder>\nStart with the index.\n</system-reminder>".into(),
         }));
         let profiles = ProfileRegistry::with_builtin_profiles();
         let coder = profiles.resolve("coder").unwrap();

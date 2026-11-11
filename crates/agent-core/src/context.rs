@@ -306,6 +306,15 @@ impl ContextMemory {
             .any(context_compaction::is_real_user_input)
     }
 
+    /// Whether a user message of exactly `text` is in the context. Asked of
+    /// the messages as they were added: the history the model is sent joins
+    /// consecutive user messages into one.
+    pub fn has_user_message(&self, text: &str) -> bool {
+        self.messages
+            .iter()
+            .any(|message| message.role == Role::User && message.text_content() == text)
+    }
+
     /// Append the interruption reminder after a turn the user
     /// cancelled: the partial output above is incomplete and the next message
     /// continues the conversation. Added once — skipped when the newest

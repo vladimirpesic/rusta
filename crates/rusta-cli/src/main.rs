@@ -326,6 +326,9 @@ async fn main() -> anyhow::Result<()> {
     // Sub-agents get the session's prompt with their role, and one that gets
     // the session's MCP tools gets the guidance for them.
     agent.set_subagent_prompt(Some(subagent_prompt));
+    // The session's first prompt comes with a reminder of where to start with
+    // the MCP tools: the guidance alone sits deep in the system prompt.
+    agent.set_tools_reminder(mcp_guidance.as_ref().map(|g| g.reminder.clone()));
     agent.set_subagent_mcp_guidance(mcp_guidance);
     // A script driving Rusta follows sub-agents' work too.
     if cli.stream_json {

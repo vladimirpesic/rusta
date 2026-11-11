@@ -96,7 +96,10 @@ ones.
 The date is not in the prompt: putting it there would change the prompt daily
 and defeat prompt caching. Instead, each agent gets `Today's date is …` in a
 reminder at its first prompt, again when the date changes, and again after a
-compaction. Reminders arrive as `<system-reminder>` text, which the prompt tells
+compaction. An agent that holds Devscriptor's tools gets a reminder of where to
+start with them at its first prompt, and again after a compaction: the workflow
+is in the system prompt, but a model weighs what comes with its task. Reminders
+arrive as `<system-reminder>` text, which the prompt tells
 the model to follow as the harness's own; web content can never carry one (see
 [Web tools](tools.md#web-tools)).
 
