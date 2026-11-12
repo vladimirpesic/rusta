@@ -266,6 +266,12 @@ struct Discovered {
     preloaded: Vec<String>,
 }
 
+/// A token endpoint, and where requests to it may go.
+struct TokenEndpoint {
+    url: String,
+    policy: oauth::AddressPolicy,
+}
+
 /// Why the watch over a live connection ended.
 enum WatchEnd {
     /// The transport closed, or the manager stopped.
@@ -535,11 +541,7 @@ impl ServerHandle {
         let url = self.config.url.as_deref()?;
         let mut cached = self.discovery.lock().await;
         if cached.is_none() {
-            let client = lm_bridge::http::client_builder()
-                .timeout(Duration::from_secs(15))
-                .build()
-                .ok()?;
-            match oauth::discover(&client, url).await {
+            match oauth::discover(url).await {
                 Ok(found) => *cached = Some(found),
                 Err(e) => {
                     info!(
@@ -553,11 +555,13 @@ impl ServerHandle {
         cached.clone()
     }
 
-    /// The authorization and token endpoints: configured, or discovered.
+    /// The authorization and token endpoints: configured, or discovered. A
+    /// configured token endpoint is not restricted; a discovered one is held to
+    /// the discovery's [`oauth::AddressPolicy`].
     async fn oauth_endpoints(
         &self,
         oauth: &crate::config::McpOAuthConfig,
-    ) -> Result<(String, String, Option<oauth::Discovery>), OAuthError> {
+    ) -> Result<(String, TokenEndpoint, Option<oauth::Discovery>), OAuthError> {
         let discovery = self.discovery().await;
         let pick = |configured: &str, discovered: Option<&String>, what: &str| {
             if !configured.is_empty() {
@@ -583,7 +587,18 @@ impl ServerHandle {
             discovery.as_ref().map(|d| &d.metadata.token_endpoint),
             "token_url",
         )?;
-        Ok((auth_url, token_url, discovery))
+        let policy = match &discovery {
+            Some(found) if oauth.token_url.is_empty() => found.policy.clone(),
+            _ => oauth::AddressPolicy::unrestricted(),
+        };
+        Ok((
+            auth_url,
+            TokenEndpoint {
+                url: token_url,
+                policy,
+            },
+            discovery,
+        ))
     }
 
     /// Whether the OAuth grant expires within `window` and can be refreshed.
@@ -610,8 +625,8 @@ impl ServerHandle {
         let Some(refresh) = refresh else {
             return false;
         };
-        let token_url = match self.oauth_endpoints(oauth).await {
-            Ok((_, token_url, _)) => token_url,
+        let token = match self.oauth_endpoints(oauth).await {
+            Ok((_, token, _)) => token,
             Err(e) => {
                 warn!(
                     "cannot refresh the OAuth token for MCP server '{}': {e}",
@@ -621,7 +636,8 @@ impl ServerHandle {
             }
         };
         match oauth::refresh_token(
-            &token_url,
+            &token.url,
+            &token.policy,
             &refresh,
             &oauth.client_id,
             oauth.client_secret.as_deref(),
@@ -664,7 +680,7 @@ impl ServerHandle {
         &self,
         oauth: &crate::config::McpOAuthConfig,
     ) -> Result<OAuthToken, OAuthError> {
-        let (auth_url, token_url, discovery) = self.oauth_endpoints(oauth).await?;
+        let (auth_url, token, discovery) = self.oauth_endpoints(oauth).await?;
         let pkce = PkcePair::new();
         let state = random_state();
         let redirect = redirect_uri(oauth.redirect_port);
@@ -691,7 +707,8 @@ impl ServerHandle {
         .map_err(|_| OAuthError::Timeout)??;
 
         oauth::exchange_code(
-            &token_url,
+            &token.url,
+            &token.policy,
             &code,
             &redirect,
             &pkce.verifier,

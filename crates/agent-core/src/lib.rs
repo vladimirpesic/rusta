@@ -1,3 +1,4 @@
+pub mod address;
 pub mod agent;
 pub mod agent_loop;
 pub mod agents_md;

@@ -211,7 +211,8 @@ bypass mode; dangerous shell commands ask outside it; no command, hook or MCP
 server sees the variables Rusta reads its keys from; a cloned repository's
 config cannot start servers or redirect requests until its folder is trusted,
 and cannot declare hooks at all; `fetch` refuses private and metadata
-addresses; and web content cannot pose as the harness.
+addresses, and an MCP server's sign-in reaches no internal network the server is
+not on itself; and web content cannot pose as the harness.
 
 **Writes from a current picture.** `write_file` overwrites only a file the agent
 has read and that has not changed since, per agent; `edit_file` needs its text to

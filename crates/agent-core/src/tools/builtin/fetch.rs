@@ -308,26 +308,17 @@ async fn guarded_get(
             .host_str()
             .ok_or_else(|| format!("URL has no host: {current}"))?
             .to_string();
-        let port = current
-            .port_or_known_default()
-            .ok_or_else(|| format!("URL has no port: {current}"))?;
-
-        let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
+        let addrs = crate::address::resolve_allowed(&current, |class| !class.is_internal())
             .await
-            .map_err(|e| format!("Could not resolve {host}: {e}"))?
-            .collect();
-        if addrs.is_empty() {
-            return Err(format!("Could not resolve {host}"));
-        }
-        for addr in &addrs {
-            if is_blocked_ip(addr.ip()) {
-                return Err(format!(
-                    "Refusing to fetch {current}: {host} resolves to the private or loopback \
-address {} — blocked to prevent server-side request forgery",
-                    addr.ip()
-                ));
-            }
-        }
+            .map_err(|e| match e {
+                crate::address::AddressError::Unresolved(reason) => {
+                    format!("Failed to fetch {current}: {reason}")
+                }
+                refused @ crate::address::AddressError::Refused { .. } => format!(
+                    "Refusing to fetch {current}: {refused} — blocked to prevent server-side \
+request forgery"
+                ),
+            })?;
 
         // Pin the connection to the validated addresses and follow redirects by
         // hand so every hop is re-checked.
@@ -408,39 +399,6 @@ fn is_redirect_status(status: reqwest::StatusCode) -> bool {
             | StatusCode::TEMPORARY_REDIRECT
             | StatusCode::PERMANENT_REDIRECT
     )
-}
-
-/// Whether an address is one the fetcher must never reach.
-fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
-    use std::net::IpAddr;
-    match ip {
-        IpAddr::V4(v4) => is_blocked_v4(v4),
-        // An IPv4-mapped IPv6 address (`::ffff:127.0.0.1`) reaches the same host
-        // as its embedded IPv4 address, so unwrap and judge it as IPv4.
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => is_blocked_v4(v4),
-            None => is_blocked_v6(v6),
-        },
-    }
-}
-
-fn is_blocked_v4(ip: std::net::Ipv4Addr) -> bool {
-    let [a, b, ..] = ip.octets();
-    ip.is_loopback()          // 127.0.0.0/8
-        || ip.is_private()    // 10/8, 172.16/12, 192.168/16
-        || ip.is_link_local() // 169.254.0.0/16
-        || ip.is_unspecified()// 0.0.0.0
-        || ip.is_broadcast()  // 255.255.255.255
-        || a == 0             // 0.0.0.0/8
-        || (a == 100 && (64..128).contains(&b)) // CGNAT 100.64.0.0/10
-}
-
-fn is_blocked_v6(ip: std::net::Ipv6Addr) -> bool {
-    let first = ip.segments()[0];
-    ip.is_loopback()               // ::1
-        || ip.is_unspecified()     // ::
-        || (first & 0xfe00) == 0xfc00 // ULA fc00::/7
-        || (first & 0xffc0) == 0xfe80 // link-local fe80::/10
 }
 
 #[cfg(test)]
@@ -604,53 +562,6 @@ double every second digit. If doubling yields a number above nine, subtract nine
         assert!(result.is_error);
     }
 
-    #[test]
-    fn blocks_private_loopback_and_metadata_addresses() {
-        use std::net::IpAddr;
-        for blocked in [
-            "127.0.0.1",              // loopback
-            "10.1.2.3",               // RFC1918
-            "172.16.5.4",             // RFC1918
-            "192.168.0.1",            // RFC1918
-            "169.254.169.254",        // link-local / cloud metadata
-            "100.64.1.1",             // CGNAT
-            "0.0.0.0",                // unspecified
-            "::1",                    // IPv6 loopback
-            "fc00::1",                // ULA
-            "fe80::1",                // IPv6 link-local
-            "::ffff:127.0.0.1",       // IPv4-mapped loopback
-            "::ffff:169.254.169.254", // IPv4-mapped metadata
-        ] {
-            let ip: IpAddr = blocked.parse().unwrap();
-            assert!(is_blocked_ip(ip), "{blocked} must be blocked");
-        }
-    }
-
-    #[test]
-    fn allows_public_addresses() {
-        use std::net::IpAddr;
-        for ok in [
-            "8.8.8.8",
-            "1.1.1.1",
-            "93.184.216.34",
-            "2606:4700:4700::1111",
-        ] {
-            let ip: IpAddr = ok.parse().unwrap();
-            assert!(!is_blocked_ip(ip), "{ok} must be allowed");
-        }
-    }
-
-    /// CGNAT is exactly 100.64.0.0/10 — public 100.x addresses outside it must
-    /// still be reachable.
-    #[test]
-    fn cgnat_boundary_is_exact() {
-        use std::net::IpAddr;
-        assert!(is_blocked_ip("100.64.0.0".parse::<IpAddr>().unwrap()));
-        assert!(is_blocked_ip("100.127.255.255".parse::<IpAddr>().unwrap()));
-        assert!(!is_blocked_ip("100.63.255.255".parse::<IpAddr>().unwrap()));
-        assert!(!is_blocked_ip("100.128.0.0".parse::<IpAddr>().unwrap()));
-    }
-
     #[tokio::test]
     async fn refuses_non_http_schemes() {
         let err = guarded_get(
@@ -665,18 +576,18 @@ double every second digit. If doubling yields a number above nine, subtract nine
     }
 
     #[tokio::test]
-    async fn refuses_loopback_literal_without_connecting() {
-        let err = guarded_get(
-            "http://127.0.0.1:9/",
-            std::time::Duration::from_secs(5),
-            "test",
-            1024,
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            err.contains("private or loopback"),
-            "unexpected error: {err}"
-        );
+    async fn refuses_loopback_literals_without_connecting() {
+        for (url, address) in [
+            ("http://127.0.0.1:9/", "127.0.0.1"),
+            ("http://[::1]:9/", "::1"),
+        ] {
+            let err = guarded_get(url, std::time::Duration::from_secs(5), "test", 1024)
+                .await
+                .unwrap_err();
+            assert!(
+                err.contains(&format!("the loopback address {address}")),
+                "unexpected error: {err}"
+            );
+        }
     }
 }

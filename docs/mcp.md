@@ -127,6 +127,15 @@ refresh token. The grant is saved under `<config dir>/rusta/credentials/mcp/`.
 It is refreshed two minutes before it expires, and again when the server rejects
 it.
 
+Discovered endpoints are the server's word, so the requests they lead to are
+checked. An origin other than the server's own must resolve to public
+addresses, or to internal ones of the kind the server's own host resolves to: a
+server on `localhost` may name an authorization server on `localhost`, and a
+server on a private network one on a private network. Anything else is refused
+before a connection is made, every redirect is checked the same way, and the
+connection goes only to the checked addresses. Metadata and token responses are
+read up to 1 MiB. Endpoints you configure yourself are not restricted.
+
 When a tool call is refused with 401 mid-session, Rusta first refreshes and
 retries the call. If that is not possible, it forgets the rejected token, marks
 the server as needing authorization, and restarts the sign-in (or, without

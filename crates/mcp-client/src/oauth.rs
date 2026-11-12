@@ -7,9 +7,15 @@
 //! server supports `offline_access`, it is requested so the grant comes with
 //! a refresh token, and tokens are refreshed before they expire and when a
 //! server rejects them.
+//!
+//! The metadata is the MCP server's to write, so the requests it leads to are
+//! held to an [`AddressPolicy`]: an origin other than the server's own may be on
+//! the public internet, or on an internal network of the kind the server itself
+//! is on, and nowhere else. Responses are read up to [`MAX_RESPONSE_BYTES`].
 
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 
+use agent_core::address::{self, AddressClass, AddressError};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -40,6 +46,15 @@ pub enum OAuthError {
     Shutdown,
     #[error("authorization server discovery failed: {0}")]
     Discovery(String),
+    #[error("{0}")]
+    Unresolved(String),
+    #[error(
+        "refusing to send an OAuth request to {0}; an MCP server's metadata may lead only to \
+the public internet and to the kind of network the server itself is on"
+    )]
+    Refused(String),
+    #[error("the response from {0} is larger than {MAX_RESPONSE_BYTES} bytes")]
+    TooLarge(String),
 }
 
 /// The scope that asks for a refresh token.
@@ -47,6 +62,125 @@ pub const OFFLINE_ACCESS_SCOPE: &str = "offline_access";
 
 /// How long before expiry a token is refreshed.
 pub const REFRESH_AHEAD: Duration = Duration::from_secs(120);
+
+/// The most of a metadata or token response that is read: both are small JSON
+/// documents.
+pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// Redirects followed while fetching metadata.
+const MAX_REDIRECTS: usize = 5;
+
+/// How long one metadata request may take.
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long one token request may take.
+const TOKEN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Where the requests of one MCP server's sign-in may go.
+///
+/// Discovery and the token requests follow URLs the server's metadata names,
+/// so a malicious server could aim them at a service that only the user's
+/// machine or network can reach. The server's own origin is as trusted as its
+/// configured URL. Any other origin must resolve to public addresses, or to
+/// internal ones of a kind the server's own host resolves to: a server on
+/// `localhost` may name an authorization server on `localhost`, and a server on
+/// a private network one on a private network. Endpoints the user configured
+/// are not restricted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressPolicy {
+    /// The server's origin; `None` when nothing is restricted.
+    server: Option<url::Origin>,
+    /// The internal networks the server's own host is on.
+    internal: Vec<AddressClass>,
+}
+
+impl AddressPolicy {
+    /// No restriction, for endpoints the user configured.
+    #[must_use]
+    pub fn unrestricted() -> Self {
+        Self {
+            server: None,
+            internal: Vec::new(),
+        }
+    }
+
+    /// The policy for the MCP server at `server_url`.
+    pub async fn for_server(server_url: &url::Url) -> Self {
+        let mut internal = Vec::new();
+        if let Ok(addrs) = address::resolve_allowed(server_url, |_| true).await {
+            for addr in addrs {
+                let class = AddressClass::of(addr.ip());
+                if class.is_internal() && !internal.contains(&class) {
+                    internal.push(class);
+                }
+            }
+        }
+        Self {
+            server: Some(server_url.origin()),
+            internal,
+        }
+    }
+
+    /// Whether an origin other than the server's may resolve to `class`.
+    #[must_use]
+    pub fn allows(&self, class: AddressClass) -> bool {
+        !class.is_internal() || self.internal.contains(&class)
+    }
+
+    /// A client for one request to `url` that follows no redirect, and that,
+    /// unless the policy trusts `url`, connects only to the addresses it
+    /// allowed.
+    async fn client_for(
+        &self,
+        url: &url::Url,
+        timeout: Duration,
+    ) -> Result<reqwest::Client, OAuthError> {
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(OAuthError::Refused(format!(
+                "{url}: only http and https are allowed"
+            )));
+        }
+        let builder = lm_bridge::http::client_builder()
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none());
+        let trusted = match &self.server {
+            None => true,
+            Some(origin) => url.origin() == *origin,
+        };
+        if trusted {
+            return Ok(builder.build()?);
+        }
+        let addrs = address::resolve_allowed(url, |class| self.allows(class))
+            .await
+            .map_err(|e| match e {
+                AddressError::Unresolved(reason) => OAuthError::Unresolved(reason),
+                refused @ AddressError::Refused { .. } => {
+                    OAuthError::Refused(format!("{url}: {refused}"))
+                }
+            })?;
+        let host = url.host_str().unwrap_or_default();
+        Ok(builder.resolve_to_addrs(host, &addrs).build()?)
+    }
+}
+
+/// Read `response`'s body, up to [`MAX_RESPONSE_BYTES`].
+async fn read_limited(mut response: reqwest::Response) -> Result<Vec<u8>, OAuthError> {
+    let too_large = |response: &reqwest::Response| OAuthError::TooLarge(response.url().to_string());
+    if response
+        .content_length()
+        .is_some_and(|len| len > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(too_large(&response));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(too_large(&response));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
 
 /// What an authorization server publishes about itself (RFC 8414).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -74,6 +208,8 @@ pub struct Discovery {
     pub metadata: AuthServerMetadata,
     /// Scopes the protected resource itself advertises, if it said.
     pub resource_scopes: Option<Vec<String>>,
+    /// Where requests to the discovered endpoints may go.
+    pub policy: AddressPolicy,
 }
 
 /// `{origin}/.well-known/{suffix}{path}` for `url`: the path-aware location
@@ -89,21 +225,52 @@ fn well_known_candidates(url: &url::Url, suffix: &str) -> Vec<String> {
     candidates
 }
 
-/// GET `url` as JSON, `None` when it is missing or unreadable.
+/// GET `url` as JSON, following redirects under `policy`. `None` when it is
+/// missing, unreadable or too large; an error when it, or a redirect, leads
+/// where `policy` refuses.
 async fn fetch_json<T: serde::de::DeserializeOwned>(
-    client: &reqwest::Client,
+    policy: &AddressPolicy,
     url: &str,
-) -> Option<T> {
-    let response = client
-        .get(url)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .send()
-        .await
-        .ok()?;
-    if !response.status().is_success() {
-        return None;
+) -> Result<Option<T>, OAuthError> {
+    let mut current = url::Url::parse(url)?;
+    for _ in 0..=MAX_REDIRECTS {
+        let client = match policy.client_for(&current, DISCOVERY_TIMEOUT).await {
+            Ok(client) => client,
+            Err(refused @ OAuthError::Refused(_)) => return Err(refused),
+            Err(_) => return Ok(None),
+        };
+        let Ok(response) = client
+            .get(current.clone())
+            .header(reqwest::header::ACCEPT, "application/json")
+            .send()
+            .await
+        else {
+            return Ok(None);
+        };
+        let status = response.status();
+        if status.is_redirection() {
+            let next = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|location| location.to_str().ok())
+                .and_then(|location| current.join(location).ok());
+            match next {
+                Some(next) => {
+                    current = next;
+                    continue;
+                }
+                None => return Ok(None),
+            }
+        }
+        if !status.is_success() {
+            return Ok(None);
+        }
+        return Ok(read_limited(response)
+            .await
+            .ok()
+            .and_then(|body| serde_json::from_slice(&body).ok()));
     }
-    response.json().await.ok()
+    Ok(None)
 }
 
 /// Find the authorization server for the MCP server at `server_url`.
@@ -111,11 +278,12 @@ async fn fetch_json<T: serde::de::DeserializeOwned>(
 /// Its protected-resource metadata names the authorization server; a server
 /// without that metadata is taken to be its own. The authorization server's
 /// metadata comes from RFC 8414's well-known location, or OpenID discovery.
-pub async fn discover(client: &reqwest::Client, server_url: &str) -> Result<Discovery, OAuthError> {
+pub async fn discover(server_url: &str) -> Result<Discovery, OAuthError> {
     let resource = url::Url::parse(server_url)?;
+    let policy = AddressPolicy::for_server(&resource).await;
     let mut resource_meta = ProtectedResourceMetadata::default();
     for candidate in well_known_candidates(&resource, "oauth-protected-resource") {
-        if let Some(meta) = fetch_json::<ProtectedResourceMetadata>(client, &candidate).await {
+        if let Some(meta) = fetch_json::<ProtectedResourceMetadata>(&policy, &candidate).await? {
             resource_meta = meta;
             break;
         }
@@ -140,10 +308,11 @@ pub async fn discover(client: &reqwest::Client, server_url: &str) -> Result<Disc
         ));
     }
     for candidate in candidates {
-        if let Some(metadata) = fetch_json::<AuthServerMetadata>(client, &candidate).await {
+        if let Some(metadata) = fetch_json::<AuthServerMetadata>(&policy, &candidate).await? {
             return Ok(Discovery {
                 metadata,
                 resource_scopes: resource_meta.scopes_supported,
+                policy,
             });
         }
     }
@@ -290,15 +459,19 @@ fn parse_token_response(body: &str) -> Result<OAuthToken, OAuthError> {
     })
 }
 
-/// POST `params` to the token endpoint and parse the token it returns.
-async fn token_request(token_url: &str, params: &[(&str, &str)]) -> Result<OAuthToken, OAuthError> {
-    let client = lm_bridge::http::client_builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30))
-        .build()?;
-    let response = client.post(token_url).form(params).send().await?;
+/// POST `params` to the token endpoint, under `policy`, and parse the token it
+/// returns.
+async fn token_request(
+    token_url: &str,
+    policy: &AddressPolicy,
+    params: &[(&str, &str)],
+) -> Result<OAuthToken, OAuthError> {
+    let url = url::Url::parse(token_url)?;
+    let client = policy.client_for(&url, TOKEN_TIMEOUT).await?;
+    let response = client.post(url).form(params).send().await?;
     let status = response.status();
-    let body = response.text().await?;
+    let body = read_limited(response).await?;
+    let body = String::from_utf8_lossy(&body);
     if !status.is_success() {
         return Err(OAuthError::AuthorizationFailed(format!(
             "token endpoint returned {status}: {body}"
@@ -307,10 +480,12 @@ async fn token_request(token_url: &str, params: &[(&str, &str)]) -> Result<OAuth
     parse_token_response(&body)
 }
 
-/// Exchange a refresh token for a fresh access token. A response without a
-/// new refresh token keeps the old one, as RFC 6749 §6 allows.
+/// Exchange a refresh token for a fresh access token at `token_url`, under
+/// `policy`. A response without a new refresh token keeps the old one, as
+/// RFC 6749 §6 allows.
 pub async fn refresh_token(
     token_url: &str,
+    policy: &AddressPolicy,
     refresh_token: &str,
     client_id: &str,
     client_secret: Option<&str>,
@@ -323,16 +498,18 @@ pub async fn refresh_token(
     if let Some(secret) = client_secret {
         params.push(("client_secret", secret));
     }
-    let mut token = token_request(token_url, &params).await?;
+    let mut token = token_request(token_url, policy, &params).await?;
     if token.refresh_token.is_none() {
         token.refresh_token = Some(refresh_token.to_string());
     }
     Ok(token)
 }
 
-/// Exchange an authorization code for an access token.
+/// Exchange an authorization code for an access token at `token_url`, under
+/// `policy`.
 pub async fn exchange_code(
     token_url: &str,
+    policy: &AddressPolicy,
     code: &str,
     redirect_uri: &str,
     verifier: &str,
@@ -349,7 +526,7 @@ pub async fn exchange_code(
     if let Some(secret) = client_secret {
         params.push(("client_secret", secret));
     }
-    token_request(token_url, &params).await
+    token_request(token_url, policy, &params).await
 }
 
 /// Start a localhost HTTP listener and wait for the OAuth callback.
@@ -687,9 +864,7 @@ mod tests {
                 .mount(&server)
                 .await;
 
-            let found = discover(&lm_bridge::http::client(), &format!("{}/mcp", server.uri()))
-                .await
-                .unwrap();
+            let found = discover(&format!("{}/mcp", server.uri())).await.unwrap();
             assert_eq!(
                 found.metadata.token_endpoint,
                 format!("{}/token", server.uri())
@@ -712,9 +887,7 @@ mod tests {
                 .respond_with(ResponseTemplate::new(200).set_body_json(metadata(&server, &[])))
                 .mount(&server)
                 .await;
-            let found = discover(&lm_bridge::http::client(), &format!("{}/mcp", server.uri()))
-                .await
-                .unwrap();
+            let found = discover(&format!("{}/mcp", server.uri())).await.unwrap();
             assert_eq!(
                 found.metadata.authorization_endpoint,
                 format!("{}/authorize", server.uri())
@@ -722,9 +895,7 @@ mod tests {
             assert!(found.resource_scopes.is_none());
 
             let bare = MockServer::start().await;
-            let err = discover(&lm_bridge::http::client(), &bare.uri())
-                .await
-                .unwrap_err();
+            let err = discover(&bare.uri()).await.unwrap_err();
             assert!(matches!(err, OAuthError::Discovery(_)), "{err}");
         }
 
@@ -738,6 +909,7 @@ mod tests {
                     scopes_supported: Some(vec!["read".into(), "offline_access".into()]),
                 },
                 resource_scopes: None,
+                policy: AddressPolicy::unrestricted(),
             };
             let configured = vec!["read".to_string()];
             assert_eq!(
@@ -767,13 +939,148 @@ mod tests {
                 })))
                 .mount(&server)
                 .await;
-            let token = refresh_token(&format!("{}/token", server.uri()), "r-1", "cli", None)
-                .await
-                .unwrap();
+            let token = refresh_token(
+                &format!("{}/token", server.uri()),
+                &AddressPolicy::unrestricted(),
+                "r-1",
+                "cli",
+                None,
+            )
+            .await
+            .unwrap();
             assert_eq!(token.access_token, "fresh");
             assert_eq!(token.refresh_token.as_deref(), Some("r-1"));
             assert!(!token.expires_within(Duration::from_secs(120)));
             assert!(token.expires_within(Duration::from_secs(7_200)));
+        }
+
+        /// Protected-resource metadata that names `issuer` as the authorization
+        /// server.
+        async fn naming_issuer(server: &MockServer, issuer: &str) {
+            Mock::given(method("GET"))
+                .and(path("/.well-known/oauth-protected-resource/mcp"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "authorization_servers": [issuer],
+                })))
+                .mount(server)
+                .await;
+        }
+
+        /// A server on this machine may name an authorization server elsewhere
+        /// on this machine, but none on the local link or a private network:
+        /// the request is refused before any connection is made.
+        #[tokio::test]
+        async fn the_metadata_cannot_send_discovery_into_another_network() {
+            let issuer = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.well-known/oauth-authorization-server"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(metadata(&issuer, &[])))
+                .mount(&issuer)
+                .await;
+            let server = MockServer::start().await;
+            naming_issuer(&server, &issuer.uri()).await;
+            let found = discover(&format!("{}/mcp", server.uri())).await.unwrap();
+            assert_eq!(
+                found.metadata.token_endpoint,
+                format!("{}/token", issuer.uri())
+            );
+
+            for (internal, class) in [
+                ("http://169.254.169.254", "link-local"),
+                ("http://10.255.255.1", "private"),
+            ] {
+                let server = MockServer::start().await;
+                naming_issuer(&server, internal).await;
+                let err = discover(&format!("{}/mcp", server.uri()))
+                    .await
+                    .unwrap_err();
+                assert!(matches!(err, OAuthError::Refused(_)), "{err}");
+                assert!(
+                    err.to_string().contains(&format!("the {class} address")),
+                    "{err}"
+                );
+            }
+        }
+
+        /// A redirect from the server's own origin is checked like any other
+        /// origin the server names.
+        #[tokio::test]
+        async fn a_redirect_cannot_send_discovery_into_another_network() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.well-known/oauth-protected-resource/mcp"))
+                .respond_with(
+                    ResponseTemplate::new(302)
+                        .insert_header("location", "http://169.254.169.254/latest/meta-data/"),
+                )
+                .mount(&server)
+                .await;
+            let err = discover(&format!("{}/mcp", server.uri()))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, OAuthError::Refused(_)), "{err}");
+        }
+
+        /// Metadata larger than the limit is ignored, as if absent.
+        #[tokio::test]
+        async fn oversized_metadata_is_not_read() {
+            let server = MockServer::start().await;
+            let mut huge = serde_json::to_vec(&serde_json::json!({
+                "authorization_servers": ["http://169.254.169.254"],
+            }))
+            .unwrap();
+            huge.resize(MAX_RESPONSE_BYTES + 1, b' ');
+            Mock::given(method("GET"))
+                .and(path("/.well-known/oauth-protected-resource/mcp"))
+                .respond_with(ResponseTemplate::new(200).set_body_raw(huge, "application/json"))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/.well-known/oauth-authorization-server"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(metadata(&server, &[])))
+                .mount(&server)
+                .await;
+            let found = discover(&format!("{}/mcp", server.uri())).await.unwrap();
+            assert!(found.resource_scopes.is_none());
+            assert_eq!(
+                found.metadata.token_endpoint,
+                format!("{}/token", server.uri())
+            );
+        }
+
+        /// A discovered token endpoint in another network is refused; an
+        /// oversized token response is an error, not a token.
+        #[tokio::test]
+        async fn token_requests_keep_to_the_policy_and_the_limit() {
+            let server = MockServer::start().await;
+            let policy = AddressPolicy::for_server(&url::Url::parse(&server.uri()).unwrap()).await;
+            assert!(policy.allows(AddressClass::Loopback));
+            assert!(!policy.allows(AddressClass::Private));
+            assert!(!policy.allows(AddressClass::LinkLocal));
+
+            let err = refresh_token("http://169.254.169.254/token", &policy, "r-1", "cli", None)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, OAuthError::Refused(_)), "{err}");
+
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_raw(vec![b' '; MAX_RESPONSE_BYTES + 1], "application/json"),
+                )
+                .mount(&server)
+                .await;
+            let err = refresh_token(
+                &format!("{}/token", server.uri()),
+                &policy,
+                "r-1",
+                "cli",
+                None,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, OAuthError::TooLarge(_)), "{err}");
         }
     }
 
