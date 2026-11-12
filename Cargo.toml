@@ -66,7 +66,7 @@ bytes = "1"
 base64 = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
 fastrand = "2"
-rmcp = { version = "3.5", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "3.9", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 dirs = "7"
 ulid = "3"
 url = "2"
