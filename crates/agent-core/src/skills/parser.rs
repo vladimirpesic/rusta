@@ -10,6 +10,7 @@ use crate::errors::AgentError;
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct SkillFrontmatter {
+    #[serde(deserialize_with = "crate::yaml::or_default")]
     name: String,
     description: Option<String>,
     #[serde(rename = "type")]
@@ -28,9 +29,13 @@ pub fn parse_skill(name: Option<&str>, source: &str) -> Result<Skill, AgentError
     let (frontmatter, body) = if let Some(after_open) = trimmed.strip_prefix("---") {
         match after_open.find("---") {
             Some(idx) => {
-                let yaml = after_open[..idx].trim();
+                let raw = &after_open[..idx];
+                let yaml = raw.trim();
+                // The lines before the YAML, so an error names the file's line.
+                let start = source.len() - after_open.len() + (raw.len() - raw.trim_start().len());
+                let lines_before = source[..start].matches('\n').count() as u64;
                 let body = after_open[idx + 3..].trim_start().to_string();
-                (Some(yaml), body)
+                (Some((yaml, lines_before)), body)
             }
             None => {
                 return Err(AgentError::Config(
@@ -43,9 +48,9 @@ pub fn parse_skill(name: Option<&str>, source: &str) -> Result<Skill, AgentError
     };
 
     let meta: SkillFrontmatter = match frontmatter {
-        Some(yaml) if !yaml.is_empty() => serde_yaml::from_str(yaml)
+        Some((yaml, lines_before)) => crate::yaml::from_str(yaml, lines_before)
             .map_err(|e| AgentError::Config(format!("skill YAML frontmatter: {e}")))?,
-        _ => SkillFrontmatter::default(),
+        None => SkillFrontmatter::default(),
     };
 
     let name = if meta.name.is_empty() {
@@ -146,10 +151,31 @@ Look for bugs and style issues.
         assert!(parse_skill(None, source).is_err());
     }
 
+    /// A `name` left without a value is no name: the file's name is used.
+    #[test]
+    fn a_blank_name_uses_the_filename() {
+        let source = "---\nname:\ndescription: d\n---\nBody";
+        let skill = parse_skill(Some("from-file"), source).unwrap();
+        assert_eq!(skill.name, "from-file");
+        assert_eq!(skill.description.as_deref(), Some("d"));
+    }
+
     #[test]
     fn test_parse_invalid_yaml_errors() {
         let source = "---\nname: [\n---\nBody";
         assert!(parse_skill(None, source).is_err());
+    }
+
+    /// An error in the frontmatter names the line in the whole file.
+    #[test]
+    fn a_frontmatter_error_names_the_files_line() {
+        let source = "\n---\nname: s\ndisable_model_invocation: yes\n---\nBody";
+        let error = parse_skill(None, source).unwrap_err().to_string();
+        assert!(error.contains("line 4, column"), "{error}");
+        assert!(
+            error.ends_with("`disable_model_invocation: yes`"),
+            "{error}"
+        );
     }
 
     #[test]

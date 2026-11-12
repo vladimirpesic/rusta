@@ -35,6 +35,7 @@ pub mod user_hooks;
 pub mod vision_fallback;
 pub mod web_reader_client;
 pub mod web_search_client;
+pub mod yaml;
 
 pub use agent::{Agent, FORK_INHERITANCE_NOTICE, PromptOrigin};
 pub use agent_loop::types::{

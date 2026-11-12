@@ -7,7 +7,7 @@
 
 ## Building from source
 
-Rusta needs Rust 1.88 or newer (edition 2024):
+Rusta needs Rust 1.89 or newer (edition 2024):
 
 ```bash
 cargo build --release -p rusta-cli                  # target/release/rusta

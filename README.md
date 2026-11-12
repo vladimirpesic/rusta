@@ -44,7 +44,7 @@ sudo install rusta-1.0.1-x86_64-unknown-linux-gnu/rusta /usr/local/bin/
 The macOS binaries are not signed, so the first launch may need
 `xattr -d com.apple.quarantine "$(command -v rusta)"`.
 
-Or build from source with Rust 1.88 or newer:
+Or build from source with Rust 1.89 or newer:
 
 ```bash
 git clone https://github.com/vladimirpesic/rusta.git rusta && cd rusta

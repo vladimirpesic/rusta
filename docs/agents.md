@@ -81,6 +81,11 @@ the read-only ones, so the agents that research code can search and navigate it
 with Devscriptor. `--profile` (`RUSTA_PROFILE`) runs the session's own agent
 under a profile.
 
+A profile file is YAML 1.2: only `true` and `false` are booleans, so `yes` is
+text. A key left without a value takes its default, and a profile without a
+`name` takes its file's. A file that cannot be read is reported with the line at
+fault, quoted.
+
 A sub-agent's system prompt is the session's — the same working rules,
 environment and instruction files — with its profile's role in place of the
 session's, framed as a sub-agent's (its caller sees only its last message). It

@@ -255,7 +255,9 @@ envelope ahead of your next message. A fire never lands mid-turn.
   is kept for the user: it is left out of that list, the model is refused if it
   names it, and the user runs it with `/skill <name>`. Skills are read from
   `~/.config/rusta/skills`, `~/.agents/skills`, the project's `.rusta/skills`,
-  and the directories in `skill_dirs`.
+  and the directories in `skill_dirs`. Frontmatter is read by the rules of a
+  [profile file](agents.md#profiles), and a skill without a `name` takes its
+  file's.
 
 ## Output limits
 

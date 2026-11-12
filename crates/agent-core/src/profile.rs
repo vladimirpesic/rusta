@@ -11,6 +11,7 @@ use crate::errors::AgentError;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Profile {
+    #[serde(deserialize_with = "crate::yaml::or_default")]
     pub name: String,
     /// Name of the profile this one inherits from.
     pub extends: Option<String>,
@@ -24,18 +25,18 @@ pub struct Profile {
     /// System prompt used for the subagent.
     pub system_prompt: Option<String>,
     /// Variables substituted into the system prompt or task template.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::or_default_values")]
     pub prompt_variables: HashMap<String, String>,
     /// Tool names the subagent is allowed to use. Empty means every tool that
     /// `denied_tools` does not remove. Provider built-ins (`$web_search` on
     /// Kimi) are never cut by either list — the provider executes them
     /// server-side (C4).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::or_default")]
     pub allowed_tools: Vec<String>,
     /// Tool names removed from the subagent's table however long the table
     /// is: the "everything except …" half of a profile. Combined with
     /// `allowed_tools` (the intersection survives).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::yaml::or_default")]
     pub denied_tools: Vec<String>,
     /// Prepend the repository's git context (branch, dirty files, recent
     /// commits) to the subagent's first message. Nothing is prepended outside
@@ -384,7 +385,7 @@ impl ProfileRegistry {
         for path in entries {
             let content = std::fs::read_to_string(&path)
                 .map_err(|e| AgentError::Config(format!("failed to read profile {path:?}: {e}")))?;
-            let mut profile: Profile = serde_yaml::from_str(&content).map_err(|e| {
+            let mut profile: Profile = crate::yaml::from_str(&content, 0).map_err(|e| {
                 AgentError::Config(format!("failed to parse profile {path:?}: {e}"))
             })?;
             if profile.name.is_empty() {
@@ -801,17 +802,17 @@ mod tests {
             ("mcp_tools: false", McpTools::None),
             ("mcp_tools: read_only", McpTools::ReadOnly),
         ] {
-            let profile: Profile = serde_yaml::from_str(&format!("name: p\n{yaml}")).unwrap();
+            let profile: Profile = crate::yaml::from_str(&format!("name: p\n{yaml}"), 0).unwrap();
             assert_eq!(profile.mcp_tools, Some(tools), "{yaml}");
-            let written = serde_yaml::to_string(&profile).unwrap();
-            let read: Profile = serde_yaml::from_str(&written).unwrap();
+            let written = serde_saphyr::to_string(&profile).unwrap();
+            let read: Profile = crate::yaml::from_str(&written, 0).unwrap();
             assert_eq!(read.mcp_tools, Some(tools), "{written}");
         }
-        let err = serde_yaml::from_str::<Profile>("name: p\nmcp_tools: some").unwrap_err();
-        assert!(
-            err.to_string().contains("true, false or read_only"),
-            "{err}"
-        );
+        for wrong in ["some", "yes"] {
+            let err = crate::yaml::from_str::<Profile>(&format!("name: p\nmcp_tools: {wrong}"), 0)
+                .unwrap_err();
+            assert!(err.contains("true, false or read_only"), "{err}");
+        }
     }
 
     #[test]

@@ -5,7 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "1.0.1"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 authors = ["Vladimir Pesic"]
 license = "GPL-3.0-only"
 
@@ -29,7 +29,8 @@ eventsource-stream = "0.2"
 # Serialization
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
-serde_yaml = "0.9"
+# YAML in safe Rust. Rusta only reads YAML; serializing is for its tests.
+serde-saphyr = { version = "2.1", default-features = false, features = ["deserialize"] }
 toml = "1"
 toml_edit = "0.25"
 
