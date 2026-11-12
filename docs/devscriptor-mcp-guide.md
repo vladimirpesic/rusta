@@ -372,9 +372,12 @@ client's naming.
 The block alone is not enough. Deep in a long system prompt it competes with
 everything else there, and a model weighs what comes with its task. Told in the
 task itself to find the code with Devscriptor, three models called it in 80% to
-92% of 300 tasks; with the workflow in the system prompt alone, in 5 of 24. So also put a short
-reminder beside the first prompt of each conversation, and again after the
-conversation is compacted, for example:
+92% of 300 tasks. On eight of those tasks (24 runs), they called it in 5 runs
+with the workflow in the system prompt alone and every tool loaded on demand, in
+19 with the main tools of [§6](#6-step-5--handling-75-tools-without-hallucination)
+in the tool table and the reminder below, and in 23 when told in the task. So
+also put a short reminder beside the first prompt of each conversation, and
+again after the conversation is compacted, for example:
 
 ```text
 Devscriptor's code intelligence is connected to this workspace. To find the code a
@@ -586,7 +589,6 @@ it again.
 get_watch_status()     # watching, path, mode ("events" or "poll"), rescans
 start_watching(path)   # another root, when none is watched; the watched one answers already_watching
 ```
-
 
 ---
 

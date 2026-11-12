@@ -183,9 +183,10 @@ actually returns. It tells the model which tools it already holds. The first
 prompt of every conversation that has the tools, a sub-agent's included, comes
 with a short reminder to find code with Devscriptor first, naming the search and
 navigation tools to start with; it comes again after a compaction. A model
-weighs what comes with its task over a long system prompt: with every
-Devscriptor tool on demand and the workflow in the system prompt alone, models
-called Devscriptor in 5 of 24 coding tasks. The guidance comes in
+weighs what comes with its task over a long system prompt. Given eight coding
+tasks each, three models called Devscriptor in 5 of their 24 runs when every
+Devscriptor tool was on demand and the workflow was in the system prompt alone,
+and in 19 with the main tools preloaded and the reminder. The guidance comes in
 a full form and a read-only form, for sub-agents that get only its read-only
 tools. [devscriptor-mcp-guide.md](devscriptor-mcp-guide.md) explains how to get
 the most out of Devscriptor from any MCP-capable agent.
