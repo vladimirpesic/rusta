@@ -222,7 +222,7 @@ url = "http://localhost:8000/mcp"
 # deferred = false
 # Tools of a deferred server that stay in the tool table all the same, as the
 # server names them; its other tools load on demand. A Devscriptor entry
-# without one gets its twelve most-used tools (see docs/mcp.md).
+# without one gets its six most-used tools (see docs/mcp.md).
 # preload = ["search", "read_page"]
 # Tools that only read, though the server does not declare it (MCP's
 # readOnlyHint): taken as declared read-only, so the explore and plan

@@ -13,12 +13,15 @@
 //! `select_tools` it searched with `grep` and read files instead, guidance or
 //! not.
 //!
-//! Without guidance a model does not know that a `scan_codebase` must precede
-//! entity search, that LSP tools need a language server resolved first, or that
-//! the Context Graph is durable cross-session memory. This module supplies that
-//! workflow as a system-prompt section, and a short reminder that rides with the
-//! first prompt of a conversation to start with Devscriptor's tools, both gated
-//! on a Devscriptor server actually being configured and enabled.
+//! Without guidance a model does not know which tool answers what, how to quote
+//! a language server's positions, or that the Context Graph is durable
+//! cross-session memory. This module supplies that workflow as a system-prompt
+//! section, and a short reminder that rides with the first prompt of a
+//! conversation to start with Devscriptor's tools, both gated on a Devscriptor
+//! server actually being configured and enabled. Every request carries both
+//! and the tool table, so they say only what a model needs to start: what
+//! holds for one answer, such as a workspace not indexed yet or a Context
+//! Graph note that matches a search, Devscriptor says in that answer.
 //!
 //! # Discovery
 //!
@@ -58,23 +61,16 @@ const STARTUP_TIMEOUT_MS: u64 = 60_000;
 const TOOL_TIMEOUT_MS: u64 = 180_000;
 
 /// The Devscriptor tools in the tool table from the start, unless the server's
-/// own `preload` says otherwise: finding code by meaning or name, what an
-/// entity is and what it calls, a file's summary, the language server's
-/// definitions and references, the index's state, the servers a project needs,
-/// and the Context Graph's notes. The other tools load on demand.
+/// own `preload` says otherwise: finding code by meaning or name, a file's
+/// summary, an entity, and a symbol's uses. The other tools load on demand:
+/// each one in the table is sent with every request, used or not.
 pub const PRELOADED_TOOLS: &[&str] = &[
     "semantic_search",
     "search_functions",
     "search_classes",
-    "get_entity_details",
-    "get_relationships",
     "get_file_context",
-    "get_definition",
+    "get_entity_details",
     "get_references",
-    "get_statistics",
-    "lsp_arch_detect",
-    "search_context",
-    "add_context_note",
 ];
 
 /// How to spawn the Devscriptor MCP server.
@@ -458,24 +454,28 @@ impl ToolTable {
 
 /// How to find code, the same for every agent that has the tools.
 const FINDING_CODE: &str = r#"## Finding code
-- `semantic_search` — the default for a question in words ("where are shipping
-  costs computed?"). It ranks the index by meaning and keywords together and
-  returns each match with its file, its first and last line (1-indexed) and its
-  first lines, each numbered as in the file: cite `file:line` from those rather
-  than reading the file to count lines. Without embeddings it falls back to
-  keywords and says so in its `message`.
-- `search_functions` / `search_classes` / `search_entities` — lookup by a name
-  or part of one (`discount`).
-- `fuzzy_search` — when the exact spelling is unknown.
-- `query_with_context` — code for a query in words or by name: what the Context
-  Graph notes about the query point at, else the code ranked as
-  `semantic_search` ranks it.
-- `get_entity_details` and `get_relationships` — inspect an entity, and what it
-  calls and is called by, uses, implements or inherits. Each relationship gives
-  the file and line of both ends and the lines a call is made on, so it answers
-  "who calls this, where?" with no language server; `file_path` tells entities
-  of one name apart.
-- `find_dead_code` and `analyze_complexity` — code-quality questions."#;
+- `semantic_search` — a question in words ("where are shipping costs
+  computed?"): matches by meaning and keywords, each with its file, its lines
+  and its first lines, numbered as in the file; cite `file:line` from them.
+- `search_functions`, `search_classes` — a name or part of one (`discount`);
+  `fuzzy_search` when the spelling is unknown.
+- `get_file_context` — what a file holds. `get_entity_details` — an entity;
+  `get_relationships` — what it calls, uses or inherits and what calls it, with
+  the lines a call is made on: "who calls this, where?" with no language server.
+- `find_dead_code`, `analyze_complexity` — code-quality questions.
+Lines in these results count from 1."#;
+
+/// How the language-server tools take and give positions, the same for every
+/// agent that has them.
+const LANGUAGE_SERVERS: &str = r#"## Language servers
+`get_references`, `get_definition` and the other LSP tools ask the language
+server, which Devscriptor starts on first use; the first call can be slow, so
+do not retry it at once. They take a symbol `name`, resolved from the index —
+prefer it — or `file_path`, `line` and `character`, counted from 0.
+Their results carry `cite`, `path:line:column` counted from 1: quote it as is.
+What the index adds that the server did not report, uses in `index_locations`
+and, for `get_incoming_calls`, in `index_calls`, calls with their callers, is
+matched by name: check it."#;
 
 /// Build the Devscriptor workflow guidance block for the system prompt.
 ///
@@ -487,96 +487,48 @@ pub fn guidance(server: &str, table: ToolTable) -> String {
     format!(
         r#"# Devscriptor code intelligence
 
-A Devscriptor MCP server named `{server}` is connected. It provides 75 tools for
-code intelligence over a persistent SQLite knowledge graph of the workspace.
-{loading}
+A Devscriptor MCP server named `{server}` is connected: 75 tools over an
+index of the workspace that follows your edits. {loading}
 
-Find code with Devscriptor before you reach for `grep`, `glob` or file reads:
-`semantic_search` for a question in words, `search_functions` or
-`search_classes` for a name, `get_file_context` for what a file holds. Then read
-the files and lines its results point to. Follow a symbol with `get_definition`
-and `get_references`, and see what calls what with `get_relationships`. These
-tools are indexed, cheaper and more precise than scanning files. Never invent a
-Devscriptor tool name or parameter — use only names from your tool table and
-the announcements, and the parameters in each tool's schema.
-
-## Establish the index first
-`mcp__{server}__get_statistics` reports whether a codebase has been indexed.
-If it reports no entities, run `mcp__{server}__scan_codebase` (parameter
-`path`) before searching; an index that has entities needs no new scan. For a
-large repository prefer the background job tools — `start_analysis`, then poll
-`get_analysis_progress` — instead of a long blocking call.
-`mcp__{server}__health_check` reports whether embeddings and FTS5 are
-available. The index follows your edits: Devscriptor watches the workspace and
-re-checks the files behind every answer.
+Find code with Devscriptor before you reach for `grep`, `glob` or file reads,
+then read the files and lines its results point to. Use only the tool names and
+parameters your tool table and the announcements give. When an answer's
+`notice` says the workspace is not indexed, make the `mcp__{server}__scan_codebase`
+call it names (`start_analysis`, then `get_analysis_progress`, for a large
+repository), then search again.
 
 {FINDING_CODE}
 
-## Precise navigation (LSP tools)
-The 38 LSP tools (`get_hover`, `get_definition`, `get_references`,
-`get_implementations`, `rename_symbol`, `get_diagnostics`, …) proxy a live
-language server. The position tools take a symbol `name` — resolved from the
-index, so the codebase must be scanned — or `file_path`, `line`, `character`
-(all 0-indexed); prefer `name` to computing a column. LSP results carry `cite`
-(`path:line:col`, 1-based); quote it as is. The call- and type-hierarchy tools
-(`get_incoming_calls`, `get_outgoing_calls`, `get_subtypes`, `get_supertypes`)
-take the symbol the same way. They need the language's server installed;
-Devscriptor starts it on first use. Before the first LSP call in a project,
-call `mcp__{server}__lsp_arch_detect` (parameter `project_path`); if a needed
-server is missing, call `mcp__{server}__lsp_arch_setup` with
-`auto_install: true`. The first LSP call after a server starts can be slow —
-that is expected, do not retry immediately.
-
-Use `get_definition` / `get_references` rather than grepping for a symbol, and
-`rename_symbol` rather than hand-editing every call site. `get_references` adds,
-in `index_locations`, the uses the index records that the server did not report
-— in files it cannot read, such as `.vue` and `.svelte` files for the TypeScript
-server — and `get_incoming_calls`, in `index_calls`, such calls with their
-callers; they are matched by name, so check them. `rename_symbol`,
-`format_document` and `get_range_format` write their edits to the files on
-disk; re-read a file before editing it after one of them.
+{LANGUAGE_SERVERS}
+A server that is not installed: `mcp__{server}__lsp_arch_setup` with
+`auto_install: true` installs it. Prefer `rename_symbol` to editing each call
+site; it, `format_document` and `get_range_format` write to disk, so re-read a
+file after one.
 
 ## Delegating
 Your `explore` and `plan` sub-agents have Devscriptor's read-only tools, and
-`coder` all of them, loaded the same way. When you brief one to map or search
-code, tell it to start with them — `get_file_context` for a file,
-`semantic_search` or `search_functions` for code by meaning or name,
-`get_entity_details` and `get_relationships` for what an entity is and who calls
-it — and to read files for the detail they point to.
+`coder` all of them, loaded the same way. Brief one that maps or searches code
+to start with them and to read files for the detail they point to.
 
-## Context Graph — your long-term memory
-Five tools persist notes across sessions in the same database — `add_context_note`,
-`search_context`, `get_related_context`, `prune_context` and
-`get_context_statistics`. (`describe_file`, `get_file_context` and
-`query_with_context` read *about* code and are not note storage.) There are nine
-note types: `adr`, `standard`, `optimization`, `failure`, `practice`,
-`reflection`, `general`, `file_description`, `modification`.
+## Context Graph
+Notes earlier sessions recorded live in the same database. A search answer names
+the notes its query matches in `context_notes`: recall them with
+`search_context` when they bear on the task. When you make a decision, find a
+non-obvious constraint or the cause of a subtle bug, or the user corrects you,
+record it with `mcp__{server}__add_context_note`: its `note_type` (`adr`,
+`standard`, `failure`, `practice`, …), a `priority` (1–10), the code it concerns
+in `related_entities`, and the why, not what the diff shows. Record nothing
+already there.
 
-- At the start of non-trivial work, call `mcp__{server}__search_context`
-  (`search_type: "hybrid"`) to recall what is already known about the area. It
-  also filters by `note_type`, `min_priority` and `status`.
-  `get_related_context` retrieves notes linked to an entity type, and
-  `describe_file` / `get_file_context` summarise what is known about one file.
-- When you make an architectural decision, discover a non-obvious constraint,
-  fix a subtle bug, or are corrected by the user, record it with
-  `mcp__{server}__add_context_note`. Choose the matching `note_type`, set a
-  `priority` (1–10), and link it to code via `related_entities` so it can be
-  recalled later. Write the *why*, not what the diff already shows.
-- Do not re-record something already in the Context Graph; search before adding.
-
-## Failure handling
-If a Devscriptor tool errors, diagnose before retrying. When a file's language
-server does not run, the error names the server and says why, and what makes it
-run: `lsp_arch_setup` installs one that is not installed, while one built for
-another Ruby, or linked in from elsewhere, is fixed outside the session — say
-so. "No LSP server available for file" means no language server reads that file
-type (VB.NET, a MATLAB `.m`); answer from the index and the file.
-"no project root above" means the file is not inside a project with the
-manifest its server needs (`Cargo.toml`, a `.csproj`, …). An empty search result
-means no match: rephrase, or ask `semantic_search` in words — unless
-`get_statistics` shows an empty index, which needs a scan. A timeout on
-`scan_codebase` means switch to `start_analysis` and poll. Do not repeat an
-identical failing call."#
+## Failures
+Diagnose a failed call before retrying it, and never repeat an identical one.
+When a file's language server does not run, the error names the server and says why,
+and what makes it run; one that must be fixed outside the session, say so.
+"No LSP server available for file": no language server reads that file type, so
+answer from the index and the file. "no project root above": the file is not in
+a project with the manifest its server needs (`Cargo.toml`, a `.csproj`, …). An
+empty search result with no `notice` means no match: rephrase, or ask
+`semantic_search` in words."#
     )
 }
 
@@ -591,59 +543,30 @@ pub fn read_only_guidance(server: &str, table: ToolTable) -> String {
         r#"# Devscriptor code intelligence
 
 A Devscriptor MCP server named `{server}` is connected. You have its read-only
-tools: code search, LSP navigation and the Context Graph's notes, over a
-persistent SQLite knowledge graph of the workspace. {loading}
+tools, over an index of the workspace that follows edits. {loading}
 
-Find code with them before you reach for `grep`, `glob` or file reads: they are
-indexed, cheaper and more precise than scanning files. To map an area, start
-there — `get_file_context` for a file, `semantic_search` or `search_functions`
-for code by meaning or name, `get_entity_details` and `get_relationships` for
-what an entity is and who calls it — then read files for the detail they point
-to. Never invent a Devscriptor tool name or parameter — use only names from your
-tool table and the announcements, and the parameters in each tool's schema.
-
-## The index
-`mcp__{server}__get_statistics` reports whether the codebase has been indexed.
-If it reports no entities, the index is empty: say so in your answer and work
-with the file tools. `mcp__{server}__health_check` reports whether embeddings
-and FTS5 are available. Devscriptor re-checks the files behind every answer, so
-the index follows edits made while you work.
+Find code with them before you reach for `grep`, `glob` or file reads.
+To map an area, start there, then read files for the detail they point to. Use only the
+tool names and parameters your tool table and the announcements give. When an
+answer's `notice` says the workspace is not indexed, say so and work with the
+file tools.
 
 {FINDING_CODE}
 
-## Precise navigation (LSP tools)
-The LSP tools (`get_hover`, `get_definition`, `get_references`,
-`get_implementations`, `get_diagnostics`, …) proxy a live language server. The
-position tools take a symbol `name` — resolved from the index — or `file_path`,
-`line`, `character` (all 0-indexed); prefer `name` to computing a column. LSP
-results carry `cite` (`path:line:col`, 1-based); quote it as is. The call- and
-type-hierarchy tools (`get_incoming_calls`, `get_outgoing_calls`,
-`get_subtypes`, `get_supertypes`) take the symbol the same way. Before the
-first LSP call in a project, call `mcp__{server}__lsp_arch_detect` (parameter
-`project_path`): it reports the servers the project needs and starts the
-installed ones. A missing server cannot be installed from here; say which one
-is missing. The first LSP call after a server starts can be slow — that is
-expected, do not retry immediately. Use `get_definition` / `get_references`
-rather than grepping for a symbol; `get_references` adds, in
-`index_locations`, uses the server did not report (in `.vue` and `.svelte`
-files for the TypeScript server), and `get_incoming_calls`, in `index_calls`,
-such calls with their callers, matched by name, so check them.
+{LANGUAGE_SERVERS}
+A server that is not installed cannot be installed from here: say which.
 
 ## Context Graph
-Notes that earlier sessions recorded about the codebase live in the same
-database. At the start of non-trivial work, call `mcp__{server}__search_context`
-(`search_type: "hybrid"`) to recall what is already known about the area; it
-also filters by `note_type`, `min_priority` and `status`.
-`get_related_context` retrieves notes linked to an entity type, and
-`describe_file` / `get_file_context` summarise what is known about one file.
+A search answer names the Context Graph notes its query matches in
+`context_notes`: notes earlier sessions recorded. Recall them with
+`mcp__{server}__search_context` when they bear on the task.
 
-## Failure handling
-If a Devscriptor tool errors, diagnose before retrying. "No LSP server available
-for file" means no server for that language is installed. "no project root
-above" means the file is not inside a project with the manifest its server
-needs (`Cargo.toml`, a `.csproj`, …). An empty search result means no match:
-rephrase, or ask `semantic_search` in words. Do not repeat an identical failing
-call."#
+## Failures
+Diagnose a failed call before retrying it, and never repeat an identical one.
+"No LSP server available for file": no language server reads that file type.
+"no project root above": the file is not in a project with the manifest its
+server needs (`Cargo.toml`, a `.csproj`, …). An empty search result with no
+`notice` means no match: rephrase, or ask `semantic_search` in words."#
     )
 }
 
@@ -662,10 +585,9 @@ pub fn reminder(server: &str, table: ToolTable) -> String {
         "<system-reminder>\nDevscriptor's code intelligence is connected to this workspace. To \
          find the code a task concerns, start with it rather than `grep`, `glob` or reading \
          files: `mcp__{server}__semantic_search` for a question in words, \
-         `mcp__{server}__search_functions` or `mcp__{server}__search_classes` for a name. Then \
-         read what its results point to, and follow symbols with \
-         `mcp__{server}__get_definition` and `mcp__{server}__get_references`.{load}\n\
-         </system-reminder>"
+         `mcp__{server}__search_functions` or `mcp__{server}__search_classes` for a name, \
+         `mcp__{server}__get_file_context` for a file, `mcp__{server}__get_references` for a \
+         symbol's uses. Then read what its results point to.{load}\n</system-reminder>"
     )
 }
 
@@ -1174,16 +1096,12 @@ mod tests {
     fn test_guidance_covers_the_three_tool_families_and_context_graph() {
         let text = guidance("devscriptor", ToolTable::Preloaded);
         assert!(text.contains("scan_codebase"));
-        assert!(text.contains("lsp_arch_detect"));
+        assert!(text.contains("lsp_arch_setup"));
         assert!(text.contains("search_context"));
         assert!(text.contains("start_analysis"));
         assert!(
-            text.contains("`semantic_search` — the default"),
+            text.contains("`semantic_search` — a question in words"),
             "a question in words goes to the hybrid search"
-        );
-        assert!(
-            text.contains("`query_with_context` — code for a query in words or by name"),
-            "query_with_context answers a question as well as a name"
         );
         assert!(
             text.contains("75 tools"),
@@ -1192,18 +1110,32 @@ mod tests {
     }
 
     /// Devscriptor keeps its index current by itself, so the model is not told
-    /// to manage a watcher; and LSP positions are cited as Devscriptor spells
-    /// them, not converted from 0-based by hand.
+    /// to manage a watcher; LSP positions are cited as Devscriptor spells
+    /// them, not converted from 0-based by hand; and the model is not sent to
+    /// check the index or the notes before every task, since an answer says
+    /// when the workspace is not indexed and which notes match.
     #[test]
     fn test_guidance_says_the_index_follows_edits_and_to_quote_cite() {
-        let text = guidance("devscriptor", ToolTable::Preloaded);
-        assert!(text.contains("The index follows your edits"));
-        assert!(
-            !text.contains("start_watching"),
-            "watching is not the model's job"
-        );
-        assert!(text.contains("LSP results carry `cite`"));
-        assert!(text.contains("quote it as is"));
+        for text in [
+            guidance("devscriptor", ToolTable::Preloaded),
+            read_only_guidance("devscriptor", ToolTable::Preloaded),
+        ] {
+            assert!(
+                text.contains("index of the workspace that follows"),
+                "{text}"
+            );
+            assert!(
+                !text.contains("start_watching"),
+                "watching is not the model's job"
+            );
+            assert!(text.contains("Their results carry `cite`"), "{text}");
+            assert!(text.contains("quote it as is"), "{text}");
+            assert!(text.contains("`notice`"), "{text}");
+            assert!(text.contains("`context_notes`"), "{text}");
+            for chore in ["get_statistics", "lsp_arch_detect", "health_check"] {
+                assert!(!text.contains(chore), "{chore}: {text}");
+            }
+        }
     }
 
     /// The guidance tells the model how it holds the tools, which differs
@@ -1292,11 +1224,7 @@ mod tests {
             "search_functions",
             "search_classes",
             "get_file_context",
-            "get_definition",
             "get_references",
-            "get_relationships",
-            "get_statistics",
-            "search_context",
         ] {
             assert!(PRELOADED_TOOLS.contains(&name), "{name}");
         }
@@ -1417,12 +1345,10 @@ mod tests {
         for table in TABLES {
             let text = read_only_guidance("code-intel", table);
             for tool in [
-                "mcp__code-intel__get_statistics",
-                "mcp__code-intel__lsp_arch_detect",
                 "mcp__code-intel__search_context",
                 "semantic_search",
                 "get_references",
-                "query_with_context",
+                "get_relationships",
             ] {
                 assert!(text.contains(tool), "{tool}");
             }
@@ -1470,9 +1396,6 @@ mod tests {
         }
     }
 
-    /// The failure advice quotes errors Devscriptor actually returns, never
-    /// one such as "LSP not initialized", which `devscriptor mcp` does not
-    /// report.
     /// Both forms of the guidance say what the LSP tools add from the index:
     /// the uses in `index_locations` and the calls, with their callers, in
     /// `index_calls`, both to be checked.
@@ -1490,6 +1413,9 @@ mod tests {
         }
     }
 
+    /// The failure advice quotes errors Devscriptor actually returns, never
+    /// one such as "LSP not initialized", which `devscriptor mcp` does not
+    /// report.
     #[test]
     fn test_guidance_names_the_lsp_errors_devscriptor_returns() {
         let text = guidance("devscriptor", ToolTable::Preloaded);

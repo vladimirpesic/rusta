@@ -35,6 +35,11 @@ pub(crate) const LOADED_SEPARATOR: &str = ", ";
 /// the context cost bounded even with large MCP servers.
 const MAX_DESCRIPTION_LEN: usize = 140;
 
+/// The fewest characters a description's lead keeps before the end of a
+/// sentence or clause cuts it ([`lead_of`]): a shorter one says too little
+/// to pick the tool by.
+const MIN_LEAD_LEN: usize = 20;
+
 /// State for the progressive disclosure protocol.
 #[derive(Debug, Clone, Default)]
 pub struct ToolDisclosureState {
@@ -366,18 +371,43 @@ fn mcp_server_of(tool_name: &str) -> Option<&str> {
     Some(&rest[..end])
 }
 
-/// Collapse a description to a single trimmed line of bounded length.
+/// Collapse a description to its lead ([`lead_of`]) on a single trimmed line
+/// of bounded length. The model reads the rest once it loads the tool.
 fn truncate_description(description: &str) -> String {
     let one_line = description
         .split(['\n', '\r'])
         .next()
         .unwrap_or_default()
         .trim();
-    if one_line.chars().count() <= MAX_DESCRIPTION_LEN {
-        return one_line.to_string();
+    let lead = lead_of(one_line);
+    if lead.chars().count() <= MAX_DESCRIPTION_LEN {
+        return lead.to_string();
     }
-    let head: String = one_line.chars().take(MAX_DESCRIPTION_LEN).collect();
+    let head: String = lead.chars().take(MAX_DESCRIPTION_LEN).collect();
     format!("{}…", head.trim_end())
+}
+
+/// `line` up to the end of its first sentence or clause — a `.`, `!` or `?`
+/// before a capital or a backtick, a `:` or `;`, a spaced `—` — that leaves at
+/// least [`MIN_LEAD_LEN`] characters; all of it when none does. What a tool
+/// does comes first in a description, and how to call it after.
+fn lead_of(line: &str) -> &str {
+    for (at, c) in line.char_indices() {
+        let before = line[..at].trim_end();
+        let after = &line[at + c.len_utf8()..];
+        let ends = match c {
+            '.' | '!' | '?' => after.strip_prefix(' ').is_some_and(|next| {
+                next.starts_with(|first: char| first.is_uppercase() || first == '`')
+            }),
+            ':' | ';' => after.starts_with(' '),
+            '—' => line[..at].ends_with(' ') && after.starts_with(' '),
+            _ => false,
+        };
+        if ends && before.chars().count() >= MIN_LEAD_LEN {
+            return before;
+        }
+    }
+    line
 }
 
 fn render_tool_line(name: &str, description: &str) -> String {
@@ -620,6 +650,45 @@ mod tests {
         // Non-MCP dynamic tools stay ungrouped and are listed before headers.
         let local = text.find("local_tool").unwrap();
         assert!(local < text.find("## devscriptor").unwrap());
+    }
+
+    /// A description is announced by its lead: up to the end of its first
+    /// sentence or clause, once that says enough; an abbreviation or a
+    /// version number ends nothing.
+    #[test]
+    fn a_description_is_announced_by_its_lead() {
+        for (description, lead) in [
+            (
+                "Get the calls into a function: pass an `item`, or name the function.",
+                "Get the calls into a function",
+            ),
+            (
+                "Run one of the code analyses — dead code, complexity, clones",
+                "Run one of the code analyses",
+            ),
+            (
+                "Rename a symbol across the workspace; returns the changes applied.",
+                "Rename a symbol across the workspace",
+            ),
+            (
+                "Start the real-time watcher on a directory. `devscriptor mcp` already watches.",
+                "Start the real-time watcher on a directory",
+            ),
+            (
+                "Search files by glob, e.g. src/**/*.rs, in v1.2 order",
+                "Search files by glob, e.g. src/**/*.rs, in v1.2 order",
+            ),
+            (
+                "Run SQL: read-only queries only",
+                "Run SQL: read-only queries only",
+            ),
+            (
+                "Get hover info (type signature/docs) for a symbol.",
+                "Get hover info (type signature/docs) for a symbol.",
+            ),
+        ] {
+            assert_eq!(truncate_description(description), lead, "{description}");
+        }
     }
 
     #[test]

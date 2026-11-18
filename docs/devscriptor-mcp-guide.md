@@ -6,7 +6,9 @@ harness) to the **Devscriptor MCP server** so that all **75 tools** are used
 correctly, efficiently, and without hallucination.
 
 It describes Devscriptor 1.0.0 and newer, which keeps its index current by
-itself and gives LSP results a quotable `cite`.
+itself and gives LSP results a quotable `cite`. Devscriptor 1.0.7 and newer
+also say in an answer when the workspace is not indexed (`notice`) and which
+Context Graph notes match a search (`context_notes`).
 
 ---
 
@@ -225,11 +227,10 @@ set to the workspace's `devscriptor.db` — the index `devscriptor scan` writes 
 an existing one further up the same repository; `$DEVSCRIPTOR_DB` overrides it.
 So the agent reads the index you built, not the server's shared default.
 
-Rusta preloads Devscriptor's twelve most-used tools: `semantic_search`,
-`search_functions`, `search_classes`, `get_entity_details`, `get_relationships`,
-`get_file_context`, `get_definition`, `get_references`, `get_statistics`,
-`lsp_arch_detect`, `search_context` and `add_context_note`. The model holds them
-from its first request, and loads the other 63 with `select_tools`
+Rusta preloads Devscriptor's six most-used tools: `semantic_search`,
+`search_functions`, `search_classes`, `get_file_context`, `get_entity_details`
+and `get_references`. The model holds them from its first request, and loads the
+other 69 with `select_tools`
 ([§6](#6-step-5--handling-75-tools-without-hallucination)). Its system prompt
 carries the workflow of [§7](#7-step-6--the-system-prompt-copy-paste) and says which
 tools are already held, and the first prompt of each conversation comes with a
@@ -255,7 +256,7 @@ command = "/opt/devscriptor/devscriptor"
 args = ["mcp"]
 startup_timeout_ms = 60000
 tool_timeout_ms = 180000
-# Unset, the twelve tools above are preloaded; [] loads every tool on demand.
+# Unset, the six tools above are preloaded; [] loads every tool on demand.
 # preload = ["semantic_search", "search_functions", "get_definition"]
 ```
 
@@ -314,22 +315,20 @@ read files instead, though its system prompt described Devscriptor's workflow.
 Pick one of these, in order of preference:
 
 **A. Preload the main tools, disclose the rest (best).** Keep the tools that find
-and follow code in the tool table from the first request — `semantic_search`,
-`search_functions`, `search_classes`, `get_entity_details`,
-`get_relationships`, `get_file_context`, `get_definition`, `get_references` —
-with `get_statistics` and `lsp_arch_detect` for the index and the language
-servers, and `search_context` and `add_context_note` for the Context Graph.
-Together they are about a sixth of the 75 schemas' size. Advertise the others
-by *name and one-line description*, and let the model load their full
-definitions on demand via a `select_tools`-style primitive. This is what Rusta
-does: the twelve tools above register as regular tools, the rest as *dynamic*,
-and the model receives
+code in the tool table from the first request — `semantic_search`,
+`search_functions`, `search_classes`, `get_file_context`, `get_entity_details`
+and `get_references` — and no more: the table, the announcements and the system
+prompt are sent with every request, so a tool kept there "just in case" costs on
+every turn of every task. Advertise the others by *name and one-line
+description*, and let the model load their full definitions on demand via a
+`select_tools`-style primitive. This is what Rusta does: the six tools above
+register as regular tools, the rest as *dynamic*, and the model receives
 
 ```bash
 <tools_added>
 ## devscriptor
-mcp__devscriptor__semantic_search — Semantic search using embeddings
-mcp__devscriptor__get_hover — Get hover info (type signature/docs) for a symbol. Pass a symbol `name` (resolved from the code index) or explicit line/character.
+mcp__devscriptor__find_dead_code — Find the functions and classes nothing reaches
+mcp__devscriptor__get_hover — Get hover info (type signature/docs) for a symbol.
 ...
 </tools_added>
 ```
@@ -339,7 +338,8 @@ this reliable:
 
 - **Always include the description.** A bare list of 75 names forces the model to
   guess from the identifier alone — that is precisely where ambiguity and
-  invented names come from.
+  invented names come from. Its lead, up to the end of the first sentence or
+  clause, is enough to pick a tool by; the rest comes with the loaded definition.
 - **Group by server** (`## devscriptor`) so large servers stay navigable.
 
 **B. Disclosure alone.** If your client can only load every tool on demand (a
@@ -365,9 +365,13 @@ single guard converts a hallucination into a cheap, self-correcting round-trip.
 ## 7. Step 6 — The system prompt (copy-paste)
 
 Tool schemas tell a model *how* to call a tool, never *when*. Without the block
-below, agents read files blindly, call LSP tools before a language server exists,
-and never use the Context Graph. Adapt the `mcp__devscriptor__` prefix to your
-client's naming.
+below, agents read files blindly, compute LSP positions by hand, and never use
+the Context Graph. Adapt the `mcp__devscriptor__` prefix to your client's naming.
+Keep it short: it is sent with every request. It sends the model to no tool
+"first, every time": what holds for one answer — a workspace not indexed yet, a
+note that matches a search — Devscriptor 1.0.7 and newer say in that answer.
+With an older Devscriptor, add that `get_statistics` reports whether the
+workspace is indexed.
 
 The block alone is not enough. Deep in a long system prompt it competes with
 everything else there, and a model weighs what comes with its task. Told in the
@@ -383,113 +387,68 @@ again after the conversation is compacted, for example:
 Devscriptor's code intelligence is connected to this workspace. To find the code a
 task concerns, start with it rather than grep, glob or reading files:
 semantic_search for a question in words, search_functions or search_classes for a
-name. Then read what its results point to, and follow symbols with get_definition
-and get_references.
+name, get_file_context for a file, get_references for a symbol's uses. Then read
+what its results point to.
 ```
 
 ```markdown
 # Devscriptor code intelligence
 
-A Devscriptor MCP server is connected, providing 75 tools over a persistent
-code knowledge graph. Find code with Devscriptor before you reach for `grep`,
-`glob` or file reads: `semantic_search` for a question in words,
-`search_functions` or `search_classes` for a name, `get_file_context` for what a
-file holds. Then read the files and lines its results point to. Follow a symbol
-with `get_definition` and `get_references`, and see what calls what with
-`get_relationships`. These tools are indexed, cheaper and more precise than
-scanning files. If a tool must be loaded before you call it, load these first.
-Never invent a Devscriptor tool name or parameter — use only the tools listed and
-the parameters in their schema.
+A Devscriptor MCP server is connected: 75 tools over an index of the workspace
+that follows your edits. If a tool must be loaded before you call it, load the
+ones below first.
 
-## Establish the index first
-`get_statistics` reports whether a codebase has been indexed. If it reports no
-entities, run `scan_codebase` (parameter `path`) before searching; an index that
-has entities needs no new scan. For a large repository use `start_analysis` and
-poll `get_analysis_progress` instead of a long blocking call. `health_check`
-reports whether embeddings and FTS5 are available. The index follows your
-edits: Devscriptor watches the workspace and re-checks the files behind every
-answer.
+Find code with Devscriptor before you reach for `grep`, `glob` or file reads,
+then read the files and lines its results point to. Use only the tool names and
+parameters you were given. When an answer's `notice` says the workspace is not
+indexed, make the `scan_codebase` call it names (`start_analysis`, then
+`get_analysis_progress`, for a large repository), then search again.
 
 ## Finding code
-- `semantic_search` — meaning-based lookup ("where is config parsed?"). Embeds
-  the query's keyword candidates on demand, so it works right after a scan when
-  the query's words occur in the code; call `generate_embeddings` once to build
-  the whole vector index, after which any wording finds what it means. On an
-  index with no vectors yet, an empty answer says so in its `message` rather
-  than meaning nothing relevant exists. If `health_check` says embeddings are unavailable, use
-  keyword search. **Leave `entity_type` off to search every kind** — naming one
-  narrows the search to it, which will hide classes, modules and documentation
-  sections from an otherwise complete-looking result. Each result carries
-  `file_path`, `start_line` and `end_line` (1-indexed), so a match can be cited
-  as `file:line` without reading the file; `fuzzy_search` results do too. Its
-  `body_preview` shows the first lines numbered as in the file
-  (`<line><TAB><text>`), as are `get_file_context`'s snippets and
-  `describe_file`'s `content_preview`: cite a line inside one by its number.
-- `generate_embeddings` — build/refresh the semantic vector index over MCP
-  (the counterpart of the `devscriptor embed` CLI command; idempotent).
-- `search_functions` / `search_classes` / `search_entities` — name lookup.
-- `fuzzy_search` — when the exact spelling is unknown.
-- `query_with_context` — code for a query in words or by name: what the Context
-  Graph notes about the query point at, else the code ranked as
-  `semantic_search` ranks it.
-- `get_entity_details`, `get_relationships` — inspect an entity, and what it
-  calls and is called by, uses, implements or inherits. Each relationship gives
-  the file and line of both ends and the lines a call is made on, so it answers
-  "who calls this, where?" with no language server; `file_path` tells entities
-  of one name apart.
+- `semantic_search` — a question in words ("where are shipping costs
+  computed?"): matches by meaning and keywords, each with its file, its lines
+  and its first lines, numbered as in the file; cite `file:line` from them.
+  Leave `entity_type` off to search every kind.
+- `search_functions`, `search_classes` — a name or part of one (`discount`);
+  `fuzzy_search` when the spelling is unknown.
+- `get_file_context` — what a file holds. `get_entity_details` — an entity;
+  `get_relationships` — what it calls, uses or inherits and what calls it, with
+  the lines a call is made on: "who calls this, where?" with no language server.
 - `find_dead_code`, `analyze_complexity` — code-quality questions.
+Lines in these results count from 1.
 
-## Precise navigation (LSP tools)
-The 38 LSP tools (`get_hover`, `get_definition`, `get_references`,
-`get_implementations`, `rename_symbol`, `get_diagnostics`, …) proxy a live
-language server. The position tools take a symbol `name` — resolved from the
-index, so the codebase must be scanned — or `file_path`, `line`, `character`
-(all 0-indexed); prefer `name` to computing a column. LSP results carry `cite`
-(`path:line:col`, 1-based); quote it as is. The call- and type-hierarchy tools
-(`get_incoming_calls`, `get_outgoing_calls`, `get_subtypes`, `get_supertypes`)
-take the symbol the same way.
-They need the language's server installed; Devscriptor starts it on first use.
-Before the first LSP call in a project, call `lsp_arch_detect` (parameter
-`project_path`); if a needed server is missing, call `lsp_arch_setup` with
-`auto_install: true`. The first LSP call after a server starts can be slow —
-that is expected; do not retry immediately.
+## Language servers
+`get_references`, `get_definition` and the other LSP tools ask the language
+server, which Devscriptor starts on first use; the first call can be slow, so
+do not retry it at once. They take a symbol `name`, resolved from the index —
+prefer it — or `file_path`, `line` and `character`, counted from 0.
+Their results carry `cite`, `path:line:column` counted from 1: quote it as is.
+What the index adds that the server did not report, uses in `index_locations`
+and, for `get_incoming_calls`, in `index_calls`, calls with their callers, is
+matched by name: check it. A server that is not installed: `lsp_arch_setup`
+with `auto_install: true` installs it. Prefer `rename_symbol` to editing each
+call site; it, `format_document` and `get_range_format` write to disk, so
+re-read a file after one.
 
-Use `get_definition` / `get_references` instead of grepping for a symbol, and
-`rename_symbol` instead of hand-editing every call site. `get_references` adds,
-in `index_locations`, the uses the index records that the server did not report
-— in files it cannot read, such as `.vue` and `.svelte` files for the TypeScript
-server — and `get_incoming_calls`, in `index_calls`, such calls with their
-callers; they are matched by name, so check them. `rename_symbol`,
-`format_document` and `get_range_format` write their edits to the files on disk;
-re-read a file before editing it after one of them.
+## Context Graph
+Notes earlier sessions recorded live in the same database. A search answer names
+the notes its query matches in `context_notes`: recall them with
+`search_context` when they bear on the task. When you make a decision, find a
+non-obvious constraint or the cause of a subtle bug, or the user corrects you,
+record it with `add_context_note`: its `note_type` (`adr`, `standard`,
+`failure`, `practice`, …), a `priority` (1–10), the code it concerns in
+`related_entities`, and the why, not what the diff shows. Record nothing
+already there.
 
-## Context Graph — long-term memory
-Five tools persist notes across sessions. Note types: `adr`, `standard`,
-`optimization`, `failure`, `practice`, `reflection`, `general`,
-`file_description`, `modification`.
-
-- At the start of non-trivial work, call `search_context`
-  (`search_type: "hybrid"`) to recall what is already known. `get_related_context`
-  retrieves notes linked to an entity type.
-- When you make an architectural decision, discover a non-obvious constraint,
-  fix a subtle bug, or are corrected by the user, record it with
-  `add_context_note`: pick the matching `note_type`, set `priority` (1–10), and
-  link it to code via `related_entities`. Write the *why*, not what the diff
-  already shows.
-- Search before adding; do not duplicate an existing note.
-
-## Failure handling
-Diagnose before retrying. When a file's language server does not run, the error
-names the server and says why, and what makes it run: `lsp_arch_setup` installs
-one that is not installed, while one built for another Ruby, or linked in from
-elsewhere, is fixed outside the session — say so. "No LSP server available for
-file" means no language server reads that file type (VB.NET, a MATLAB `.m`);
-answer from the index and the file. "no project root above"
-means the file is not inside a project with the manifest its server needs
-(`Cargo.toml`, a `.csproj`, …). An empty search result means no match: rephrase,
-or ask `semantic_search` in words — unless `get_statistics` shows an empty index,
-which needs a scan. A timeout on `scan_codebase` means switch to
-`start_analysis` and poll. Never repeat an identical failing call.
+## Failures
+Diagnose a failed call before retrying it, and never repeat an identical one.
+When a file's language server does not run, the error names the server and says why,
+and what makes it run; one that must be fixed outside the session, say so.
+"No LSP server available for file": no language server reads that file type, so
+answer from the index and the file. "no project root above": the file is not in
+a project with the manifest its server needs (`Cargo.toml`, a `.csproj`, …). An
+empty search result with no `notice` means no match: rephrase, or ask
+`semantic_search` in words.
 ```
 
 ---
@@ -538,9 +497,9 @@ Notes:
 ### Index, then answer a "where is X?" question
 
 ```bash
-get_statistics(path)                    # is it indexed?
-scan_codebase(path)                     # if not (or start_analysis for big repos)
 semantic_search(query="parse configuration file", limit=10)
+scan_codebase(path)                     # if its notice says the workspace is not indexed
+                                        # (start_analysis for big repos), then search again
 get_entity_details(entity_type="function", name="parse_config")
 get_relationships(entity_name="parse_config", file_path="src/config.rs")
                                         # what calls it, and on which lines
@@ -549,8 +508,7 @@ get_relationships(entity_name="parse_config", file_path="src/config.rs")
 ### Navigate precisely with LSP
 
 ```bash
-lsp_arch_detect(project_path)           # once per project
-lsp_arch_setup(project_path, auto_install=true)   # if a server is missing
+lsp_arch_setup(project_path, auto_install=true)   # if an error says a server is missing
 get_definition(name="parse_config")     # by name, resolved from the index
 get_definition(file_path, line, character)        # or by position, 0-indexed
 get_references(name="parse_config", include_declaration=true)
@@ -568,6 +526,7 @@ rename_symbol(name="parse_config", new_name="load_config")   # edits the files, 
 
 ```bash
 search_context(query="auth token verification", search_type="hybrid", top_k=5)
+                                        # when a search's context_notes name notes on it
 # ... do the work ...
 add_context_note(note_type="adr", title="...", content="why, not what",
                  priority=8, related_entities=[{"entity_type":"function",
@@ -683,9 +642,12 @@ creates notes. Notes are only created by explicit `add_context_note` calls.
   archived for more than twice `max_age_days`. `dry_run` defaults to `true`.
 
 To make an agent genuinely stateful, put two instructions in the system prompt:
-*search the context graph before starting non-trivial work*, and *record decisions,
-constraints, and corrections as notes with the why*. Without those, the Context
-Graph stays empty and the integration is only half of what it can be.
+*recall the notes a search's `context_notes` names when they bear on the task*,
+and *record decisions, constraints, and corrections as notes with the why*.
+Without the second, the Context Graph stays empty and the integration is only
+half of what it can be. A standing order to search the notes before every task
+costs a call on every task, most of them with nothing to recall; Devscriptor
+1.0.7 and newer name the matching notes in the code searches' answers instead.
 
 ---
 
@@ -700,7 +662,7 @@ Graph stays empty and the integration is only half of what it can be.
 | `the <language> language server (<id>) for .ext files was built for Ruby …` (or is another build, or holds no binary) | Its install cannot run here; `lsp_arch_status` lists it under `cannot_run`, with the same `reason` | Do what the message says; a server linked in from elsewhere is rebuilt where the link points, not by `lsp_arch_setup` |
 | `No LSP server available for file: No LSP server for extension: .ext` | No language server reads that file type (VB.NET, a MATLAB `.m`) | Answer from the index and the file |
 | `No LSP server configured for language: rust: no project root above …` | A Rust, C#, F# or Scala file with no manifest (`Cargo.toml`, `.csproj`, …) at or above it | Ask about a file inside a project that has one |
-| Empty search results | Codebase never scanned, or a sentence given to a name lookup (`search_*`) | `get_statistics`, then `scan_codebase` if it shows no entities; ask a question in words with `semantic_search` |
+| Empty search results | Workspace never scanned (the answer's `notice` says so), or a sentence given to a name lookup (`search_*`) | `scan_codebase` as the `notice` says; ask a question in words with `semantic_search` |
 | `semantic_search` falls back / fails | Embeddings unavailable | `health_check`; call `generate_embeddings` (or run `devscriptor embed`); ensure the embedding model is downloaded |
 | LSP tools ignore the project's `devscriptor-lsp.toml` (stderr: `Ignoring ./devscriptor-lsp.toml`) | The file names commands to run, so Devscriptor uses it only once trusted | Review it, then run `devscriptor lsp trust` in that directory |
 | Search previews show code the agent has already changed | The file changed but was not re-indexed in time for the answer | Read the files the answer lists in `stale_files` from disk; `refreshed_files` names those re-indexed for it |
@@ -723,7 +685,7 @@ Graph stays empty and the integration is only half of what it can be.
 - [ ] The Devscriptor system-prompt block ([§7](#7-step-6--the-system-prompt-copy-paste)) is installed, and a short reminder to start with Devscriptor comes with the first prompt of each conversation.
 - [ ] Approval policy distinguishes read-only from mutating tools ([§8](#8-step-7--approval--permission-policy)).
 - [ ] Parameters come from the live schema, not from prose docs ([§10](#10-parameter-reference-and-gotchas)).
-- [ ] The agent searches the Context Graph before, and writes notes after, non-trivial work.
+- [ ] The agent recalls the notes a search names in `context_notes`, and writes notes after non-trivial work.
 - [ ] Answers follow the files the agent edits, so later searches do not show the code as it was: Devscriptor does this by itself and names re-checked files in `refreshed_files` / `stale_files`.
 - [ ] A behaviour probe confirms parameters are honoured, not just accepted (e.g. `get_statistics` with an unmatched `path` returns zeros).
 - [ ] Smoke test passes: asked where something is done in the code, the model calls `semantic_search` or `search_functions` unprompted, then reads the files it points to; a tool it does not hold it loads with `select_tools` (or equivalent) first.

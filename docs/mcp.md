@@ -57,9 +57,11 @@ for `file_path`, `top_k` for `limit`, …) are mapped onto the schema's own name
 ## On-demand loading
 
 A server's tools sit in the tool table like built-ins unless the server is
-large. With more than ten tools they are *deferred*: announced by name and
-description, and loaded with `select_tools` when the model needs them, which
-keeps the tool table — and with it the prompt cache's prefix — small.
+large. With more than ten tools they are *deferred*: announced by name and the
+lead of the description — up to the end of its first sentence or clause, at most
+140 characters — and loaded with `select_tools`, which gives the model the whole
+definition, when it needs them. That keeps the tool table, and with it the prompt
+cache's prefix and every request, small.
 
 - `deferred = true` or `false` on the server entry overrides the size rule.
 - `preload` names the tools of a deferred server that sit in the tool table from
@@ -173,22 +175,25 @@ so a session inside a monorepo package reads the repository-wide index instead
 of creating an empty one. `$DEVSCRIPTOR_DB` overrides the choice. An explicit
 `[[mcp_servers]]` entry named `devscriptor` always wins over auto-detection.
 
-Devscriptor has 75 tools, so they are deferred, but its twelve most-used ones are
+Devscriptor has 75 tools, so they are deferred, but its six most-used ones are
 preloaded: `semantic_search`, `search_functions`, `search_classes`,
-`get_entity_details`, `get_relationships`, `get_file_context`,
-`get_definition`, `get_references`, `get_statistics`, `lsp_arch_detect`,
-`search_context` and `add_context_note`. The model therefore holds what it needs
-to find and follow code, and the Context Graph, from its first request, and
-loads the rest — analysis jobs, the other language-server tools, refactoring —
-with `select_tools`. A model that had to load every Devscriptor tool first
-mostly searched with `grep` and read files instead. The preloaded tools apply to
-an entry you configure yourself too, unless it sets its own `preload`;
-`preload = []` loads every tool on demand.
+`get_file_context`, `get_entity_details` and `get_references`. The model
+therefore holds what it needs to find code from its first request, and loads the
+rest — relationships, the other language-server tools, analyses, the Context
+Graph, refactoring — with `select_tools`. A model that had to load every
+Devscriptor tool first mostly searched with `grep` and read files instead. The
+table is sent with every request, so it holds no more than these. The preloaded
+tools apply to an entry you configure yourself too, unless it sets its own
+`preload`; `preload = []` loads every tool on demand.
 
 When Devscriptor is connected, the system prompt carries its workflow: find code
-with it before `grep` or reading files, index first, navigate with it, record
-durable notes in the Context Graph, and handle its failures by the errors it
-actually returns. It tells the model which tools it already holds. The first
+with it before `grep` or reading files, navigate with it, quote the language
+servers' positions as given, record durable notes in the Context Graph, and
+handle its failures by the errors it actually returns. It tells the model which
+tools it already holds. It does not send the model to check the index or the
+notes before every task: Devscriptor 1.0.7 and newer say in an answer when the
+workspace is not indexed (`notice`) and which notes match a search
+(`context_notes`), and the model acts on that only when it is said. The first
 prompt of every conversation that has the tools, a sub-agent's included, comes
 with a short reminder to find code with Devscriptor first, naming the search and
 navigation tools to start with; it comes again after a compaction. A model
