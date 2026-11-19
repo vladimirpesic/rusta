@@ -529,63 +529,83 @@ pub async fn exchange_code(
     token_request(token_url, policy, &params).await
 }
 
+/// How long a connection to the callback listener may take to send its
+/// request: a browser opens connections it may never use.
+const CALLBACK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Start a localhost HTTP listener and wait for the OAuth callback.
 ///
 /// Returns the authorization code after verifying the `state` parameter.
 /// The listener keeps accepting connections until a valid callback is
-/// received, so spurious browser requests (pre-connects, favicons, etc.)
-/// do not starve the real callback.
+/// received, and answers each in a task of its own, so spurious browser
+/// requests (favicons) and connections that send nothing (pre-connects) do
+/// not hold up the real callback.
 pub async fn start_callback_listener(
     port: u16,
     expected_state: String,
     shutdown: CancellationToken,
 ) -> Result<String, OAuthError> {
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
+    let (outcomes, mut outcome) = tokio::sync::mpsc::unbounded_channel();
 
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return Err(OAuthError::Shutdown),
+            Some(result) = outcome.recv() => return result,
             result = listener.accept() => {
-                let (mut stream, _) = result?;
-
-                let mut buf = [0u8; 4096];
-                let n = tokio::select! {
-                    _ = shutdown.cancelled() => return Err(OAuthError::Shutdown),
-                    result = stream.read(&mut buf) => result?,
-                };
-                if n == 0 {
-                    continue;
-                }
-
-                let request = String::from_utf8_lossy(&buf[..n]);
-                let (code, error, state) = parse_callback_query(&request);
-
-                let (status, html, done) = if let Some(ref err) = error {
-                    ("400 Bad Request", format!("<html><body><h1>Authorization failed</h1><p>{err}</p></body></html>"), Some(Err(OAuthError::AuthorizationFailed(err.clone()))))
-                } else if state.is_none() {
-                    // No state at all (favicon, pre-connect, etc.) — keep listening.
-                    ("400 Bad Request", "<html><body><h1>Authorization failed</h1><p>Missing state parameter.</p></body></html>".to_string(), None)
-                } else if state.as_deref() != Some(expected_state.as_str()) {
-                    ("400 Bad Request", "<html><body><h1>Authorization failed</h1><p>Invalid state parameter.</p></body></html>".to_string(), Some(Err(OAuthError::StateMismatch)))
-                } else if let Some(c) = code {
-                    ("200 OK", "<html><body><h1>Authorization successful</h1><p>You can close this tab.</p></body></html>".to_string(), Some(Ok(c)))
-                } else {
-                    ("400 Bad Request", "<html><body><h1>Authorization failed</h1><p>No authorization code received.</p></body></html>".to_string(), None)
-                };
-
-                let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}",
-                    html.len()
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-                let _ = stream.flush().await;
-
-                if let Some(result) = done {
-                    return result;
-                }
+                let (stream, _) = result?;
+                let outcomes = outcomes.clone();
+                let expected_state = expected_state.clone();
+                tokio::spawn(async move {
+                    if let Some(result) = answer_callback(stream, &expected_state).await {
+                        let _ = outcomes.send(result);
+                    }
+                });
             }
         }
     }
+}
+
+/// Read one connection's request and answer it: the authorization's outcome
+/// when it is the callback, `None` for anything else (a favicon, a
+/// connection that sent nothing within [`CALLBACK_READ_TIMEOUT`]).
+async fn answer_callback(
+    mut stream: tokio::net::TcpStream,
+    expected_state: &str,
+) -> Option<Result<String, OAuthError>> {
+    let mut buf = [0u8; 4096];
+    let n = match tokio::time::timeout(CALLBACK_READ_TIMEOUT, stream.read(&mut buf)).await {
+        Ok(Ok(n)) if n > 0 => n,
+        _ => return None,
+    };
+
+    let request = String::from_utf8_lossy(&buf[..n]);
+    let (code, error, state) = parse_callback_query(&request);
+
+    let (status, html, done) = if let Some(ref err) = error {
+        (
+            "400 Bad Request",
+            format!("<html><body><h1>Authorization failed</h1><p>{err}</p></body></html>"),
+            Some(Err(OAuthError::AuthorizationFailed(err.clone()))),
+        )
+    } else if state.is_none() {
+        // No state at all (a favicon request) — keep listening.
+        ("400 Bad Request", "<html><body><h1>Authorization failed</h1><p>Missing state parameter.</p></body></html>".to_string(), None)
+    } else if state.as_deref() != Some(expected_state) {
+        ("400 Bad Request", "<html><body><h1>Authorization failed</h1><p>Invalid state parameter.</p></body></html>".to_string(), Some(Err(OAuthError::StateMismatch)))
+    } else if let Some(c) = code {
+        ("200 OK", "<html><body><h1>Authorization successful</h1><p>You can close this tab.</p></body></html>".to_string(), Some(Ok(c)))
+    } else {
+        ("400 Bad Request", "<html><body><h1>Authorization failed</h1><p>No authorization code received.</p></body></html>".to_string(), None)
+    };
+
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}",
+        html.len()
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.flush().await;
+    done
 }
 
 fn parse_callback_query(request: &str) -> (Option<String>, Option<String>, Option<String>) {
@@ -753,7 +773,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_callback_listener_success_after_spurious_connection() {
+    async fn test_callback_listener_success_after_spurious_and_idle_connections() {
         let port = 0; // let OS assign
         let state = "expected".to_string();
         let shutdown = CancellationToken::new();
@@ -768,6 +788,12 @@ mod tests {
             shutdown.clone(),
         ));
 
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // A browser's pre-connect: open, and silent.
+        let _idle = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Spurious connection without a valid callback.
