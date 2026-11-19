@@ -25,11 +25,22 @@ pub struct PromptParts<'a> {
     pub extra_sections: &'a [String],
 }
 
-/// The template before its role slot, and after it.
+/// The template before its role slot, and after it ([`halves_of`]).
 fn halves() -> (&'static str, &'static str) {
-    TEMPLATE
+    halves_of(TEMPLATE)
+}
+
+/// `template` before its role slot, and after it, without the blank lines
+/// beside the slot or the newline that ends the file: the role takes a
+/// paragraph of its own, or none, and the prompt ends where its last section
+/// does. So a Markdown formatter that puts a blank line around the slot, or
+/// ends the file with a newline, changes no prompt.
+fn halves_of(template: &str) -> (&str, &str) {
+    let template = template.strip_suffix('\n').unwrap_or(template);
+    let (head, tail) = template
         .split_once("{{role}}")
-        .expect("system_prompt.md has a {{role}} slot")
+        .expect("system_prompt.md has a {{role}} slot");
+    (head.trim_end_matches('\n'), tail.trim_start_matches('\n'))
 }
 
 /// Render the prompt.
@@ -40,14 +51,14 @@ pub fn render(parts: &PromptParts<'_>) -> String {
         .role
         .map(str::trim)
         .filter(|r| !r.is_empty())
-        .map_or_else(String::new, |r| format!("\n{r}\n"));
+        .map_or_else(String::new, |r| format!("{r}\n\n"));
     let tail = fill(
         tail,
         parts,
         Some(agent_core::plan_mode::GUIDANCE),
         parts.extra_sections,
     );
-    format!("{head}{role}{tail}")
+    format!("{head}\n\n{role}{tail}")
 }
 
 /// The prompt as the session's sub-agents get it, from the same template:
@@ -58,7 +69,10 @@ pub fn render(parts: &PromptParts<'_>) -> String {
 #[must_use]
 pub fn render_for_subagents(parts: &PromptParts<'_>) -> agent_core::prompt::SubagentPrompt {
     let (head, tail) = halves();
-    agent_core::prompt::SubagentPrompt::new(head, fill(tail, parts, None, &[]))
+    agent_core::prompt::SubagentPrompt::new(
+        format!("{head}\n"),
+        format!("\n{}", fill(tail, parts, None, &[])),
+    )
 }
 
 /// The template's text after the role slot, filled in.
@@ -310,6 +324,23 @@ mod tests {
                 .replace(&format!("{}\n\n", agent_core::plan_mode::GUIDANCE), "")
                 .replace("\n# Code intelligence\n\nUse the index.\n", "")
         );
+    }
+
+    /// The blank lines a Markdown formatter puts around the role slot, and
+    /// the newline it ends the file with, are not the prompt's.
+    #[test]
+    fn the_template_reads_the_same_formatted() {
+        let bare = "You are Rusta.\n{{role}}\n# Communicating\n\nText.";
+        for formatted in [
+            "You are Rusta.\n\n{{role}}\n\n# Communicating\n\nText.\n",
+            "You are Rusta.\n{{role}}\n\n# Communicating\n\nText.\n",
+            bare,
+        ] {
+            assert_eq!(
+                halves_of(formatted),
+                ("You are Rusta.", "# Communicating\n\nText.")
+            );
+        }
     }
 
     /// The date never enters the system prompt: it arrives by reminder, so
