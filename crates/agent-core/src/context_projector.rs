@@ -48,7 +48,8 @@ impl ProjectOptions {
 /// Project a raw context history into a provider-safe message list.
 #[must_use]
 pub fn project(history: &[Message], options: &ProjectOptions) -> Vec<Message> {
-    let mut result = merge_adjacent_user_messages(history);
+    let history = declare_each_tool_once(history);
+    let mut result = merge_adjacent_user_messages(&history);
     if options.dedupe_duplicate_tool_calls {
         result = dedupe_duplicate_tool_calls(result);
     }
@@ -63,6 +64,39 @@ pub fn project(history: &[Message], options: &ProjectOptions) -> Vec<Message> {
         result = drop_leading_non_user_messages(result);
     }
     result
+}
+
+/// `history` with each tool declared on its messages (`messages[].tools`) by
+/// the last message that declares it: an earlier declaration of the same
+/// name is dropped, and a message left with nothing to send goes with it
+/// ([`merge_adjacent_user_messages`]). A provider refuses a tool declared
+/// twice, and the loaded tools are declared again once their declarations
+/// may have left the history (after a compaction), which can keep one.
+fn declare_each_tool_once(history: &[Message]) -> std::borrow::Cow<'_, [Message]> {
+    let mut declared = std::collections::HashSet::new();
+    let mut repeated = false;
+    for message in history.iter().rev() {
+        for tool in &message.tools {
+            repeated |= !declared.insert(tool.name.as_str());
+        }
+    }
+    if !repeated {
+        return std::borrow::Cow::Borrowed(history);
+    }
+    let mut declared = std::collections::HashSet::new();
+    let mut result: Vec<Message> = history
+        .iter()
+        .rev()
+        .map(|message| {
+            let mut message = message.clone();
+            message
+                .tools
+                .retain(|tool| declared.insert(tool.name.clone()));
+            message
+        })
+        .collect();
+    result.reverse();
+    std::borrow::Cow::Owned(result)
 }
 
 /// Whether a content part serializes to nothing the provider can read.
@@ -469,6 +503,43 @@ fn drop_leading_non_user_messages(history: Vec<Message>) -> Vec<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tool declared on two messages is declared by the later one only,
+    /// and a message left with nothing to send is dropped.
+    #[test]
+    fn each_tool_is_declared_once_by_its_last_declaration() {
+        let tool = |name: &str, about: &str| {
+            lm_bridge::tool::Tool::new(name, about, serde_json::json!({"type": "object"}))
+        };
+        let declaring = |tools: Vec<lm_bridge::tool::Tool>| {
+            let mut message = Message::system("");
+            message.content.clear();
+            message.tools = tools;
+            message
+        };
+        let history = vec![
+            Message::user("start"),
+            declaring(vec![tool("a", "old")]),
+            Message::user("more"),
+            declaring(vec![tool("a", "new"), tool("b", "b")]),
+        ];
+        let projected = project(&history, &ProjectOptions::standard());
+        let declared: Vec<(String, String)> = projected
+            .iter()
+            .flat_map(|m| m.tools.iter())
+            .map(|t| (t.name.clone(), t.description.clone()))
+            .collect();
+        assert_eq!(
+            declared,
+            [
+                ("a".to_string(), "new".to_string()),
+                ("b".to_string(), "b".to_string())
+            ]
+        );
+        // The emptied declaration goes, and the user messages around it merge.
+        assert_eq!(projected.len(), 2, "{projected:?}");
+        assert_eq!(projected[0].text_content(), "start\n\nmore");
+    }
     use lm_bridge::message::ToolCall;
 
     #[test]
