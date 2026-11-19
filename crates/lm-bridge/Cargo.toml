@@ -19,7 +19,6 @@ thiserror.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-tokio-stream.workspace = true
 bytes.workspace = true
 url.workspace = true
 sha2.workspace = true

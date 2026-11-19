@@ -14,7 +14,6 @@ license = "GPL-3.0-only"
 tokio = { version = "1.44", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
-tokio-stream = "0.1"
 
 # HTTP / SSE
 # reqwest 0.13's `rustls` feature brings aws-lc (C, a hazard for the
