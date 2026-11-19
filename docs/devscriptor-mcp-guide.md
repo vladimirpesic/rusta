@@ -431,8 +431,8 @@ call site; it, `format_document` and `get_range_format` write to disk, so
 re-read a file after one.
 
 ## Context Graph
-Notes earlier sessions recorded live in the same database. A search answer names
-the notes its query matches in `context_notes`: recall them with
+A search answer lists the Context Graph notes its query matches in
+`context_notes`, and only those are there to recall: read them with
 `search_context` when they bear on the task. When you make a decision, find a
 non-obvious constraint or the cause of a subtle bug, or the user corrects you,
 record it with `add_context_note`: its `note_type` (`adr`, `standard`,

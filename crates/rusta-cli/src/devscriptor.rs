@@ -511,8 +511,8 @@ Your `explore` and `plan` sub-agents have Devscriptor's read-only tools, and
 to start with them and to read files for the detail they point to.
 
 ## Context Graph
-Notes earlier sessions recorded live in the same database. A search answer names
-the notes its query matches in `context_notes`: recall them with
+A search answer lists the Context Graph notes its query matches in
+`context_notes`, and only those are there to recall: read them with
 `search_context` when they bear on the task. When you make a decision, find a
 non-obvious constraint or the cause of a subtle bug, or the user corrects you,
 record it with `mcp__{server}__add_context_note`: its `note_type` (`adr`,
@@ -557,8 +557,8 @@ file tools.
 A server that is not installed cannot be installed from here: say which.
 
 ## Context Graph
-A search answer names the Context Graph notes its query matches in
-`context_notes`: notes earlier sessions recorded. Recall them with
+A search answer lists the Context Graph notes its query matches in
+`context_notes`, and only those are there to recall: read them with
 `mcp__{server}__search_context` when they bear on the task.
 
 ## Failures
