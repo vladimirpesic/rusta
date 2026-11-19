@@ -127,7 +127,8 @@ configured (RFC 9728, then RFC 8414 or OpenID discovery), and `offline_access`
 is requested when the authorization server offers it, so the grant includes a
 refresh token. The grant is saved under `<config dir>/rusta/credentials/mcp/`.
 It is refreshed two minutes before it expires, and again when the server rejects
-it.
+it. The browser returns to a listener on `127.0.0.1:<redirect_port>` (8765 by
+default); servers that share a port sign in one after another.
 
 Discovered endpoints are the server's word, so the requests they lead to are
 checked. An origin other than the server's own must resolve to public

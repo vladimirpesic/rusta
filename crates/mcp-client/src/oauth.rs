@@ -529,6 +529,25 @@ pub async fn exchange_code(
     token_request(token_url, policy, &params).await
 }
 
+/// Hold the redirect `port` for one sign-in at a time, until the returned
+/// guard is dropped. Servers whose sign-ins share a port (the default 8765)
+/// take turns: two at once would race for the listener, and the browser's
+/// callback of one could reach the other's, which refuses its state.
+pub async fn claim_redirect_port(port: u16) -> tokio::sync::OwnedMutexGuard<()> {
+    static PORTS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<u16, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    let port_lock = std::sync::Arc::clone(
+        PORTS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(port)
+            .or_default(),
+    );
+    port_lock.lock_owned().await
+}
+
 /// How long a connection to the callback listener may take to send its
 /// request: a browser opens connections it may never use.
 const CALLBACK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -770,6 +789,23 @@ mod tests {
         assert!(code.is_none());
         assert_eq!(error.as_deref(), Some("access_denied"));
         assert_eq!(state.as_deref(), Some("xyz"));
+    }
+
+    /// Two sign-ins on one redirect port take turns; another port's does
+    /// not wait.
+    #[tokio::test]
+    async fn sign_ins_on_one_port_take_turns() {
+        let first = claim_redirect_port(41_001).await;
+        let second = tokio::spawn(claim_redirect_port(41_001));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!second.is_finished(), "the port is held");
+        let other = tokio::time::timeout(Duration::from_secs(1), claim_redirect_port(41_002)).await;
+        assert!(other.is_ok(), "another port is free");
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(1), second)
+            .await
+            .expect("the second sign-in gets the port")
+            .unwrap();
     }
 
     #[tokio::test]

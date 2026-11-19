@@ -681,6 +681,7 @@ impl ServerHandle {
         oauth: &crate::config::McpOAuthConfig,
     ) -> Result<OAuthToken, OAuthError> {
         let (auth_url, token, discovery) = self.oauth_endpoints(oauth).await?;
+        let _port = oauth::claim_redirect_port(oauth.redirect_port).await;
         let pkce = PkcePair::new();
         let state = random_state();
         let redirect = redirect_uri(oauth.redirect_port);
