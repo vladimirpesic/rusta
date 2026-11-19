@@ -619,6 +619,36 @@ mod tests {
         );
     }
 
+    /// A file that starts with a UTF-8 byte-order mark keeps it: `read_file`
+    /// shows the text without it, and an edit of the first line copied from
+    /// there changes the text after it.
+    #[tokio::test]
+    async fn an_edit_keeps_the_byte_order_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.cs");
+        std::fs::write(&path, "\u{feff}class A {}\r\n").unwrap();
+        let ctx = ctx(dir.path());
+        let read = ReadFileTool::new()
+            .execute(json!({"path": "a.cs"}), &ctx, "r")
+            .await
+            .text_content();
+        assert_eq!(read, "1\tclass A {}");
+
+        let result = EditFileTool::new()
+            .execute(
+                json!({"path": "a.cs", "old_string": read, "new_string": "1\tclass B {}"}),
+                &ctx,
+                "e",
+            )
+            .await;
+
+        assert!(!result.is_error, "{}", result.text_content());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "\u{feff}class B {}\r\n"
+        );
+    }
+
     /// A refused edit leaves the file as it was, and says why.
     #[tokio::test]
     async fn a_refused_edit_leaves_the_file_alone() {

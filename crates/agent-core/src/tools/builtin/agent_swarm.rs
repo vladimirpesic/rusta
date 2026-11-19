@@ -405,11 +405,8 @@ impl MemberResult {
 
 /// The member's result from how its run ended.
 fn classify(outcome: RunOutcome, agent: &Agent) -> (Status, Option<String>, String) {
-    let last = agent.last_assistant_text();
     if let Some(limit) = outcome.timed_out {
-        let last = last
-            .map(|text| format!("\nIts last message:\n{text}"))
-            .unwrap_or_default();
+        let last = super::agent::unfinished_message(agent);
         return (
             Status::Failed,
             Some(StopReason::TimedOut.as_str().to_string()),
@@ -423,14 +420,26 @@ fn classify(outcome: RunOutcome, agent: &Agent) -> (Status, Option<String>, Stri
         Ok(step) => (
             Status::Completed,
             step.stop_reason.map(|reason| reason.as_str().to_string()),
-            last.unwrap_or_else(|| "(subagent returned no text)".to_string()),
+            agent
+                .last_assistant_text()
+                .unwrap_or_else(|| "(subagent returned no text)".to_string()),
         ),
         Err(AgentError::Interrupted) => (
             Status::Aborted,
             Some(StopReason::Cancelled.as_str().to_string()),
-            "The subagent was cancelled before it finished.".to_string(),
+            format!(
+                "The subagent was cancelled before it finished.{}",
+                super::agent::unfinished_message(agent)
+            ),
         ),
-        Err(e) => (Status::Failed, None, format!("subagent failed: {e}")),
+        Err(e) => (
+            Status::Failed,
+            None,
+            format!(
+                "subagent failed: {e}{}",
+                super::agent::unfinished_message(agent)
+            ),
+        ),
     }
 }
 

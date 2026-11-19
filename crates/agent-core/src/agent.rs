@@ -4475,11 +4475,11 @@ mod tests {
         );
     }
 
-    /// A todo list with items open is reminded about after five steps without
-    /// a change, and again five steps after; a change restarts the count, and
+    /// A todo list with items open is reminded about after ten steps without
+    /// a change, and again ten steps after; a change restarts the count, and
     /// a list with nothing open, or a sub-agent's, is never reminded about.
     #[tokio::test]
-    async fn an_open_todo_list_is_reminded_about_after_five_quiet_steps() {
+    async fn an_open_todo_list_is_reminded_about_after_ten_quiet_steps() {
         const MARKER: &str = "The todo list has not been updated in the last";
         let step = |name: &str, args: serde_json::Value| StepResult {
             message: Message::assistant_tool_calls(vec![
@@ -4536,24 +4536,24 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let mut steps = vec![todo("add", serde_json::json!({ "description": "a" }))];
-        steps.extend((0..6).map(quiet));
+        steps.extend((0..11).map(quiet));
         steps.push(todo("add", serde_json::json!({ "description": "b" })));
-        steps.extend((6..11).map(quiet));
+        steps.extend((11..21).map(quiet));
         steps.push(todo("done", serde_json::json!({ "id": 0 })));
         steps.push(todo("done", serde_json::json!({ "id": 1 })));
-        steps.extend((11..17).map(quiet));
+        steps.extend((21..32).map(quiet));
         let mut agent = Agent::new(temp.path().to_path_buf(), "sys")
             .with_permission_mode(PermissionMode::BypassPermissions);
         let (at, texts) = reminded(&mut agent, steps).await;
-        // The second item comes in response 8, the five quiet steps after it
-        // in responses 9 to 13.
+        // The second item comes in response 13, the ten quiet steps after it
+        // in responses 14 to 23.
         assert_eq!(
             at,
-            [7, 14],
-            "five quiet steps after the first item, five after the second; none once all are done"
+            [12, 24],
+            "ten quiet steps after the first item, ten after the second; none once all are done"
         );
         assert!(
-            texts[0].contains("in the last 5 steps (0/1 done)"),
+            texts[0].contains("in the last 10 steps (0/1 done)"),
             "{}",
             texts[0]
         );
@@ -4561,15 +4561,15 @@ mod tests {
 
         let quiet_turn: Vec<StepResult> =
             std::iter::once(todo("add", serde_json::json!({ "description": "a" })))
-                .chain((0..12).map(quiet))
+                .chain((0..22).map(quiet))
                 .collect();
         let again = tempfile::tempdir().unwrap();
         let mut agent = Agent::new(again.path().to_path_buf(), "sys")
             .with_permission_mode(PermissionMode::BypassPermissions);
         assert_eq!(
             reminded(&mut agent, quiet_turn.clone()).await.0,
-            [7, 12],
-            "a reminder repeats five steps after the last"
+            [12, 22],
+            "a reminder repeats ten steps after the last"
         );
 
         let sub = tempfile::tempdir().unwrap();

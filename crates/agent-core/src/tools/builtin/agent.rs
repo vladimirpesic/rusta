@@ -475,8 +475,19 @@ pub(crate) async fn run_bounded(
     outcome
 }
 
+/// The last message a sub-agent wrote, for its parent, when it timed out, was
+/// cancelled or failed: what it had found so far, from work it did not
+/// finish. Empty when it wrote none.
+pub(crate) fn unfinished_message(agent: &Agent) -> String {
+    agent
+        .last_assistant_text()
+        .map(|text| format!("\nIts last message, from work it did not finish:\n{text}"))
+        .unwrap_or_default()
+}
+
 /// What a sub-agent hands back: its final message and, when it was stopped,
-/// timed out or failed, why and how to resume it. `Err` is a failure.
+/// timed out or failed, why and how to resume it, with its last message.
+/// `Err` is a failure.
 pub(crate) fn report(
     outcome: RunOutcome,
     agent: &Agent,
@@ -492,11 +503,8 @@ pub(crate) fn report(
         ),
         None => String::new(),
     };
+    let last = unfinished_message(agent);
     if let Some(limit) = outcome.timed_out {
-        let last = agent
-            .last_assistant_text()
-            .map(|text| format!("\nIts last message:\n{text}"))
-            .unwrap_or_default();
         return Err(format!(
             "subagent ran past its {} s time limit and was cancelled\nstop_reason: {}{}{last}",
             limit.as_secs(),
@@ -518,12 +526,12 @@ pub(crate) fn report(
             })
         }
         Err(AgentError::Interrupted) => Err(format!(
-            "subagent was cancelled\nstop_reason: {}{}",
+            "subagent was cancelled\nstop_reason: {}{}{last}",
             StopReason::Cancelled,
             resume_hint("was cancelled before finishing")
         )),
         Err(e) => Err(format!(
-            "subagent failed: {e}{}",
+            "subagent failed: {e}{}{last}",
             resume_hint("failed; its conversation so far is saved")
         )),
     }
@@ -688,6 +696,33 @@ mod tests {
             };
             let text = report(failed, &agent, Some("sub-1")).unwrap_err();
             assert!(text.contains("stop_reason: cancelled"), "{text}");
+        }
+
+        /// A sub-agent cancelled or failed hands back its last message, from
+        /// work it did not finish, as a timed-out one does.
+        #[test]
+        fn an_unfinished_subagent_hands_back_its_last_message() {
+            let agent = agent_saying("found the parser; checking callers");
+            for result in [
+                Err(AgentError::Interrupted),
+                Err(AgentError::MaxTurnsExceeded),
+            ] {
+                let text = report(
+                    RunOutcome {
+                        result,
+                        timed_out: None,
+                    },
+                    &agent,
+                    Some("sub-1"),
+                )
+                .unwrap_err();
+                assert!(
+                    text.ends_with(
+                        "Its last message, from work it did not finish:\nfound the parser; checking callers"
+                    ),
+                    "{text}"
+                );
+            }
         }
 
         /// A sub-agent past its deadline is cancelled, unwinds, and reports

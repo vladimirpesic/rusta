@@ -88,7 +88,8 @@ A command is stopped with what it started. Each command runs in a process group
 of its own (on Windows, a process tree): `task_stop` and a background task's
 timeout send the group SIGTERM and, two seconds later, SIGKILL to what is left,
 and a foreground command killed at its timeout, or whose call is cancelled, is
-killed with everything it started. A command that finishes leaves alone what it
+killed with everything it started. A call cancelled with its turn answers with
+what the command had printed by then. A command that finishes leaves alone what it
 started on purpose, such as `server > log 2>&1 &`. A task is marked finished
 only once its output is all in.
 
@@ -242,8 +243,9 @@ envelope ahead of your next message. A fire never lands mid-turn.
 ## Todo list, goals and skills
 
 - **`todo_list`** keeps the agent's plan of work. While it has items open, the
-  session's agent is reminded of it, with the list, after five steps without a
-  `todo_list` change, and again every five steps until it changes.
+  session's agent is reminded of it, with the list, after ten steps without a
+  `todo_list` change, and again every ten steps until it changes; a list that still
+  matches the work needs no change.
 - **Goals** (`create_goal`, `get_goal`, and `update_goal` / `set_goal_budget`
   once one is active) let a long task carry on across turns until it is
   completed, paused, blocked or out of its token budget. `/goal` manages them

@@ -7,7 +7,7 @@ use crate::tools::builtin::todo_list::TODO_LIST_TOOL_NAME;
 
 /// Assistant steps without a change to the todo list, and since the last
 /// reminder, after which a list with items still open is reminded about.
-pub const STALE_REMINDER_STEPS: usize = 5;
+pub const STALE_REMINDER_STEPS: usize = 10;
 
 /// The reminder's first words, by which the conversation shows when it was
 /// last given.
@@ -114,10 +114,10 @@ impl TodoList {
         let done = self.items.len() - self.open_count();
         Message::user(format!(
             "<system-reminder>\n{STALE_REMINDER_MARKER} {steps} steps ({done}/{total} done). If \
-             an item is finished, mark it done now with `todo_list` (action \"done\"); that call \
-             can go in the same response as your next tool call. If the list no longer matches \
-             the current work, clear it and add what does. Never mention this reminder to the \
-             user.\n\nCurrent todo list:\n{list}\n</system-reminder>",
+             an item is finished, mark it done with `todo_list` (action \"done\"); that call can \
+             go in the same response as your next tool call. If the list no longer matches the \
+             current work, clear it and add what does. If it still matches your progress, it \
+             needs no update. Never mention this reminder to the user.\n\nCurrent todo list:\n{list}\n</system-reminder>",
             total = self.items.len(),
             list = self.format(),
         ))

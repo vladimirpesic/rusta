@@ -26,6 +26,51 @@ use crate::{
 
 use super::tool_scheduler::ToolScheduler;
 
+/// The most a stopped call's output keeps of what it wrote ([`keeping_output`]).
+const KEPT_OUTPUT_BYTES: usize = 1024 * 1024;
+
+/// `sender`, which may be none, with what the call `id` writes as it runs
+/// (its `Progress` chunks) also kept in `written`, up to
+/// [`KEPT_OUTPUT_BYTES`]: what a call that is stopped answers with
+/// ([`cancelled`]).
+fn keeping_output(
+    sender: Option<ToolEventSender>,
+    id: String,
+    written: Arc<Mutex<String>>,
+) -> ToolEventSender {
+    Arc::new(move |event: ToolEvent| {
+        if let ToolEvent::Progress {
+            id: from,
+            stdout_chunk,
+            stderr_chunk,
+            ..
+        } = &event
+            && *from == id
+        {
+            let mut written = written.lock().unwrap();
+            for chunk in [stdout_chunk, stderr_chunk].into_iter().flatten() {
+                if written.len() + chunk.len() <= KEPT_OUTPUT_BYTES {
+                    written.push_str(chunk);
+                }
+            }
+        }
+        if let Some(sender) = &sender {
+            sender(event);
+        }
+    })
+}
+
+/// The result of a call stopped with its turn: that it was stopped, and what
+/// it had written by then, which the model would otherwise never see.
+fn cancelled(written: &str) -> ExecutableToolResult {
+    if written.is_empty() {
+        return ExecutableToolResult::error("Tool execution cancelled");
+    }
+    ExecutableToolResult::error(format!(
+        "Tool execution cancelled. Its output until then:\n{written}"
+    ))
+}
+
 /// What a batch of tool calls produced.
 pub struct ToolBatchOutcome {
     /// One `Role::Tool` message per call, in the order the provider issued them.
@@ -261,7 +306,12 @@ pub async fn run_tool_call_batch(
         }
 
         let mut ctx = ctx.clone();
-        ctx.tool_event_sender = tool_event_sender.clone();
+        let written = Arc::new(Mutex::new(String::new()));
+        ctx.tool_event_sender = Some(keeping_output(
+            tool_event_sender.clone(),
+            tool_call_id.clone(),
+            Arc::clone(&written),
+        ));
         let cancel = cancel.clone();
         let args_for_hooks = args.clone();
         let future: ToolFuture = Box::pin(async move {
@@ -273,7 +323,7 @@ pub async fn run_tool_call_batch(
             });
             let result = tokio::select! {
                 result = tool.execute(args, &ctx, &tool_call_id) => result,
-                _ = cancel.cancelled() => ExecutableToolResult::error("Tool execution cancelled"),
+                _ = cancel.cancelled() => cancelled(&written.lock().unwrap()),
             };
             fire_tool_lifecycle_hook(&ctx, &name, &args_for_hooks, &result);
             let mut result = result;
@@ -596,6 +646,43 @@ mod tests {
             fork_source: Default::default(),
             ..Default::default()
         }
+    }
+
+    /// A call stopped with its turn answers with what it wrote until then.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stopped_call_keeps_what_it_wrote() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(BashTool::new()));
+        let registry = Arc::new(Mutex::new(registry));
+        let ctx = test_ctx();
+        let permissions =
+            crate::permissions::PermissionEngine::new(PermissionMode::BypassPermissions);
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            stop.cancel();
+        });
+        let calls = vec![
+            ToolCall::new("tc-1", "bash")
+                .with_arguments(r#"{"command": "echo first line; echo second line; sleep 30"}"#),
+        ];
+        let mut dedup = ToolCallDeduplicator::new();
+        let outcome = run_tool_call_batch(
+            calls,
+            registry,
+            &ctx,
+            &permissions,
+            &cancel,
+            None,
+            &mut dedup,
+        )
+        .await
+        .unwrap();
+        let text = outcome.messages[0].text_content();
+        assert!(text.starts_with("Tool execution cancelled."), "{text}");
+        assert!(text.contains("first line\nsecond line\n"), "{text}");
     }
 
     #[tokio::test]

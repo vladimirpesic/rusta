@@ -226,4 +226,5 @@ still sees it. SIGTERM, timeouts and the step cap get no reminder.
 Sub-agents report the same way. A sub-agent can also stop because it was
 cancelled, it failed, or it ran past `subagent_timeout_ms` (`swarm_timeout_ms`
 for swarm members), which reports `timed_out`. In every such case its result
-ends with `stop_reason`, its `agent_id`, and how to resume it.
+ends with `stop_reason`, its `agent_id`, and how to resume it, and with its last
+message, from the work it did not finish.
