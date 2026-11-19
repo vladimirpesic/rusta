@@ -4,7 +4,8 @@
 //! Nothing is prepended when there is no repository to describe: a block
 //! saying so would only tell the model what it cannot know.
 
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -113,10 +114,18 @@ pub async fn collect(cwd: &Path) -> String {
     format!("<git-context>\n{}\n</git-context>", sections.join("\n"))
 }
 
-/// Run one git command in `cwd`, capped at [`GIT_TIMEOUT`].
+/// The name of git's executable.
+const GIT: &str = if cfg!(windows) { "git.exe" } else { "git" };
+
+/// Run one git command in `cwd`, capped at [`GIT_TIMEOUT`]. It runs unasked,
+/// so it runs no program the folder chose: git comes from a `PATH` directory
+/// outside the folder ([`git_outside`]), and the repository's
+/// `core.fsmonitor` command, which `git status` would start, is off.
 async fn run_git(cwd: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
-    let child = crate::child_env::command("git")
-        .args(["-C"])
+    let git = git_outside(std::env::var_os("PATH").as_deref().unwrap_or_default(), cwd)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no git on PATH"))?;
+    let child = crate::child_env::command(git)
+        .args(["-c", "core.fsmonitor=false", "-C"])
         .arg(cwd)
         .args(args)
         .stdin(Stdio::null())
@@ -131,6 +140,18 @@ async fn run_git(cwd: &Path, args: &[&str]) -> std::io::Result<std::process::Out
             format!("git {} timed out", args.join(" ")),
         )),
     }
+}
+
+/// The first git that the `PATH` value `path` names in an absolute directory
+/// outside `folder`: a `.` in `PATH`, or a directory of the folder's own, would
+/// otherwise run whatever the folder calls `git`.
+fn git_outside(path: &OsStr, folder: &Path) -> Option<PathBuf> {
+    let resolved = |dir: &Path| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let folder = resolved(folder);
+    std::env::split_paths(path)
+        .filter(|dir| dir.is_absolute() && !resolved(dir).starts_with(&folder))
+        .map(|dir| dir.join(GIT))
+        .find(|candidate| candidate.is_file())
 }
 
 /// The remote URL as it may appear in the context: scp-like URLs of known
@@ -259,5 +280,69 @@ mod tests {
         assert!(context.contains("Recent commits:"), "{context}");
         assert!(context.contains("initial"), "{context}");
         assert!(context.ends_with("\n</git-context>"), "{context}");
+    }
+
+    /// The git that runs is one from a `PATH` directory outside the folder:
+    /// not one of the folder's, nor one a relative entry finds.
+    #[test]
+    fn the_folders_own_git_is_not_run() {
+        let folder = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let inside = folder.path().join("bin");
+        std::fs::create_dir(&inside).unwrap();
+        for dir in [folder.path(), inside.as_path(), elsewhere.path()] {
+            std::fs::write(dir.join(GIT), "").unwrap();
+        }
+        let path = std::env::join_paths([
+            PathBuf::from("."),
+            inside.clone(),
+            folder.path().to_path_buf(),
+            elsewhere.path().to_path_buf(),
+        ])
+        .unwrap();
+        assert_eq!(
+            git_outside(&path, folder.path()),
+            Some(elsewhere.path().join(GIT))
+        );
+        let none = std::env::join_paths([inside]).unwrap();
+        assert_eq!(git_outside(&none, folder.path()), None);
+    }
+
+    /// A repository's `core.fsmonitor` command, which `git status` starts,
+    /// does not run.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_repositorys_fsmonitor_command_does_not_run() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(temp.path())
+                .output()
+        };
+        if git(&["--version"]).is_err() {
+            eprintln!("git unavailable; skipping");
+            return;
+        }
+        let ran = temp.path().join("ran");
+        let hook = temp.path().join("monitor.sh");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch {}\n", ran.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(git(&["init", "-b", "main"]).unwrap().status.success());
+        let hook = hook.to_string_lossy();
+        assert!(
+            git(&["config", "core.fsmonitor", &hook])
+                .unwrap()
+                .status
+                .success()
+        );
+        // git itself runs it: the setting works.
+        git(&["status", "--porcelain"]).unwrap();
+        assert!(ran.exists(), "git status started core.fsmonitor");
+        std::fs::remove_file(&ran).unwrap();
+
+        collect(temp.path()).await;
+        assert!(!ran.exists(), "the context's git status started it");
     }
 }
