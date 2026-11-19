@@ -67,7 +67,8 @@ reports the version in `Cargo.toml`, it needs glibc 2.17 at most on Linux and
 macOS 11 on macOS, and it links no C++ runtime or OpenSSL, nor on Windows the
 Visual C++ runtime. Pushing a tag `v<version>` builds the archives and publishes
 them, with their checksums, as a GitHub release; the tag must match the version in
-`Cargo.toml`. A manual run, or a push to `main` that changes the workflow, builds
+`Cargo.toml`, and the release's notes are `.github/release-notes/v<version>.md`,
+which the tag's commit must hold. A manual run, or a push to `main` that changes the workflow, builds
 and checks them without publishing them. The sections below build the same
 archives by hand.
 
