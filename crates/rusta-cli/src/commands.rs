@@ -901,7 +901,7 @@ async fn reload_context(ctx: &mut CommandContext) -> Result<String, String> {
     let cwd = &ctx.cli.cwd;
     let profiles =
         crate::load_profile_registry(cwd).map_err(|e| format!("failed to reload profiles: {e}"))?;
-    let skills = crate::load_skill_registry(cwd, &ctx.config.skill_dirs)
+    let skills = crate::load_skill_registry(cwd, &ctx.cli.additional_dirs, &ctx.config.skill_dirs)
         .map_err(|e| format!("failed to reload skills: {e}"))?;
     let built = crate::system_prompt::build(&ctx.cli, &ctx.config, &profiles)?;
     let changes = ReloadChanges::between(

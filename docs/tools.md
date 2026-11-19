@@ -256,8 +256,9 @@ envelope ahead of your next message. A fire never lands mid-turn.
   `when_to_use`. A skill whose frontmatter sets `disable_model_invocation: true`
   is kept for the user: it is left out of that list, the model is refused if it
   names it, and the user runs it with `/skill <name>`. Skills are read from
-  `~/.config/rusta/skills`, `~/.agents/skills`, the project's `.rusta/skills`,
-  and the directories in `skill_dirs`. Frontmatter is read by the rules of a
+  `~/.config/rusta/skills`, `~/.agents/skills`, the `.rusta/skills` of each
+  additional directory, the project's `.rusta/skills`, and the directories in
+  `skill_dirs`, a later one winning over an earlier one of the same name. Frontmatter is read by the rules of a
   [profile file](agents.md#profiles), and a skill without a `name` takes its
   file's.
 
