@@ -115,6 +115,16 @@ A command's output goes to the model and into the session records. Without
 this, a command that printed its environment would send the key along with it.
 Every other variable is passed on unchanged.
 
+Rusta's own environment still holds the keys it was started with. On Linux, the
+processes it starts cannot read them there either: Rusta's process is one the
+kernel does not dump, so its `/proc/<pid>/environ`, memory and open files are
+refused to every process without the privilege to trace any other. Rusta then
+writes no core dump, and a debugger attaches to it only with that privilege. On
+macOS and Windows, a process of the same user can still read another's
+environment (`ps -E` on macOS). A key given with `--api-key` is in Rusta's
+command line, which every process can read: the environment or the config file
+keeps it out of sight.
+
 An MCP server that needs one of these variables can be given it in its own
 `env` ([MCP](mcp.md)), which applies on top.
 

@@ -78,6 +78,9 @@ strsim = "0.11"
 # page's plain text where Readability finds none.
 dom_smoothie = "0.18"
 dom_query = "0.28"
+# The system calls Rusta makes itself, through safe wrappers: on Linux, closing
+# its process to inspection by the processes it starts (`child_env`).
+rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
 ignore = "0.4"
 async-trait = "0.1"
 

@@ -211,7 +211,7 @@ On any platform where the binary runs:
 
 ```bash
 rusta version
-rusta --provider kimi --api-key "$KIMI_API_KEY" doctor
+rusta --provider kimi doctor    # with KIMI_API_KEY set
 ```
 
 `dist/` then holds five archives, each with its `.sha256`:

@@ -33,6 +33,9 @@ strsim.workspace = true
 dom_smoothie.workspace = true
 dom_query.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 toml.workspace = true
 serde-saphyr = { workspace = true, features = ["serialize"] }

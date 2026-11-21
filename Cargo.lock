@@ -28,6 +28,7 @@ dependencies = [
  "lm-bridge",
  "regex",
  "reqwest",
+ "rustix",
  "serde",
  "serde-saphyr",
  "serde_json",

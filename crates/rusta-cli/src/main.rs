@@ -125,6 +125,9 @@ fn init_tracing() {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
+    // Before anything is started: no process of Rusta's reads its keys from
+    // Rusta's own environment.
+    agent_core::child_env::close_own_environment();
 
     let mut cli = Cli::parse();
 
