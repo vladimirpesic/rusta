@@ -38,8 +38,9 @@ env = {
     "XDG_CACHE_HOME": os.path.join(home, ".cache"),
     "PATH": "/usr/bin:/bin",
     "TERM": "xterm-256color",
+    "RUSTA_API_KEY": "sk-test",
 }
-args = [binary, "--provider", "kimi", "--base-url", base_url, "--api-key", "sk-test", "--model", "mock", "tui"]
+args = [binary, "--provider", "kimi", "--base-url", base_url, "--model", "mock", "tui"]
 
 pid, fd = pty.fork()
 if pid == 0:

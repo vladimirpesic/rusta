@@ -6,7 +6,7 @@ use agent_core::{Agent, Llm, PermissionMode, ProfileRegistry, SkillRegistry};
 use approval::StdinApprovalHook;
 use user_interaction::StdinUserInteraction;
 
-use clap::{CommandFactory, Parser};
+use clap::CommandFactory;
 use clap_complete::generate;
 use cli::Cli;
 use lm_bridge::providers::catalog_cache::CatalogEntry;
@@ -129,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
     // Rusta's own environment.
     agent_core::child_env::close_own_environment();
 
-    let mut cli = Cli::parse();
+    let mut cli = Cli::parse_warning_of_key();
 
     if matches!(cli.command, Some(cli::Commands::Version)) {
         println!("rusta {}", env!("CARGO_PKG_VERSION"));

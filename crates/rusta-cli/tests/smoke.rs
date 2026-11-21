@@ -5,6 +5,7 @@ use std::process::Command;
 use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::cargo::CommandCargoExt;
 use cleared_env::ClearedEnv;
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 
 fn rusta() -> Command {
@@ -57,6 +58,38 @@ fn test_help_lists_stream_json_flag() {
         .success()
         .stdout(contains("--stream-json"))
         .stdout(contains("--plan"));
+}
+
+/// A key given with `--api-key` is warned of, on stderr. The same key in
+/// `RUSTA_API_KEY` is not.
+#[test]
+fn a_key_on_the_command_line_is_warned_of() {
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = isolated_rusta(home.path());
+    cmd.args(["--api-key", "sk-test", "version"]);
+    cmd.assert()
+        .success()
+        .stdout(contains("rusta"))
+        .stderr(contains(
+            "warning: --api-key shows the key in process listings",
+        ));
+
+    let mut cmd = isolated_rusta(home.path());
+    cmd.env("RUSTA_API_KEY", "sk-test").arg("version");
+    cmd.assert().success().stderr(contains("--api-key").not());
+}
+
+/// `--help` names `RUSTA_API_KEY` without showing the key it holds.
+#[test]
+fn help_does_not_show_the_key() {
+    let home = tempfile::tempdir().unwrap();
+    let mut cmd = isolated_rusta(home.path());
+    cmd.env("RUSTA_API_KEY", "sk-only-in-the-environment")
+        .arg("--help");
+    cmd.assert()
+        .success()
+        .stdout(contains("RUSTA_API_KEY"))
+        .stdout(contains("sk-only-in-the-environment").not());
 }
 
 /// Logs must never reach stdout.

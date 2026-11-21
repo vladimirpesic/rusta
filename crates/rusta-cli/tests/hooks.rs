@@ -67,9 +67,10 @@ async fn mock_endpoint() -> MockServer {
     server
 }
 
-/// Runs `rusta` in `repo` isolated from the user's config and data. `hooks`
-/// is written to the user config when given. PATH carries just the system
-/// directories so hook commands (`sh -c …`) resolve.
+/// Runs `rusta` in `repo` isolated from the user's config and data, with the
+/// mock endpoint's key in `RUSTA_API_KEY`. `hooks` is written to the user
+/// config when given. PATH carries just the system directories so hook
+/// commands (`sh -c …`) resolve.
 async fn rusta(home: &Path, repo: &Path, hooks: Option<&str>, args: &[&str]) -> Output {
     let home = home.to_path_buf();
     let repo = repo.to_path_buf();
@@ -89,6 +90,7 @@ async fn rusta(home: &Path, repo: &Path, hooks: Option<&str>, args: &[&str]) -> 
             .env("XDG_DATA_HOME", home.join(".local/share"))
             .env("XDG_CACHE_HOME", home.join(".cache"))
             .env("PATH", "/usr/bin:/bin")
+            .env("RUSTA_API_KEY", "sk-test")
             .current_dir(&repo)
             .args(&args)
             .output()
@@ -108,8 +110,6 @@ fn session_args(server: &MockServer) -> Vec<String> {
         "kimi".into(),
         "--base-url".into(),
         server.uri(),
-        "--api-key".into(),
-        "sk-test".into(),
         "--permission-mode".into(),
         "bypass_permissions".into(),
         "-p".into(),

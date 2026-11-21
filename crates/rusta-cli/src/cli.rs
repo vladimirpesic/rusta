@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use crate::endpoints::{Billing, Region};
 use clap_complete::Shell;
@@ -42,7 +42,11 @@ pub struct Cli {
     pub base_url: Option<String>,
 
     /// API key.
-    #[arg(long, env = "RUSTA_API_KEY")]
+    ///
+    /// A key given here shows in process listings, to the commands Rusta runs
+    /// and on Linux to every user, and Rusta warns of it. `RUSTA_API_KEY`, or
+    /// `api_key` in the config file, keeps it out of them.
+    #[arg(long, env = "RUSTA_API_KEY", hide_env_values = true)]
     pub api_key: Option<String>,
 
     /// Single prompt to run in headless mode.
@@ -456,7 +460,35 @@ pub enum Commands {
     },
 }
 
+/// What Rusta says when it is given its key with `--api-key`.
+const KEY_ON_COMMAND_LINE: &str = "--api-key shows the key in process listings, to the \
+     commands Rusta runs and on Linux to every user; set RUSTA_API_KEY or api_key in the \
+     config file instead";
+
+/// Whether `matches` hold a key given with `--api-key`, not one from
+/// `RUSTA_API_KEY`.
+fn key_on_command_line(matches: &clap::ArgMatches) -> bool {
+    matches.value_source("api_key") == Some(clap::parser::ValueSource::CommandLine)
+        && matches
+            .get_one::<String>("api_key")
+            .is_some_and(|key| !key.trim().is_empty())
+}
+
 impl Cli {
+    /// Rusta's command line, parsed as [`Parser::parse`] does, with a warning
+    /// on standard error when it carries the API key.
+    #[must_use]
+    pub fn parse_warning_of_key() -> Self {
+        let mut matches = Self::command().get_matches();
+        let warn = key_on_command_line(&matches);
+        let cli = Self::from_arg_matches_mut(&mut matches)
+            .unwrap_or_else(|e| e.format(&mut Self::command()).exit());
+        if warn {
+            eprintln!("warning: {KEY_ON_COMMAND_LINE}");
+        }
+        cli
+    }
+
     /// Mints this run's id: the session id when one was given, otherwise a
     /// fresh lowercase ULID. Called once at startup, before anything is derived
     /// from `self`.
@@ -780,7 +812,31 @@ mod tests {
     /// clap's own consistency check: catches conflicting/duplicate arg config.
     #[test]
     fn cli_definition_is_valid() {
-        use clap::CommandFactory;
         Cli::command().debug_assert();
+    }
+
+    /// A key given with `--api-key` is told apart from no key and from an
+    /// empty one, which leaves nothing in the command line to warn of.
+    #[test]
+    fn a_key_on_the_command_line_is_recognised() {
+        let on_line = |args: &[&str]| {
+            key_on_command_line(&Cli::command().try_get_matches_from(args).unwrap())
+        };
+        assert!(on_line(&["rusta", "--api-key", "sk-test"]));
+        assert!(on_line(&["rusta", "--api-key=sk-test", "doctor"]));
+        assert!(!on_line(&["rusta"]));
+        assert!(!on_line(&["rusta", "--api-key", ""]));
+        assert!(!on_line(&["rusta", "--api-key", "  "]));
+    }
+
+    /// `--help` names `RUSTA_API_KEY` without showing the key it holds.
+    #[test]
+    fn help_keeps_the_keys_value_to_itself() {
+        let command = Cli::command();
+        let api_key = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "api_key")
+            .unwrap();
+        assert!(api_key.is_hide_env_values_set());
     }
 }

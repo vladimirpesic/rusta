@@ -137,14 +137,13 @@ async fn run_with_answers(home: &Path, repo: &Path, base_url: &str, answers: &st
             .env("XDG_DATA_HOME", home.join(".local/share"))
             .env("XDG_CACHE_HOME", home.join(".cache"))
             .cleared_env_path("")
+            .env("RUSTA_API_KEY", "sk-test")
             .current_dir(&repo)
             .args([
                 "--provider",
                 "kimi",
                 "--base-url",
                 &base_url,
-                "--api-key",
-                "sk-test",
                 "--stream-json",
                 "-p",
                 "write the two files",
@@ -264,14 +263,13 @@ async fn a_command_gets_none_of_the_approval_answers() {
         .env("XDG_DATA_HOME", home.path().join(".local/share"))
         .env("XDG_CACHE_HOME", home.path().join(".cache"))
         .cleared_env_path("/usr/bin:/bin")
+        .env("RUSTA_API_KEY", "sk-test")
         .current_dir(repo.path())
         .args([
             "--provider",
             "kimi",
             "--base-url",
             &server.uri(),
-            "--api-key",
-            "sk-test",
             "--stream-json",
             "-p",
             "read a line",

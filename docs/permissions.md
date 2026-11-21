@@ -121,9 +121,19 @@ kernel does not dump, so its `/proc/<pid>/environ`, memory and open files are
 refused to every process without the privilege to trace any other. Rusta then
 writes no core dump, and a debugger attaches to it only with that privilege. On
 macOS and Windows, a process of the same user can still read another's
-environment (`ps -E` on macOS). A key given with `--api-key` is in Rusta's
-command line, which every process can read: the environment or the config file
-keeps it out of sight.
+environment (`ps -E` on macOS).
+
+A key given with `--api-key` is in Rusta's command line, which process listings
+show: to the processes Rusta starts, and on Linux to every user. Rusta warns
+when it is given one. `RUSTA_API_KEY`, or `api_key` in the config file, keeps
+the key out of them, and `rusta --help` names `RUSTA_API_KEY` without showing
+the key it holds.
+
+None of this keeps a command from reading your files. Rusta runs commands as
+you, without a sandbox, so a command can read the config file, or the shell
+profile that sets a key, as you can. On Linux and macOS, the config file Rusta
+writes when it sets up a key (`rusta init`) is readable by you alone: that keeps
+other users out, not the commands you run.
 
 An MCP server that needs one of these variables can be given it in its own
 `env` ([MCP](mcp.md)), which applies on top.

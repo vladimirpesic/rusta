@@ -20,8 +20,8 @@ A lean, native Rust coding agent for the terminal, built for **Kimi**,
   disclosure: a large server's most-used tools are at hand from the start, and
   the rest load on demand instead of flooding the tool table.
 - **Safety by default:** permission modes and rules, guards for dangerous
-  commands and secrets, API keys kept from every command and server it starts,
-  a write guard, and workspace trust for project config.
+  commands and secrets, API keys withheld from the environment of every command
+  and server it starts, a write guard, and workspace trust for project config.
 - **Durable sessions:** JSONL records, resume, fork, export, and automatic
   context compaction.
 - A **single self-contained binary** for Linux, macOS and Windows.

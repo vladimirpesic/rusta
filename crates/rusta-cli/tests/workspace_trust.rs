@@ -45,6 +45,9 @@ async fn mock_endpoint() -> MockServer {
     server
 }
 
+/// The mock endpoint's key, in the variable Rusta reads it from.
+const KEY: (&str, &str) = ("RUSTA_API_KEY", "sk-test");
+
 /// Runs `rusta` in `repo` with `args` and `envs`, isolated from the user's
 /// config, data, keys and PATH.
 async fn rusta(home: &Path, repo: &Path, envs: &[(&str, &str)], args: &[&str]) -> Output {
@@ -104,14 +107,12 @@ async fn a_repository_cannot_start_its_mcp_servers_until_trusted() {
         "kimi",
         "--base-url",
         base_url.as_str(),
-        "--api-key",
-        "sk-test",
         "-p",
         "hi",
     ];
 
     // Untrusted: the run goes ahead without the server, and says so.
-    let output = rusta(home.path(), repo.path(), &[], &session).await;
+    let output = rusta(home.path(), repo.path(), &[KEY], &session).await;
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(stdout(&output).contains("done"));
     let text = stderr(&output);
@@ -135,13 +136,13 @@ async fn a_repository_cannot_start_its_mcp_servers_until_trusted() {
     assert!(!marker.exists(), "doctor must not start it");
 
     // Trusted for one run by the environment, and only for that run.
-    let trusted_run = [("RUSTA_TRUST_WORKSPACE", "1")];
+    let trusted_run = [KEY, ("RUSTA_TRUST_WORKSPACE", "1")];
     let output = rusta(home.path(), repo.path(), &trusted_run, &session).await;
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(!stderr(&output).contains("leaving out"));
     assert!(marker.exists(), "trusted for the run, the server starts");
     std::fs::remove_file(&marker).unwrap();
-    rusta(home.path(), repo.path(), &[], &session).await;
+    rusta(home.path(), repo.path(), &[KEY], &session).await;
     assert!(
         !marker.exists(),
         "the environment's trust is not remembered"
@@ -156,7 +157,7 @@ async fn a_repository_cannot_start_its_mcp_servers_until_trusted() {
         "{text}"
     );
     assert!(text.contains("Trusted "), "{text}");
-    let output = rusta(home.path(), repo.path(), &[], &session).await;
+    let output = rusta(home.path(), repo.path(), &[KEY], &session).await;
     assert!(
         !stderr(&output).contains("leaving out"),
         "{}",
@@ -167,7 +168,7 @@ async fn a_repository_cannot_start_its_mcp_servers_until_trusted() {
 
     // A different command is not what was trusted.
     std::fs::write(&config_path, server_config(&marker, "changed")).unwrap();
-    let output = rusta(home.path(), repo.path(), &[], &session).await;
+    let output = rusta(home.path(), repo.path(), &[KEY], &session).await;
     let text = stderr(&output);
     assert!(
         text.contains("They changed since you trusted this folder on"),

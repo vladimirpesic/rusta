@@ -271,7 +271,7 @@ config type.
 | `RUSTA_REGION` | `global` (default) or `china` |
 | `RUSTA_MODEL` | Model identifier. Overrides the default implied by the billing |
 | `RUSTA_BASE_URL` | Custom API base URL. Overrides the endpoint implied by the billing and region |
-| `RUSTA_API_KEY` | API key |
+| `RUSTA_API_KEY` | API key. `--api-key` sets the same, but leaves the key in process listings: see [Keys stay with Rusta](permissions.md#keys-stay-with-rusta) |
 | `RUST_LOG` | Log filter for diagnostics on stderr, e.g. `warn` or `rusta=debug`. Unset shows errors only |
 | `RUSTA_CUSTOM_HEADERS` | Extra HTTP headers for model requests, as newline-separated `Name: value` lines. A header of the same name in the config's `custom_headers` wins; the provider's own headers and `Authorization` are never replaced |
 | `RUSTA_HEADLESS_BACKGROUND_MODE` | `steer` (default), `drain` or `exit`: what a headless run does about background work once its prompt is answered |

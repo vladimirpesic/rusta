@@ -33,14 +33,13 @@ async fn sigterm_ends_a_headless_run_with_its_turn_recorded() {
         .env("XDG_DATA_HOME", home.path().join(".local/share"))
         .env("XDG_CACHE_HOME", home.path().join(".cache"))
         .env("PATH", "")
+        .env("RUSTA_API_KEY", "sk-test")
         .current_dir(repo.path())
         .args([
             "--provider",
             "kimi",
             "--base-url",
             &server.uri(),
-            "--api-key",
-            "sk-test",
             "--records",
             records.to_str().unwrap(),
             "-p",

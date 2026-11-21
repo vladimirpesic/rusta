@@ -52,7 +52,8 @@ async fn mock_endpoint(answer: &str) -> MockServer {
 }
 
 /// `rusta` started in `workdir`, isolated from the user's config, data and
-/// keys, with `path` as its PATH.
+/// keys, with `path` as its PATH and the mock endpoint's key in
+/// `RUSTA_API_KEY`.
 fn isolated_rusta(home: &Path, workdir: &Path, path: &str) -> Command {
     let mut command = Command::cargo_bin("rusta").expect("rusta binary");
     command
@@ -61,6 +62,7 @@ fn isolated_rusta(home: &Path, workdir: &Path, path: &str) -> Command {
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("RUSTA_API_KEY", "sk-test")
         .cleared_env_path(path)
         .current_dir(workdir);
     command
@@ -158,8 +160,6 @@ async fn a_session_another_process_writes_refuses_a_headless_run() {
         "kimi",
         "--base-url",
         base_url.as_str(),
-        "--api-key",
-        "sk-test",
         "--session",
         "work",
         "-p",
@@ -202,14 +202,7 @@ async fn kimi_requests_carry_a_prompt_cache_key_without_a_session() {
     let home = tempfile::tempdir().unwrap();
     let workdir = tempfile::tempdir().unwrap();
     let base_url = server.uri();
-    let common = [
-        "--provider",
-        "kimi",
-        "--base-url",
-        base_url.as_str(),
-        "--api-key",
-        "sk-test",
-    ];
+    let common = ["--provider", "kimi", "--base-url", base_url.as_str()];
 
     let mut args = common.to_vec();
     args.extend(["-p", "say hello"]);
@@ -299,8 +292,6 @@ fn cut_short_args(server: &MockServer) -> Vec<String> {
         "kimi",
         "--base-url",
         &server.uri(),
-        "--api-key",
-        "sk-test",
         "--permission-mode",
         "bypass_permissions",
         "-p",
@@ -396,8 +387,6 @@ async fn the_repl_titles_the_session_and_takes_the_next_prompt() {
             "kimi",
             "--base-url",
             &uri,
-            "--api-key",
-            "sk-test",
             "--session",
             "repl",
         ],
@@ -493,8 +482,6 @@ async fn tools_run_in_the_given_cwd() {
             "kimi",
             "--base-url",
             &base_url,
-            "--api-key",
-            "sk-test",
             "--yes",
             "--cwd",
             cwd,
@@ -591,8 +578,6 @@ async fn a_headless_run_with_nobody_to_review_keeps_the_plan_unapproved() {
             "kimi",
             "--base-url",
             &base_url,
-            "--api-key",
-            "sk-test",
             "--yes",
             "--plan",
             "-p",
@@ -644,8 +629,6 @@ async fn a_configured_plan_mode_is_skipped_where_nobody_can_review() {
             "kimi",
             "--base-url",
             &base_url,
-            "--api-key",
-            "sk-test",
             "--yes",
             "-p",
             "hello",
@@ -671,16 +654,7 @@ async fn the_repl_reviews_a_plan_under_yes() {
     let output = run_repl(
         home.path(),
         work.path(),
-        &[
-            "--provider",
-            "kimi",
-            "--base-url",
-            &uri,
-            "--api-key",
-            "sk-test",
-            "--yes",
-            "--plan",
-        ],
+        &["--provider", "kimi", "--base-url", &uri, "--yes", "--plan"],
         "plan a fix\ny\n/exit\n",
     )
     .await;
@@ -740,8 +714,6 @@ async fn a_headless_run_swarms_only_with_swarm() {
             "kimi",
             "--base-url",
             &base_url,
-            "--api-key",
-            "sk-test",
             "--yes",
             "-p",
             "audit every service",
@@ -828,8 +800,6 @@ async fn a_subagent_is_sent_the_sessions_prompt_with_its_role() {
             "kimi",
             "--base-url",
             &base_url,
-            "--api-key",
-            "sk-test",
             "--yes",
             "-p",
             "fix the parser",
@@ -934,14 +904,7 @@ async fn provider_refresh_fetches_the_list_now_and_says_what_changed() {
     let output = run_repl(
         home.path(),
         work.path(),
-        &[
-            "--provider",
-            "deepseek",
-            "--base-url",
-            &uri,
-            "--api-key",
-            "sk-test",
-        ],
+        &["--provider", "deepseek", "--base-url", &uri],
         "/model\n/provider refresh\n/model\n/exit\n",
     )
     .await;
@@ -982,16 +945,7 @@ async fn a_deferred_servers_preloaded_tools_are_in_the_first_request() {
     let output = run_rusta_with_path(
         home.path(),
         workdir.path(),
-        &[
-            "--provider",
-            "kimi",
-            "--base-url",
-            &base_url,
-            "--api-key",
-            "sk-test",
-            "-p",
-            "hi",
-        ],
+        &["--provider", "kimi", "--base-url", &base_url, "-p", "hi"],
         "/usr/bin:/bin",
     )
     .await;
