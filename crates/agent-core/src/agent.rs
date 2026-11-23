@@ -785,10 +785,18 @@ impl Agent {
     }
 
     /// Replace the LLM reference at runtime (used by `/model` and `/provider`).
-    /// The context budget keeps free the output the new model reserves.
+    /// The context budget keeps free the output the new model reserves, and
+    /// with a sub-agent model pool, `agent` and `agent_swarm` name the new
+    /// model as `primary`. They are rebuilt in their places, and a new model
+    /// starts a new prompt cache anyway.
     pub fn set_llm(&mut self, llm: Arc<dyn Llm>) {
+        let model = llm.model_name().to_string();
         self.llm = Some(llm);
         self.set_context_budget(self.context.max_tokens());
+        if self.model_pool.is_some() && self.caller_model != model {
+            self.caller_model = model;
+            self.rebuild_subagent_tools();
+        }
     }
 
     /// Reconfigure the context token budget: `max_tokens` of window, less the

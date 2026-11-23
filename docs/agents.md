@@ -109,7 +109,8 @@ denies, and which of the session's MCP tools it gets. A call names the
 Each delegation gets an `agent_id` and keeps its records, with a note of its
 profile and model, so a resumed sub-agent comes back as the type and on the
 model it started with. Call `agent` with that `agent_id` and `resume: true` to
-continue it.
+continue it. A resume that names another `profile` or `model` is refused, with
+the ones the sub-agent runs as.
 
 ## Forking
 
@@ -188,7 +189,8 @@ description = "Architecture, tricky bugs, anything needing real reasoning."
 
 - **What `agent` lists.** Each alias, with what it is for, the default first.
   Then `primary (= <your model>)`: the calling model at its own reasoning effort.
-  `primary` is reserved and always available. Pool entries run at their own
+  `primary` is reserved and always available, and names the model a `/model` or
+  `/provider` switch moved the session to. Pool entries run at their own
   reasoning effort.
 - **What `agent_swarm` lists.** The same choices, on one line. They bind the
   item-spawned members; resumed members keep their own model.

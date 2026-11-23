@@ -79,7 +79,7 @@ impl AgentTool {
                         },
                         "resume": {
                             "type": "boolean",
-                            "description": "If true and agent_id is set, resume the subagent from its persisted records, as the type and on the model it was started with."
+                            "description": "If true and agent_id is set, resume the subagent from its persisted records, as the type and on the model it was started with; a different `profile` or `model` is refused."
                         },
                         "run_in_background": {
                             "type": "boolean",
@@ -156,6 +156,51 @@ fn fork_conflict(input: &serde_json::Value) -> Option<String> {
     None
 }
 
+/// Why resuming the sub-agent `meta` describes cannot be done as asked, if it
+/// cannot.
+///
+/// A resumed sub-agent runs as it was started, under its saved profile and on
+/// its saved model, so a call naming another profile or model contradicts it.
+/// Refusing says so; ignoring the argument would give the model something
+/// other than what it asked for, without a word.
+fn resume_conflict(input: &serde_json::Value, meta: &SubagentMeta) -> Option<String> {
+    let asked = |key: &str| {
+        input
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    };
+    if let Some(profile) = asked("profile")
+        && profile != meta.profile
+    {
+        return Some(format!(
+            "A resumed sub-agent runs as the {:?} agent it was started as, so it cannot also \
+             take profile {profile:?}. Drop `profile` to resume it, or drop `resume` to start a \
+             new {profile:?} agent.",
+            meta.profile
+        ));
+    }
+    let saved_model = meta
+        .model
+        .as_deref()
+        .unwrap_or(crate::model_pool::PRIMARY_ALIAS);
+    if let Some(model) = asked("model") {
+        let same = match &meta.model {
+            Some(alias) => model == alias,
+            None => model.eq_ignore_ascii_case(crate::model_pool::PRIMARY_ALIAS),
+        };
+        if !same {
+            return Some(format!(
+                "A resumed sub-agent runs on the model it was started on, {saved_model:?}, so it \
+                 cannot also take model {model:?}. Drop `model` to resume it, or drop `resume` \
+                 to start a new sub-agent on {model:?}."
+            ));
+        }
+    }
+    None
+}
+
 impl Default for AgentTool {
     fn default() -> Self {
         Self::new(Arc::new(ProfileRegistry::with_builtin_profiles()))
@@ -224,11 +269,16 @@ impl ExecutableTool for AgentTool {
             .map(|id| subagent_records_path(ctx.background.data_dir(), id));
 
         // A resumed sub-agent is rebuilt as it was: its profile and model come
-        // from its saved description, not from this call.
+        // from its saved description, and a call naming others is refused.
         let saved = match (&records_path, resume) {
             (Some(path), true) => SubagentMeta::load(path).await,
             _ => None,
         };
+        if let Some(meta) = &saved
+            && let Some(reason) = resume_conflict(&input, meta)
+        {
+            return ExecutableToolResult::error(reason);
+        }
         let profile_name = saved
             .as_ref()
             .map(|meta| meta.profile.clone())
@@ -994,6 +1044,63 @@ mod tests {
                 )
                 .await;
             assert!(!resumed.is_error, "{}", resumed.text_content());
+            assert_eq!(SubagentMeta::load(&path).await.unwrap().profile, "explore");
+        }
+
+        /// A resume naming the profile or model the sub-agent was started
+        /// with goes ahead; one naming another is refused, saying which it
+        /// runs as, and leaves its description as it was.
+        #[tokio::test]
+        async fn a_resume_naming_another_profile_or_model_is_refused() {
+            let dir = tempfile::tempdir().unwrap();
+            let llm = PacedLlm::new(Duration::ZERO, false);
+            let ctx = ctx_with(llm, dir.path());
+            let tool = AgentTool::default();
+            tool.execute(
+                serde_json::json!({"prompt": "look", "profile": "explore", "agent_id": "sub-x"}),
+                &ctx,
+                "tc",
+            )
+            .await;
+            let resume = |extra: serde_json::Value| {
+                let mut input =
+                    serde_json::json!({"prompt": "go on", "agent_id": "sub-x", "resume": true});
+                input
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(extra.as_object().unwrap().clone());
+                input
+            };
+
+            let refused = tool
+                .execute(resume(serde_json::json!({"profile": "coder"})), &ctx, "tc")
+                .await;
+            assert!(refused.is_error);
+            let text = refused.text_content();
+            assert!(
+                text.contains("\"explore\" agent it was started as") && text.contains("\"coder\""),
+                "{text}"
+            );
+
+            let refused = tool
+                .execute(resume(serde_json::json!({"model": "fast"})), &ctx, "tc")
+                .await;
+            assert!(refused.is_error);
+            let text = refused.text_content();
+            assert!(
+                text.contains("started on, \"primary\"") && text.contains("\"fast\""),
+                "{text}"
+            );
+
+            let same = tool
+                .execute(
+                    resume(serde_json::json!({"profile": "explore", "model": "Primary"})),
+                    &ctx,
+                    "tc",
+                )
+                .await;
+            assert!(!same.is_error, "{}", same.text_content());
+            let path = subagent_records_path(dir.path(), "sub-x");
             assert_eq!(SubagentMeta::load(&path).await.unwrap().profile, "explore");
         }
 

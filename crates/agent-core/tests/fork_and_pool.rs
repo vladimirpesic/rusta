@@ -427,6 +427,36 @@ mod bound_model_answers {
 
     /// `agent` with `model: "fast"` runs the sub-agent on the pooled model,
     /// not on the caller's.
+    /// Switching the session's model (`/model`, `/provider`) makes both
+    /// delegation tools name the new one as `primary`, in their places in the
+    /// tool table.
+    #[test]
+    fn a_model_switch_renames_primary_in_both_delegation_tools() {
+        let mut agent = Agent::new(std::env::temp_dir(), "sys")
+            .with_llm(Scripted::new("glm-5.3", Vec::new()))
+            .with_model_pool(Some(super::pool()), "glm-5.3");
+        let names = |agent: &Agent| -> Vec<String> {
+            agent
+                .tool_definitions()
+                .into_iter()
+                .map(|tool| tool.name)
+                .collect()
+        };
+        let before = names(&agent);
+
+        agent.set_llm(Scripted::new("glm-5.4", Vec::new()));
+
+        assert_eq!(names(&agent), before, "the tools keep their places");
+        for tool in ["agent", "agent_swarm"] {
+            let schema = super::schema_of(&agent, tool);
+            let text = schema["properties"]["model"]["description"]
+                .as_str()
+                .expect("a description");
+            assert!(text.contains("`primary` (= glm-5.4)"), "{tool}: {text}");
+            assert!(!text.contains("(= glm-5.3)"), "{tool}: {text}");
+        }
+    }
+
     #[tokio::test]
     async fn a_sub_agent_runs_on_its_bound_model() {
         let (primary_calls, fast_calls, result) = delegate("agent").await;
