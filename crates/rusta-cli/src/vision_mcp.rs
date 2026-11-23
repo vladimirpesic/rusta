@@ -126,9 +126,9 @@ impl VisionFallback for McpVisionFallback {
     }
 }
 
-/// Whether a GLM model needs the vision server. GLM-5.3-Flash reads images
-/// and video itself; an image-only model still needs `analyze_video`, and a
-/// text model needs both tools.
+/// Whether a GLM model needs the vision server. GLM-5.4 and GLM-5.3-Flash
+/// read images and video themselves; an image-only model still needs
+/// `analyze_video`, and a text model needs both tools.
 #[must_use]
 pub fn needs_vision_server(model: &str) -> bool {
     let policy = GlmChatProvider::media_policy_for(model);
@@ -373,23 +373,25 @@ mod tests {
         assert!(servers.is_empty());
     }
 
-    /// GLM-5.3-Flash reads images and video itself, so the server is not
-    /// started for it — unless another model in the session needs it.
+    /// GLM-5.4, the Coding Plan's default, and GLM-5.3-Flash read images and
+    /// video themselves, so the server is not started for them — unless
+    /// another model in the session needs it.
     #[test]
     fn a_native_media_model_does_not_start_the_server() {
         let mut servers = Vec::new();
-        let flash = vec!["glm-5.3-flash".to_string()];
-        inject(
-            "glm",
-            Billing::Subscription,
-            Some("key"),
-            Region::Global,
-            &flash,
-            None,
-            &mut servers,
-            &mcp_client::McpDefaults::default(),
-        );
-        assert!(servers.is_empty());
+        for model in ["glm-5.4", "glm-5.3-flash"] {
+            inject(
+                "glm",
+                Billing::Subscription,
+                Some("key"),
+                Region::Global,
+                &[model.to_string()],
+                None,
+                &mut servers,
+                &mcp_client::McpDefaults::default(),
+            );
+            assert!(servers.is_empty(), "{model}");
+        }
 
         let with_pool = vec!["glm-5.3-flash".to_string(), "glm-5.3".to_string()];
         inject(

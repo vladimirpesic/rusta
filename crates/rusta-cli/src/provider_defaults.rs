@@ -175,13 +175,17 @@ mod tests {
         );
     }
 
-    /// The defaults are the models the user runs: GLM 5.3 (1M context), Kimi
-    /// K2.8 Preview on the Coding Plan and K3.1 Pro per token, and DeepSeek
-    /// V4.1-Flash.
+    /// The defaults are the models the user runs: GLM-5.4 on the Coding Plan
+    /// and GLM-5.3 per token, Kimi K2.8 Preview on the Coding Plan and K3.1
+    /// Pro per token, and DeepSeek V4.1-Flash.
     #[test]
     fn falls_back_to_the_recommended_provider_default() {
         assert_eq!(
-            resolve_model_with("glm", None, Billing::default(), no_env),
+            resolve_model_with("glm", None, Billing::Subscription, no_env),
+            ModelSource::Default("glm-5.4".into())
+        );
+        assert_eq!(
+            resolve_model_with("glm", None, Billing::Api, no_env),
             ModelSource::Default("glm-5.3".into())
         );
         assert_eq!(

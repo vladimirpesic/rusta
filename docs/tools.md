@@ -193,10 +193,10 @@ takes:
   `question` asks it something specific ("transcribe every label") instead of a
   general description.
 - **Video** goes to models that take it: on the Kimi Code endpoints it is
-  uploaded through Kimi's Files API, on GLM-5.3-Flash it is sent inline, and a
-  generic endpoint needs `inline_video = true` (`RUSTA_INLINE_VIDEO=1`).
-  Otherwise the result says why the video cannot be shown. No provider takes
-  audio.
+  uploaded through Kimi's Files API, on GLM-5.4 and GLM-5.3-Flash it is sent
+  inline, and a generic endpoint needs `inline_video = true`
+  (`RUSTA_INLINE_VIDEO=1`). Otherwise the result says why the video cannot be
+  shown. No provider takes audio.
 
 History outlives a model switch, so every request re-checks its media against
 the provider it is about to reach, and replaces what cannot go with a note.

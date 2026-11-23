@@ -12,20 +12,23 @@ use crate::{
 use super::openai_compat::{HttpTimeouts, OpenAiCompatProvider};
 
 /// What to do with a video on a GLM model that cannot take it.
-const GLM_VIDEO_HINT: &str = "this GLM model does not take video; GLM-5.3-Flash does, or analyse \
-     a local video (MP4/MOV/M4V, up to 8 MB) with the zai_vision MCP server's \
+const GLM_VIDEO_HINT: &str = "this GLM model does not take video; GLM-5.4 and GLM-5.3-Flash do, or \
+     analyse a local video (MP4/MOV/M4V, up to 8 MB) with the zai_vision MCP server's \
      mcp__zai_vision__analyze_video tool";
 
 /// What the GLM Coding Plan does with a model id.
 ///
 /// Z.AI's devpack overview says the plan serves GLM-5.3 and GLM-5.3-Flash, and
-/// routes GLM-5.2/5.1 to GLM-5.3 and GLM-4.7 to GLM-5.3-Flash. The rest of this
-/// table is from probing the Coding Plan endpoint, which reports the model
-/// that answered in each response.
+/// routes GLM-5.2/5.1 to GLM-5.3 and GLM-4.7 to GLM-5.3-Flash. Z.AI announced
+/// GLM-5.4 for every Coding Plan, the plan's model list names it, and Z.AI
+/// refuses it to a pay-per-token key. The rest of this table is from probing
+/// the Coding Plan endpoint, which reports the model that answered in each
+/// response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodingPlanModel {
-    /// One of the models the plan documents.
-    Documented,
+    /// One of the models the plan serves under their own names
+    /// ([`GlmChatProvider::CODING_PLAN_MODELS`]).
+    Served,
     /// Accepted, and answered by this model instead.
     RoutedTo(&'static str),
     /// Answered under its own name, though the plan does not document it, so
@@ -51,8 +54,31 @@ pub struct GlmChatProvider {
 impl GlmChatProvider {
     pub const DEFAULT_BASE_URL: &'static str = "https://api.z.ai/api/coding/paas/v4";
 
-    /// The models the GLM Coding Plan documents.
-    pub const CODING_PLAN_MODELS: [&'static str; 2] = ["glm-5.3", "glm-5.3-flash"];
+    /// The models the GLM Coding Plan serves under their own names, its
+    /// default first.
+    pub const CODING_PLAN_MODELS: [&'static str; 3] = ["glm-5.4", "glm-5.3", "glm-5.3-flash"];
+
+    /// The models Z.AI serves on the Coding Plan and refuses to a
+    /// pay-per-token key with `1220`.
+    pub const CODING_PLAN_ONLY: [&'static str; 1] = ["glm-5.4"];
+
+    /// [`CODING_PLAN_MODELS`](Self::CODING_PLAN_MODELS) as a choice in a
+    /// sentence: `glm-5.4, glm-5.3 or glm-5.3-flash`.
+    #[must_use]
+    pub fn coding_plan_choices() -> String {
+        match Self::CODING_PLAN_MODELS.split_last() {
+            Some((last, [])) => (*last).to_string(),
+            Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+            None => String::new(),
+        }
+    }
+
+    /// Whether Z.AI refuses `model` to a pay-per-token key, serving it on the
+    /// Coding Plan only.
+    #[must_use]
+    pub fn is_coding_plan_only(model: &str) -> bool {
+        Self::CODING_PLAN_ONLY.contains(&model.to_lowercase().as_str())
+    }
 
     /// Functions one request may declare. Z.AI's OpenAPI: "A max of 128
     /// functions are supported."
@@ -132,7 +158,7 @@ impl GlmChatProvider {
         let lower = model.to_lowercase();
         let id = lower.strip_suffix("[1m]").unwrap_or(&lower);
         match id {
-            "glm-5.3" | "glm-5.3-flash" => CodingPlanModel::Documented,
+            "glm-5.4" | "glm-5.3" | "glm-5.3-flash" => CodingPlanModel::Served,
             "glm-5" | "glm-5.1" | "glm-5.2" => CodingPlanModel::RoutedTo("glm-5.3"),
             "glm-4.5" | "glm-4.5-air" | "glm-4.6" | "glm-4.7" | "glm-5-turbo" => {
                 CodingPlanModel::RoutedTo("glm-5.3-flash")
@@ -166,14 +192,15 @@ impl GlmChatProvider {
     }
 
     /// Reword a refusal that names a model the plan lacks, so it says what
-    /// to use instead; and the empty balance a pay-per-token endpoint reports,
-    /// so it says when the key is a Coding Plan's.
+    /// to use instead; a pay-per-token refusal of a Coding Plan model, so it
+    /// says where the model is served; and the empty balance a pay-per-token
+    /// endpoint reports, so it says when the key is a Coding Plan's.
     fn explain_refusal(&self, error: LlmError) -> LlmError {
         let LlmError::ApiBusinessError { code, message } = error else {
             return error;
         };
         let model = self.inner.model_name();
-        let use_instead = Self::CODING_PLAN_MODELS.join(" or ");
+        let use_instead = Self::coding_plan_choices();
         let message = match code.as_str() {
             "1311" => format!(
                 "your GLM Coding Plan does not include {model}; use {use_instead}. Z.AI: {message}"
@@ -185,6 +212,13 @@ impl GlmChatProvider {
                 format!(
                     "{model} is not part of the GLM Coding Plan, so Z.AI bills it per token, and \
                      the account has no balance for it; use {use_instead}. Z.AI: {message}"
+                )
+            }
+            "1220" if !self.coding_plan && Self::is_coding_plan_only(model) => {
+                format!(
+                    "Z.AI serves {model} on the GLM Coding Plan and refuses it to a \
+                     pay-per-token key: use glm-5.3, or a Coding Plan key with --billing \
+                     subscription. Z.AI: {message}"
                 )
             }
             // Z.AI bills a key by its type, but an older key made for an
@@ -227,6 +261,8 @@ impl GlmChatProvider {
                 ("glm-5.3", 1_048_576),
                 ("glm-5.3-flash", 1_048_576),
                 ("glm-5.3-flashx", 1_048_576),
+                // Z.AI documents no window for GLM-5.4; it is GLM-5.3's.
+                ("glm-5.4", 1_048_576),
             ]
             .into_iter()
             .collect()
@@ -236,8 +272,8 @@ impl GlmChatProvider {
 
     pub fn context_window(model: &str) -> Option<u64> {
         // Exact entry, then the explicit 1M marker, then the nearest lower
-        // catalogued minor — so a `glm-5.4` this table does not list yet
-        // inherits `glm-5.3`'s 1M window instead of the 128k default.
+        // catalogued minor — so a `glm-5.5` this table does not list yet
+        // inherits `glm-5.4`'s 1M window instead of the 128k default.
         if let Some(window) = Self::model_metadata().get(model).copied() {
             return Some(window);
         }
@@ -326,10 +362,13 @@ impl GlmChatProvider {
         extra
     }
 
-    /// Whether `model` refuses `thinking: {type: "disabled"}`: GLM-5.3 and newer.
+    /// Whether `model` always thinks: GLM-5.3 and newer.
     ///
-    /// z.ai: "Disabling reasoning is no longer supported." The replacement is
-    /// `thinking: {type: "enabled"}` with `reasoning_effort: "low"`.
+    /// z.ai: "Disabling reasoning is no longer supported." GLM-5.3 refuses
+    /// `thinking: {type: "disabled"}`, and GLM-5.4 refuses a `reasoning_effort`
+    /// off its ladder as a model that "always engages in thinking and cannot
+    /// be disabled". The replacement is `thinking: {type: "enabled"}` with
+    /// `reasoning_effort: "low"`.
     fn thinking_is_mandatory(model: &str) -> bool {
         Self::at_least(model, 5, 3)
     }
@@ -437,22 +476,27 @@ impl GlmChatProvider {
         Self::context_window(model).unwrap_or(128_000)
     }
 
-    /// Whether `model` accepts image content parts: GLM-5.3-Flash/FlashX and
-    /// the `v` vision line (`glm-5v-turbo`, `glm-4.6v*`, `glm-4.5v`), per
-    /// Z.AI's OpenAPI vision request variant. Text models such as `glm-5.3`
-    /// refuse any image part with `1210`.
+    /// Whether `model` accepts image content parts: GLM-5.4, GLM-5.3-Flash/
+    /// FlashX and the `v` vision line (`glm-5v-turbo`, `glm-4.6v*`,
+    /// `glm-4.5v`), per Z.AI's OpenAPI vision request variant and its request
+    /// check, which takes image parts for GLM-5.4. Text models such as
+    /// `glm-5.3` refuse any image part with `1210`.
     pub fn supports_vision_for(model: &str) -> bool {
         let lower = model.to_lowercase();
-        ["glm-5.3-flash", "glm-5v", "glm-4.6v", "glm-4.5v"]
+        ["glm-5.4", "glm-5.3-flash", "glm-5v", "glm-4.6v", "glm-4.5v"]
             .iter()
             .any(|line| lower.starts_with(line))
     }
 
-    /// Whether `model` takes video. Z.AI documents video for its vision models
-    /// as a URL; an inline `data:` video was verified on GLM-5.3-Flash, so
-    /// only that line is sent video inline.
+    /// Whether `model` takes video inline. Z.AI documents video for its
+    /// vision models as a URL; an inline `data:` video was verified on
+    /// GLM-5.3-Flash, and Z.AI's request check takes one for GLM-5.4 as it
+    /// does there, while it refuses one to the text models.
     pub fn supports_video_for(model: &str) -> bool {
-        model.to_lowercase().starts_with("glm-5.3-flash")
+        let lower = model.to_lowercase();
+        ["glm-5.4", "glm-5.3-flash"]
+            .iter()
+            .any(|line| lower.starts_with(line))
     }
 
     /// Which media `model` takes: Z.AI's image formats on vision models, and
@@ -484,7 +528,8 @@ impl GlmChatProvider {
     fn known_models_static() -> Vec<crate::provider::ModelInfo> {
         use crate::provider::ModelInfo;
         [
-            ("glm-5.3", 1_048_576u64),
+            ("glm-5.4", 1_048_576u64),
+            ("glm-5.3", 1_048_576),
             ("glm-5.3-flash", 1_048_576),
             ("glm-5.3-flashx", 1_048_576),
             ("glm-5.2", 1_048_576),
@@ -521,7 +566,8 @@ impl GlmChatProvider {
         .collect()
     }
 
-    /// The models the Coding Plan documents, as [`known_models`] lists them.
+    /// The models the Coding Plan serves under their own names, as
+    /// [`known_models`] lists them.
     ///
     /// [`known_models`]: ChatProvider::known_models
     fn coding_plan_models() -> Vec<crate::provider::ModelInfo> {
@@ -563,7 +609,12 @@ impl ChatProvider for GlmChatProvider {
         if self.coding_plan {
             Self::coding_plan_models()
         } else {
+            // A pay-per-token key is refused the models the Coding Plan alone
+            // serves.
             Self::known_models_static()
+                .into_iter()
+                .filter(|model| !Self::is_coding_plan_only(&model.id))
+                .collect()
         }
     }
 
@@ -781,9 +832,9 @@ mod tests {
     /// its context eight times more often than it needs to.
     #[test]
     fn uncatalogued_minor_inherits_the_previous_minors_window() {
-        assert_eq!(GlmChatProvider::context_window("glm-5.4"), Some(1_048_576));
+        assert_eq!(GlmChatProvider::context_window("glm-5.5"), Some(1_048_576));
         assert_eq!(GlmChatProvider::context_window("glm-4.9"), Some(200_000));
-        assert_eq!(GlmChatProvider::context_window_for("glm-5.4"), 1_048_576);
+        assert_eq!(GlmChatProvider::context_window_for("glm-5.5"), 1_048_576);
     }
 
     /// Every model GLM advertises must resolve to the window it advertises.
@@ -923,10 +974,12 @@ mod tests {
         }
     }
 
-    /// GLM-5.3-Flash and the `v` line take images; the text models do not.
+    /// GLM-5.4, GLM-5.3-Flash and the `v` line take images; the text models
+    /// do not.
     #[test]
     fn glm_vision_follows_the_vision_line() {
         for model in [
+            "glm-5.4",
             "glm-5.3-flash",
             "glm-5.3-flashx",
             "glm-5v-turbo",
@@ -1079,6 +1132,85 @@ mod tests {
         assert!(!GlmChatProvider::supports_vision_for("glm-5.3"));
     }
 
+    // ---- GLM-5.4 -----------------------------------------------------------
+
+    /// GLM-5.4 is the Coding Plan's default: a 1M window, thinking that
+    /// cannot be switched off on GLM-5.3's `low`/`high`/`max` ladder,
+    /// `tool_stream`, and images and inline video of its own.
+    #[test]
+    fn glm_5_4_is_a_one_million_context_vision_model() {
+        let model = "glm-5.4";
+        assert_eq!(GlmChatProvider::context_window_for(model), 1_048_576);
+        assert!(GlmChatProvider::supports_vision_for(model));
+        let policy = GlmChatProvider::media_policy_for(model);
+        assert!(policy.accepts_image("image/png"));
+        assert!(policy.takes_video());
+        assert!(GlmChatProvider::thinking_is_mandatory(model));
+        assert!(GlmChatProvider::supports_reasoning_effort(model));
+        assert!(GlmChatProvider::supports_tool_stream(model));
+        for (asked, sent) in [("minimal", "low"), ("medium", "high"), ("xhigh", "max")] {
+            assert_eq!(GlmChatProvider::fold_reasoning_effort(model, asked), sent);
+        }
+        assert_eq!(
+            GlmChatProvider::coding_plan_model(model),
+            CodingPlanModel::Served
+        );
+        assert_eq!(GlmChatProvider::CODING_PLAN_MODELS[0], model);
+
+        let off = GenerateOptions {
+            thinking: Some(ThinkingConfig::Disabled),
+            ..Default::default()
+        };
+        let extra = GlmChatProvider::build_extra_body(&off, model, None, false);
+        assert_eq!(extra["thinking"], json!({"type": "enabled"}));
+        assert_eq!(extra["reasoning_effort"], json!("low"));
+    }
+
+    /// A pay-per-token key is refused GLM-5.4 with `1220`; the error says the
+    /// model is the Coding Plan's and what to use instead.
+    #[tokio::test]
+    async fn a_pay_per_token_refusal_of_a_coding_plan_model_says_where_it_is_served() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "error": {
+                    "code": "1220",
+                    "message": "You do not have permission to access glm-5.4"
+                }
+            })))
+            .mount(&server)
+            .await;
+        let provider = provider_at("glm-5.4", &server.uri()).with_coding_plan(false);
+        let result = provider
+            .generate(
+                None,
+                &[],
+                &[Message::user("hi")],
+                GenerateOptions {
+                    stream: false,
+                    ..Default::default()
+                },
+            )
+            .await;
+        let Err(LlmError::ApiBusinessError { code, message }) = result else {
+            panic!("a permission refusal is a business error");
+        };
+        assert_eq!(code, "1220");
+        assert!(
+            message.contains("serves glm-5.4 on the GLM Coding Plan"),
+            "{message}"
+        );
+        assert!(message.contains("use glm-5.3"), "{message}");
+        assert!(
+            message.contains("You do not have permission to access glm-5.4"),
+            "Z.AI's own words are kept: {message}"
+        );
+    }
+
     // ---- GLM-5.3-Flash ----------------------------------------------------
 
     /// GLM-5.3-Flash is a GLM-5.3 in every text respect — 1M window, thinking
@@ -1149,9 +1281,9 @@ mod tests {
     fn the_coding_plan_table_matches_the_live_probe() {
         use CodingPlanModel::*;
         for (model, expected) in [
-            ("glm-5.3", Documented),
-            ("glm-5.3-flash", Documented),
-            ("GLM-5.3-Flash", Documented),
+            ("glm-5.3", Served),
+            ("glm-5.3-flash", Served),
+            ("GLM-5.3-Flash", Served),
             ("glm-5.1", RoutedTo("glm-5.3")),
             ("glm-5.2[1m]", RoutedTo("glm-5.3")),
             ("glm-5", RoutedTo("glm-5.3")),
@@ -1172,7 +1304,7 @@ mod tests {
             );
         }
         for id in GlmChatProvider::CODING_PLAN_MODELS {
-            assert_eq!(GlmChatProvider::coding_plan_model(id), Documented);
+            assert_eq!(GlmChatProvider::coding_plan_model(id), Served);
         }
     }
 
@@ -1198,19 +1330,27 @@ mod tests {
         assert_eq!(proxy.with_coding_plan(true).context_window(), 1_048_576);
     }
 
-    /// The Coding Plan lists the two models it documents; the pay-per-token
-    /// endpoint lists the whole catalogue.
+    /// The Coding Plan lists the models it serves under their own names, its
+    /// default first; the pay-per-token endpoint lists the whole catalogue.
     #[test]
-    fn the_coding_plan_lists_only_its_documented_models() {
+    fn the_coding_plan_lists_only_the_models_it_serves() {
         let coding = provider_at("glm-5.3", "https://api.z.ai/api/coding/paas/v4");
-        let ids: Vec<String> = coding.known_models().into_iter().map(|m| m.id).collect();
-        assert_eq!(ids, ["glm-5.3", "glm-5.3-flash"]);
-        let flash = &coding.known_models()[1];
-        assert!(flash.supports_vision);
-        assert_eq!(flash.context_window, 1_048_576);
+        let models = coding.known_models();
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["glm-5.4", "glm-5.3", "glm-5.3-flash"]);
+        for (model, vision) in models.iter().zip([true, false, true]) {
+            assert_eq!(model.supports_vision, vision, "{}", model.id);
+            assert_eq!(model.context_window, 1_048_576, "{}", model.id);
+        }
 
         let api = provider_at("glm-5.3", "https://api.z.ai/api/paas/v4");
-        assert!(api.known_models().len() > 10);
+        let catalogue = api.known_models();
+        assert!(catalogue.len() > 10);
+        assert!(
+            catalogue.iter().all(|model| model.id != "glm-5.4"),
+            "a pay-per-token key is refused glm-5.4"
+        );
+        assert!(catalogue.iter().any(|model| model.id == "glm-5.3"));
     }
 
     /// Custom headers reach the wire, below the provider's own.
@@ -1390,7 +1530,7 @@ mod tests {
             "{message}"
         );
         assert!(
-            message.contains("use glm-5.3 or glm-5.3-flash"),
+            message.contains("use glm-5.4, glm-5.3 or glm-5.3-flash"),
             "{message}"
         );
         assert!(

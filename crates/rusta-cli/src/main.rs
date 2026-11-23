@@ -2059,7 +2059,7 @@ mod thinking_keep_tests {
                 super::GlmChatProvider::new(
                     // The default for `--provider glm`, so the test covers what
                     // a user actually gets.
-                    "glm-5.3".to_string(),
+                    "glm-5.4".to_string(),
                     Some("k".to_string()),
                     "https://api.z.ai/api/coding/paas/v4".to_string(),
                     timeout,

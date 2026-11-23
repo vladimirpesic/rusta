@@ -18,8 +18,10 @@
 //!   (`kimi-k3.1-pro`, …), so the two defaults differ. The subscription has
 //!   two hosts: `api.kimi.com` (mainland accounts) and `api.kimi.ai` (global
 //!   accounts), see [`KIMI_CODING_HOSTS`].
-//! * Z.AI serves `glm-5.3` on *all four* of its endpoints, so only the billing
-//!   door changes there, never the model.
+//! * Z.AI serves GLM-5.4 on the GLM Coding Plan and refuses it to a
+//!   pay-per-token key (`1220`), though every endpoint's model list names it.
+//!   `glm-5.3` is served on all four endpoints. So the Coding Plan's default
+//!   is `glm-5.4`, and pay-per-token's `glm-5.3`.
 //!
 //! Z.AI's Anthropic endpoint (`/api/anthropic`) is deliberately absent: it
 //! speaks the Anthropic Messages protocol for Claude Code, and Rusta is an
@@ -164,7 +166,8 @@ pub fn default_model(provider: &str, billing: Billing) -> Option<&'static str> {
     Some(match (provider, billing) {
         ("kimi", Billing::Subscription) => "kimi-for-coding",
         ("kimi", Billing::Api) => "kimi-k3.1-pro",
-        ("glm" | "zai", _) => "glm-5.3",
+        ("glm" | "zai", Billing::Subscription) => "glm-5.4",
+        ("glm" | "zai", Billing::Api) => "glm-5.3",
         ("openai", _) => "gpt-4o-mini",
         ("deepseek", _) => "deepseek-flash",
         _ => return None,
@@ -307,10 +310,14 @@ mod tests {
         );
         assert_eq!(default_model("kimi", Billing::Api), Some("kimi-k3.1-pro"));
 
-        // Z.AI serves glm-5.3 on every endpoint, so the billing cannot change it.
-        for billing in [Billing::Subscription, Billing::Api] {
-            assert_eq!(default_model("glm", billing), Some("glm-5.3"));
-            assert_eq!(default_model("zai", billing), Some("glm-5.3"));
+        // Z.AI serves GLM-5.4 on the Coding Plan only; a pay-per-token key
+        // runs GLM-5.3.
+        for provider in ["glm", "zai"] {
+            assert_eq!(
+                default_model(provider, Billing::Subscription),
+                Some("glm-5.4")
+            );
+            assert_eq!(default_model(provider, Billing::Api), Some("glm-5.3"));
         }
 
         // DeepSeek is pay-as-you-go only; V4.1-Flash is the default on either
@@ -506,7 +513,7 @@ mod tests {
             Some("https://api.kimi.com/coding/v1")
         );
 
-        assert_eq!(default_model("glm", billing), Some("glm-5.3"));
+        assert_eq!(default_model("glm", billing), Some("glm-5.4"));
         assert_eq!(
             base_url("glm", billing, region),
             Some("https://api.z.ai/api/coding/paas/v4")

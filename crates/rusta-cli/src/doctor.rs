@@ -520,12 +520,14 @@ fn describe_deepseek_models(models: &[DeepseekModelInfo]) -> Vec<String> {
         .collect()
 }
 
-/// Whether the GLM models this configuration runs are on the Coding Plan.
+/// Whether the GLM models this configuration runs are open to its key.
 ///
-/// The plan documents GLM-5.3 and GLM-5.3-Flash. Other ids are answered by
-/// one of those, served without being documented, or refused (`1311`, or
-/// `1113` when Z.AI bills them per token), so a pinned model can quietly be
-/// a different model, or fail every request.
+/// The Coding Plan serves GLM-5.4, GLM-5.3 and GLM-5.3-Flash under their own
+/// names. Other ids are answered by one of those, served without being
+/// documented, or refused (`1311`, or `1113` when Z.AI bills them per
+/// token), so a pinned model can quietly be a different model, or fail every
+/// request. A pay-per-token key is refused the models Z.AI serves on the
+/// Coding Plan only (`1220`).
 fn check_glm_plan(cli: &Cli, config: &Config) -> Option<Check> {
     let provider = resolve_provider(cli.provider.as_deref());
     if !matches!(provider.as_str(), "glm" | "zai") {
@@ -536,21 +538,44 @@ fn check_glm_plan(cli: &Cli, config: &Config) -> Option<Check> {
     let base_url = crate::resolve_base_url(cli, &provider, billing, region);
     let coding_plan = GlmChatProvider::endpoint_is_coding_plan(&base_url)
         .unwrap_or(billing == crate::endpoints::Billing::Subscription);
-    if !coding_plan {
+    let models = crate::vision_mcp::session_models(cli, &provider, &config.subagent);
+    if coding_plan {
+        Some(glm_plan_check(&models))
+    } else {
+        glm_pay_per_token_check(&models)
+    }
+}
+
+/// Name the `models` Z.AI refuses to a pay-per-token key; `None` when there
+/// are none.
+fn glm_pay_per_token_check(models: &[String]) -> Option<Check> {
+    let refused: Vec<&str> = models
+        .iter()
+        .map(String::as_str)
+        .filter(|model| GlmChatProvider::is_coding_plan_only(model))
+        .collect();
+    if refused.is_empty() {
         return None;
     }
-    let models = crate::vision_mcp::session_models(cli, &provider, &config.subagent);
-    Some(glm_plan_check(&models))
+    Some(Check {
+        name: "glm plan",
+        status: Status::Error,
+        message: format!(
+            "Z.AI serves {} on the GLM Coding Plan and refuses it to a pay-per-token key \
+             (1220): use glm-5.3, or a Coding Plan key with --billing subscription",
+            refused.join(", ")
+        ),
+    })
 }
 
 /// Judge `models` against the Coding Plan's model set.
 fn glm_plan_check(models: &[String]) -> Check {
-    let use_instead = GlmChatProvider::CODING_PLAN_MODELS.join(" or ");
+    let use_instead = GlmChatProvider::coding_plan_choices();
     let mut status = Status::Ok;
     let mut notes = Vec::new();
     for model in models {
         let (level, note) = match GlmChatProvider::coding_plan_model(model) {
-            CodingPlanModel::Documented => continue,
+            CodingPlanModel::Served => continue,
             CodingPlanModel::RoutedTo(served) => (
                 Status::Warn,
                 format!("{model} is answered by {served}; name {served} to say so"),
@@ -565,7 +590,7 @@ fn glm_plan_check(models: &[String]) -> Check {
             ),
             CodingPlanModel::Unknown => (
                 Status::Warn,
-                format!("{model} is not a model the plan documents"),
+                format!("{model} is not one of the models the plan serves"),
             ),
         };
         if level == Status::Error || status == Status::Ok {
@@ -1390,13 +1415,33 @@ mod tests {
             .block_on(check_deepseek(cli))
     }
 
+    /// A pay-per-token key runs the GLM models Z.AI opens to it; one it
+    /// serves on the Coding Plan only is an error that says what to use.
+    #[test]
+    fn a_pay_per_token_key_is_told_of_coding_plan_only_models() {
+        let models = |ids: &[&str]| ids.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert!(glm_pay_per_token_check(&models(&["glm-5.3", "glm-5.3-flash"])).is_none());
+
+        let check = glm_pay_per_token_check(&models(&["glm-5.4", "glm-5.3-flash"]))
+            .expect("glm-5.4 is refused per token");
+        assert_eq!(check.status, Status::Error);
+        assert!(
+            check.message.starts_with(
+                "Z.AI serves glm-5.4 on the GLM Coding Plan and refuses it to a pay-per-token key"
+            ),
+            "{}",
+            check.message
+        );
+        assert!(check.message.contains("use glm-5.3"), "{}", check.message);
+    }
+
     /// Models the Coding Plan does not document are named, with what happens
     /// to them; one it refuses is an error.
     #[test]
     fn glm_plan_models_are_judged_against_the_plan() {
         let models = |ids: &[&str]| ids.iter().map(ToString::to_string).collect::<Vec<_>>();
 
-        let check = glm_plan_check(&models(&["glm-5.3", "glm-5.3-flash"]));
+        let check = glm_plan_check(&models(&["glm-5.4", "glm-5.3", "glm-5.3-flash"]));
         assert_eq!(check.status, Status::Ok, "{}", check.message);
 
         let check = glm_plan_check(&models(&["glm-5.3", "glm-4.7"]));
@@ -1409,7 +1454,9 @@ mod tests {
             check.message
         );
         assert!(
-            check.message.contains("serves glm-5.3 or glm-5.3-flash"),
+            check
+                .message
+                .contains("serves glm-5.4, glm-5.3 or glm-5.3-flash"),
             "{}",
             check.message
         );

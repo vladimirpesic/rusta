@@ -183,7 +183,7 @@ description = "Locating files, reading configs, simple lookups."
 reasoning_effort = "low"
 
 [subagent.models.deep]
-model = "glm-5.3"
+model = "glm-5.4"
 description = "Architecture, tricky bugs, anything needing real reasoning."
 ```
 

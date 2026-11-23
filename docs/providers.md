@@ -29,7 +29,7 @@ endpoint, and with it the default model and, for GLM, the web tools: set
 | --- | --- | --- | --- | --- |
 | `kimi` | `subscription` *(default)* | `kimi-for-coding` | 1,048,576 | `https://api.kimi.com/coding/v1` (or [`api.kimi.ai`](#coding-plan-hosts)) |
 | `kimi` | `api` | `kimi-k3.1-pro` | 1,048,576 | `https://api.moonshot.ai/v1` |
-| `glm` (alias `zai`) | `subscription` *(default)* | `glm-5.3` | 1,048,576 | `https://api.z.ai/api/coding/paas/v4` |
+| `glm` (alias `zai`) | `subscription` *(default)* | `glm-5.4` | 1,048,576 | `https://api.z.ai/api/coding/paas/v4` |
 | `glm` (alias `zai`) | `api` | `glm-5.3` | 1,048,576 | `https://api.z.ai/api/paas/v4` |
 | `deepseek` | — | `deepseek-flash` | 1,048,576 | `https://api.deepseek.com` |
 | `openai` | — | `gpt-4o-mini` | — | `https://api.openai.com/v1` |
@@ -40,8 +40,10 @@ endpoint, and with it the default model and, for GLM, the web tools: set
   window on every plan that includes coding. On the pay-per-token platform Rusta
   defaults to `kimi-k3.1-pro`, Kimi's flagship, which the platform unlocks after
   a top-up of at least $1.
-- **Z.AI** serves `glm-5.3` on every endpoint, so there the billing changes only
-  the URL.
+- **Z.AI** serves `glm-5.4` on the Coding Plan and refuses it to a
+  pay-per-token key with error `1220`, though every endpoint's model list names
+  it. So the Coding Plan defaults to `glm-5.4`, and a pay-per-token key to
+  `glm-5.3`, which every endpoint serves.
 - **DeepSeek** has no subscription product, so `--billing` does not apply; a
   `billing` value in the config is accepted and ignored for `--provider deepseek`.
 - **`--region china`** selects the mainland deployments: `api.moonshot.cn` for
@@ -223,11 +225,24 @@ reference lists as retryable, is retried at least five seconds apart.
 
 ## GLM (Z.AI)
 
+### GLM-5.4
+
+`glm-5.4` is Rusta's default on the Coding Plan. Z.AI serves it there only: a
+pay-per-token request for it fails with `1220`, which Rusta explains, and
+`rusta doctor` flags a pay-per-token setup that names it.
+
+- **The rules of GLM-5.3** (below) apply: thinking that cannot be switched off,
+  the `low`/`high`/`max` ladder, and streamed tool arguments.
+- **Window and output.** Z.AI documents neither for GLM-5.4; Rusta gives it
+  GLM-5.3's 1,048,576-token window and 131,072-token output.
+- **Images and video** go to it as to GLM-5.3-Flash (below), so a session on
+  `glm-5.4` starts no `zai_vision` server.
+
 ### GLM-5.3
 
-`glm-5.3` is Z.AI's flagship and Rusta's default for `--provider glm` on both
-billing doors: 1,048,576-token context, 131,072-token maximum output,
-text-only. Three of its rules are handled on the wire:
+`glm-5.3` is Rusta's default for a pay-per-token key, and every endpoint serves
+it: 1,048,576-token context, 131,072-token maximum output, text-only. Three of
+its rules are handled on the wire:
 
 - **Reasoning cannot be switched off.** `thinking: {type: "disabled"}` is
   rejected. Rusta never sends it to `glm-5.3` or newer; `thinking = false` and
@@ -257,38 +272,40 @@ thinking is on. Sampling is clamped to Z.AI's documented ranges (temperature
 - **Video** goes inline.
 - **`glm-5.3-flashx`** is the faster variant, on the pay-per-token platform only.
 
-GLM's vision line takes images: `glm-5.3-flash*`, `glm-5v-turbo`, `glm-4.6v*`
+GLM's vision line takes images: `glm-5.4`, `glm-5.3-flash*`, `glm-5v-turbo`, `glm-4.6v*`
 (128K) and `glm-4.5v` (64K). Every other GLM is text-only, and Z.AI refuses an
 image sent to one with error 1210.
 
 ### Coding Plan models
 
-The Coding Plan serves two models, `glm-5.3` and `glm-5.3-flash`. Other ids
-still get an answer, but often from a different model:
+The Coding Plan serves three models under their own names: `glm-5.4`,
+`glm-5.3` and `glm-5.3-flash`. Other ids still get an answer, but often from a
+different model:
 
 | Requested | On the Coding Plan |
 | --- | --- |
-| `glm-5.3`, `glm-5.3-flash` | Served |
+| `glm-5.4`, `glm-5.3`, `glm-5.3-flash` | Served |
 | `glm-5`, `glm-5.1`, `glm-5.2` | Answered by `glm-5.3` |
 | `glm-4.5`, `glm-4.5-air`, `glm-4.6`, `glm-4.7`, `glm-5-turbo` | Answered by `glm-5.3-flash` |
 | `glm-4.5-flash`, `glm-4.7-flash`, `glm-4.6v`, `glm-4.6v-flash`, `glm-4.5v` | Served under their own names, but undocumented |
 | `glm-5v-turbo`, `glm-5.3-flashx` | Refused with `1311` |
 | `glm-4.5-x`, `glm-4.5-airx`, `glm-4.7-flashx`, `glm-4.6v-flashx`, `glm-4-32b-0414-128k` | Refused with `1113`: billed per token, outside the plan |
 
-Z.AI's devpack overview documents the routing of GLM-5.2, 5.1 and 4.7; the rest
-of the table comes from probing the endpoint, which reports the model that
-answered in each response. How Rusta handles it:
+Z.AI's devpack overview documents the routing of GLM-5.2, 5.1 and 4.7, and
+Z.AI announced GLM-5.4 for every Coding Plan; the rest of the table comes from
+probing the endpoint, which reports the model that answered in each response. How Rusta handles it:
 
 - **Routed ids.** Rusta follows the model that actually answers: the id gets that
   model's window, thinking and effort ladder. On the Coding Plan, `glm-5.1` is a
   1M-context GLM-5.3.
 - **Images.** Z.AI checks images against the id in the request, so a routed
   `glm-4.7` still takes none.
-- **Tooling.** `/model` lists the two plan models. `rusta doctor` warns about a
-  routed or undocumented id and fails on a refused one. A `1311` error names the
-  models to use instead.
+- **Tooling.** `/model` lists the three plan models. `rusta doctor` warns about
+  a routed or undocumented id and fails on a refused one. A `1311` error names
+  the models to use instead.
 
-The pay-per-token endpoint serves every id as itself.
+The pay-per-token endpoint serves every other id as itself, and refuses
+`glm-5.4`.
 
 Z.AI accepts at most 128 tools per request. The tool table is trimmed to fit,
 and `select_tools` loads nothing past the cap and says why.
@@ -321,8 +338,8 @@ and Zread servers only read, which Z.AI does not declare, so Rusta sets
   model's `question` about it.
 - **When it runs.** It is not started when every GLM model the session runs
   reads images and video natively: the main model and the `[subagent]` pool's,
-  which means GLM-5.3-Flash. If such a session later switches to a text model,
-  its images go undescribed.
+  which means GLM-5.4 or GLM-5.3-Flash. If such a session later switches to a
+  text model, its images go undescribed.
 - **Remote server.** `Z_AI_VISION_MCP_URL` points it at a remote server instead.
 
 A `[[mcp_servers]]` entry with any of these names replaces the injected server,

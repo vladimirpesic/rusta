@@ -27,7 +27,10 @@ const CHOICES: &[(&str, &str)] = &[
         "kimi",
         "Kimi   (Moonshot)  — kimi-for-coding / K2.8 Preview, 1M context",
     ),
-    ("glm", "GLM    (z.ai)      — glm-5.3, 1M context"),
+    (
+        "glm",
+        "GLM    (z.ai)      — glm-5.4 on the Coding Plan, glm-5.3 per token, 1M context",
+    ),
     (
         "deepseek",
         "DeepSeek           — deepseek-flash, 1M context, hybrid thinking, vision",

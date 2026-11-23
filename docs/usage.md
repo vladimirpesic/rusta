@@ -229,8 +229,8 @@ REPL or the TUI, made from its first exchange:
 
 - **Who writes it:** on the Kimi Coding Plan, the plan's own title service.
   Elsewhere, the session's provider with thinking off: `deepseek-flash` on
-  DeepSeek, and on GLM-5.3, which cannot turn thinking off, its lightest
-  thinking.
+  DeepSeek, and on GLM-5.3 and newer, which cannot turn thinking off, its
+  lightest thinking.
 - **When it fails:** the title is made in the background, and a failure leaves
   the session untitled. It is tried again after a later turn, at most three times
   in a run.

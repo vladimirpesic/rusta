@@ -77,7 +77,7 @@ billing = "subscription"
 region = "global"
 # Both are optional: leaving them out lets provider + billing choose the
 # flagship and its endpoint. Set them to pin a specific one.
-# model = "glm-5.3"
+# model = "glm-5.4"
 # base_url = "https://api.z.ai/api/coding/paas/v4"
 records = "~/.local/share/rusta/records.jsonl"
 permission_mode = "accept_edits"
@@ -209,7 +209,7 @@ description = "Locating files, reading configs, simple lookups."
 reasoning_effort = "low"
 
 [subagent.models.deep]
-model = "glm-5.3"
+model = "glm-5.4"
 description = "Architecture, tricky bugs, anything needing real reasoning."
 
 # Extra MCP servers. Devscriptor is auto-detected and needs no entry here.
@@ -321,7 +321,7 @@ config type.
 | `RUSTA_TEMPERATURE` | Sampling temperature |
 | `RUSTA_TOP_P` | Nucleus-sampling top-p |
 | `RUSTA_THINKING` | Enable reasoning/thinking mode |
-| `RUSTA_REASONING_EFFORT` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, mapped onto the model's own ladder: GLM-5.2 and newer (GLM-5.3 folds the seven rungs onto `low`/`high`/`max`), DeepSeek's models, and the Kimi models that list effort levels. On Kimi and DeepSeek `none` turns thinking off, or runs the lowest effort on a model that cannot turn it off. See [Providers](providers.md) |
+| `RUSTA_REASONING_EFFORT` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, mapped onto the model's own ladder: GLM-5.2 and newer (GLM-5.3 and GLM-5.4 fold the seven rungs onto `low`/`high`/`max`), DeepSeek's models, and the Kimi models that list effort levels. On Kimi and DeepSeek `none` turns thinking off, or runs the lowest effort on a model that cannot turn it off. See [Providers](providers.md) |
 | `RUSTA_PROMPT_CACHE_TTL` | `5m` or `1h`: how long Kimi's platform keeps a written prompt-cache entry for its K3 series. Unset, an interactive session asks for `1h` and a headless run takes the platform's `5m` |
 
 ### Providers

@@ -84,7 +84,7 @@ Devscriptor.
 | --- | --- | --- | --- |
 | `kimi` | `subscription` *(default)* | `kimi-for-coding` | `https://api.kimi.com/coding/v1` |
 | `kimi` | `api` | `kimi-k3.1-pro` | `https://api.moonshot.ai/v1` |
-| `glm` (`zai`) | `subscription` *(default)* | `glm-5.3` | `https://api.z.ai/api/coding/paas/v4` |
+| `glm` (`zai`) | `subscription` *(default)* | `glm-5.4` | `https://api.z.ai/api/coding/paas/v4` |
 | `glm` (`zai`) | `api` | `glm-5.3` | `https://api.z.ai/api/paas/v4` |
 | `deepseek` | — | `deepseek-flash` | `https://api.deepseek.com` |
 | `openai` | — | `gpt-4o-mini` | `https://api.openai.com/v1` |

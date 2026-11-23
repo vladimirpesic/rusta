@@ -185,8 +185,8 @@ days.
 
 **Each provider's documented contract, exactly.** A request carries only the
 fields its endpoint documents and accepts, and nothing it would silently ignore.
-Kimi fixes temperature and top-p, so they are never sent; GLM-5.3 rejects
-disabled thinking, so "off" becomes its lowest effort; DeepSeek's low default
+Kimi fixes temperature and top-p, so they are never sent; GLM-5.3 and newer
+always think, so "off" becomes their lowest effort; DeepSeek's low default
 output cap would cut long reasoning, so an explicit cap is always sent. Model
 capabilities come from the vendors' live catalogues, so a new model needs no
 release, with built-in tables for a machine that has never reached the
