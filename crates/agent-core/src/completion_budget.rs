@@ -95,7 +95,8 @@ fn parse_env_budget(raw: Option<&str>) -> Option<EnvBudgetValue> {
     })
 }
 
-/// Estimate the number of tokens consumed by a request's prompt.
+/// Estimate the tokens a request's prompt takes: its messages, and its tool
+/// table with each tool's description and schema.
 #[must_use]
 pub fn estimate_input_tokens(messages: &[Message], tools: &[Tool]) -> u64 {
     let message_tokens: u64 = messages
@@ -104,7 +105,7 @@ pub fn estimate_input_tokens(messages: &[Message], tools: &[Tool]) -> u64 {
         .sum();
     let tool_tokens: u64 = tools
         .iter()
-        .map(|t| crate::context_compaction::estimate_tokens(&t.name))
+        .map(crate::context_compaction::estimate_tool_tokens)
         .sum();
     message_tokens + tool_tokens
 }
@@ -151,6 +152,22 @@ mod tests {
     /// An environment with no budget variable, whatever the process has.
     fn no_env(_: &str) -> Option<String> {
         None
+    }
+
+    /// A tool table costs its descriptions and schemas, not only its names.
+    #[test]
+    fn the_input_counts_each_tools_description_and_schema() {
+        let tool = Tool::new(
+            "read_file",
+            "Read a file. ".repeat(100),
+            serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+        );
+        let estimate = estimate_input_tokens(&[], std::slice::from_ref(&tool));
+        assert_eq!(
+            estimate,
+            crate::context_compaction::estimate_tool_tokens(&tool)
+        );
+        assert!(estimate > 300, "{estimate}");
     }
 
     #[test]

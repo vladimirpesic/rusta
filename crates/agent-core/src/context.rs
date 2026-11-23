@@ -802,7 +802,11 @@ impl ContextMemory {
         let reserve = u64::from(COMPACTION_MAX_OUTPUT_TOKENS).min(window / 8);
         let overhead = context_compaction::estimate_tokens_for_message(&system)
             + context_compaction::estimate_tokens_for_message(&instruction)
-            + estimate_tool_tokens(inputs.tools);
+            + inputs
+                .tools
+                .iter()
+                .map(context_compaction::estimate_tool_tokens)
+                .sum::<u64>();
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let budget =
             ((window.saturating_sub(reserve)) as f64 * COMPACTION_INPUT_SAFETY_RATIO) as u64;
@@ -1154,18 +1158,6 @@ fn estimate_messages(messages: &[Message]) -> u64 {
     messages
         .iter()
         .map(context_compaction::estimate_tokens_for_message)
-        .sum()
-}
-
-/// Tokens a tool table costs on the wire: names, descriptions and schemas.
-fn estimate_tool_tokens(tools: &[Tool]) -> u64 {
-    tools
-        .iter()
-        .map(|tool| {
-            context_compaction::estimate_tokens(&tool.name)
-                + context_compaction::estimate_tokens(&tool.description)
-                + context_compaction::estimate_tokens(&tool.parameters.to_string())
-        })
         .sum()
 }
 

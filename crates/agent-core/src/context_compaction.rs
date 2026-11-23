@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use lm_bridge::message::{ContentPart, Message, Role};
+use lm_bridge::tool::Tool;
 
 /// Maximum token budget for the pool of genuine user messages kept after
 /// compaction. Once the pool exceeds this, a head/tail split is applied.
@@ -102,6 +103,18 @@ pub fn estimate_tokens(text: &str) -> u64 {
     ascii.div_ceil(4) + non_ascii
 }
 
+/// Estimate the tokens one tool definition costs on the wire: its name,
+/// description and parameter schema.
+#[must_use]
+pub fn estimate_tool_tokens(tool: &Tool) -> u64 {
+    estimate_tokens(&tool.name)
+        + estimate_tokens(&tool.description)
+        + estimate_tokens(&tool.parameters.to_string())
+}
+
+/// Estimate the tokens `message` costs: its text and thinking at the rate of
+/// [`estimate_tokens`], each media part at [`MEDIA_TOKEN_ESTIMATE`], its tool
+/// calls with their arguments, and the tool definitions it carries.
 #[must_use]
 pub fn estimate_tokens_for_message(message: &Message) -> u64 {
     let role_tokens = estimate_tokens(match message.role {
@@ -132,16 +145,13 @@ pub fn estimate_tokens_for_message(message: &Message) -> u64 {
         .tool_calls
         .iter()
         .map(|tc| {
-            let args_len = tc.arguments.as_ref().map_or(0, |s| s.len() as u64);
-            estimate_tokens(&tc.name) + args_len + estimate_tokens(&tc.id)
+            estimate_tokens(&tc.name)
+                + tc.arguments.as_deref().map_or(0, estimate_tokens)
+                + estimate_tokens(&tc.id)
         })
         .sum();
 
-    let message_tool_tokens: u64 = message
-        .tools
-        .iter()
-        .map(|t| estimate_tokens(&t.name) + estimate_tokens(&t.description))
-        .sum();
+    let message_tool_tokens: u64 = message.tools.iter().map(estimate_tool_tokens).sum();
 
     role_tokens + content_tokens + tool_tokens + message_tool_tokens
 }
@@ -497,6 +507,39 @@ mod tests {
 
     fn user_msg(text: &str) -> Message {
         Message::user(text)
+    }
+
+    /// A tool call's arguments cost what the same text costs anywhere else,
+    /// and a tool a message carries costs its whole definition.
+    #[test]
+    fn arguments_and_carried_tools_cost_what_their_text_costs() {
+        let arguments = format!("{{\"content\": \"{}\"}}", "x".repeat(4_000));
+        let call = Message::assistant_tool_calls(vec![
+            lm_bridge::message::ToolCall::new("c1", "write_file").with_arguments(arguments.clone()),
+        ]);
+        let text = Message::assistant_text(arguments.clone());
+        assert_eq!(
+            estimate_tokens_for_message(&call)
+                - estimate_tokens("write_file")
+                - estimate_tokens("c1"),
+            estimate_tokens_for_message(&text),
+        );
+
+        let tool = Tool::new(
+            "search",
+            "Search the index.",
+            serde_json::json!({"type": "object", "properties": {"query": {"type": "string"}}}),
+        );
+        let mut carrier = Message::system("");
+        carrier.tools = vec![tool.clone()];
+        assert_eq!(
+            estimate_tokens_for_message(&carrier),
+            estimate_tokens_for_message(&Message::system("")) + estimate_tool_tokens(&tool),
+        );
+        assert!(
+            estimate_tool_tokens(&tool)
+                > estimate_tokens("search") + estimate_tokens("Search the index.")
+        );
     }
 
     #[test]
