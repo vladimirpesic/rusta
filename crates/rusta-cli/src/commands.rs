@@ -189,6 +189,8 @@ pub enum Command {
     /// is `/undo <count>`.
     Undo(Option<usize>),
     Tools,
+    /// `/context`: what the next request holds, part by part.
+    Context,
     Plan,
     Skill {
         name: String,
@@ -308,6 +310,7 @@ impl Command {
                 }
             }
             "/tools" => Self::Tools,
+            "/context" => Self::Context,
             "/plan" => Self::Plan,
             "/skill" => {
                 if rest.is_empty() {
@@ -434,6 +437,11 @@ pub async fn execute(ctx: &mut CommandContext, cmd: Command) -> Result<String, S
             } else {
                 Ok(format!("Tools: {}", tools.join(", ")))
             }
+        }
+        Command::Context => {
+            use agent_core::agent_loop::Llm;
+            let usage = ctx.agent.lock().await.context_usage();
+            Ok(crate::context_view::render(&usage, ctx.llm.model_name()))
         }
         Command::Plan => {
             let enabled = ctx.agent.lock().await.toggle_plan_mode();
@@ -1050,6 +1058,7 @@ fn help_text() -> String {
   /clear                            — clear the conversation context
   /undo [count]                     — remove the last turn(s); a count past what can be undone is refused
   /tools                            — list registered tools
+  /context                          — what the next request holds, part by part, against the context window
   /plan                             — turn plan mode on or off: the agent plans, and you review the plan before it changes anything
   /exit, /quit                      — quit the application
   /help                             — show this help"
@@ -1273,6 +1282,7 @@ mod tests {
     /// instruction; a bare `/compact` passes none.
     #[test]
     fn test_parse_compact_instruction() {
+        assert_eq!(Command::parse("/context"), Command::Context);
         assert_eq!(Command::parse("/compact"), Command::Compact(None));
         assert_eq!(Command::parse("/compact    "), Command::Compact(None));
         assert_eq!(

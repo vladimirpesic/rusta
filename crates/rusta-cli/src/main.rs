@@ -29,6 +29,7 @@ mod catalogs;
 mod cli;
 mod commands;
 mod config;
+mod context_view;
 mod devscriptor;
 mod doctor;
 mod endpoints;

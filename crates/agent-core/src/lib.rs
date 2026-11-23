@@ -9,6 +9,7 @@ pub mod completion_budget;
 pub mod context;
 pub mod context_compaction;
 pub mod context_projector;
+pub mod context_usage;
 pub mod cron;
 pub mod dangerous_command;
 pub mod errors;

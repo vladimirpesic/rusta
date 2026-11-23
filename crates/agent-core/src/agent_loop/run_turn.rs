@@ -111,29 +111,39 @@ impl OverflowRecovery {
     }
 }
 
-/// The tool table one step offers: [`offered_tools`], within the model's cap
-/// on tools per request. What does not fit is left out from the end — the
-/// loaded dynamic tools first, then the static tools registered last — and
-/// the change is logged once.
+/// The tool table one step offers: [`capped_tool_table`], with the change
+/// in what the cap leaves out logged once.
 pub(crate) fn step_tool_table(
     registry: &Mutex<ToolRegistry>,
     tool_ctx: &ExecutableToolContext,
     tool_disclosure: &Mutex<ToolDisclosureState>,
 ) -> Vec<lm_bridge::tool::Tool> {
-    let mut list = offered_tools(registry, tool_ctx, tool_disclosure);
-    let cap = tool_ctx.llm.as_ref().and_then(|llm| llm.max_tools());
-    let left_out: Vec<String> = match cap {
-        Some(cap) if list.len() > cap => list.drain(cap..).map(|t| t.name).collect(),
-        _ => Vec::new(),
-    };
+    let (list, left_out) = capped_tool_table(registry, tool_ctx, tool_disclosure);
     if tool_disclosure.lock().unwrap().note_capped(&left_out) && !left_out.is_empty() {
         tracing::warn!(
             "the model takes at most {} tools per request; left out: {}",
-            cap.unwrap_or_default(),
+            list.len(),
             left_out.join(", ")
         );
     }
     list
+}
+
+/// [`offered_tools`] within the model's cap on tools per request, and the
+/// names of the tools that do not fit. They are left out from the end: the
+/// loaded dynamic tools first, then the static tools registered last.
+pub(crate) fn capped_tool_table(
+    registry: &Mutex<ToolRegistry>,
+    tool_ctx: &ExecutableToolContext,
+    tool_disclosure: &Mutex<ToolDisclosureState>,
+) -> (Vec<lm_bridge::tool::Tool>, Vec<String>) {
+    let mut list = offered_tools(registry, tool_ctx, tool_disclosure);
+    let cap = tool_ctx.llm.as_ref().and_then(|llm| llm.max_tools());
+    let left_out = match cap {
+        Some(cap) if list.len() > cap => list.drain(cap..).map(|t| t.name).collect(),
+        _ => Vec::new(),
+    };
+    (list, left_out)
 }
 
 /// Every tool a step would offer, before any cap: the static tools that can

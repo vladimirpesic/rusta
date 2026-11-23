@@ -1431,6 +1431,26 @@ impl Agent {
             .collect()
     }
 
+    /// What the next request holds, part by part (`/context`): the system
+    /// prompt, the tool table a step would offer within the model's cap, and
+    /// the conversation as the request carries it.
+    #[must_use]
+    pub fn context_usage(&self) -> crate::context_usage::ContextUsage {
+        let ctx = self.next_turn_tool_ctx();
+        let fresh = Mutex::new(ToolDisclosureState::new());
+        let disclosure = ctx.tool_disclosure.as_deref().unwrap_or(&fresh);
+        let (tools, tools_left_out) =
+            crate::agent_loop::run_turn::capped_tool_table(&self.registry, &ctx, disclosure);
+        let budget = self.context.budget();
+        crate::context_usage::ContextUsage {
+            parts: crate::context_usage::measure(&self.context.build_history(), &tools),
+            tools_left_out,
+            window: budget.max_tokens(),
+            compaction_at: budget.proactive_threshold(),
+            compaction_measure: self.context.estimate_tokens(),
+        }
+    }
+
     /// Access the shared tool execution context (used by slash commands
     /// that invoke tools directly, e.g. `/web` and `/swarm`).
     pub fn tool_ctx(&self) -> &ExecutableToolContext {
@@ -5702,5 +5722,77 @@ mod tests {
         );
         assert!(agent.plan_mode());
         assert!(!target.exists());
+    }
+
+    /// A model that takes at most three tools per request.
+    struct ThreeToolLlm;
+
+    #[async_trait]
+    impl Llm for ThreeToolLlm {
+        fn model_name(&self) -> &str {
+            "three-tools"
+        }
+
+        fn max_tools(&self) -> Option<usize> {
+            Some(3)
+        }
+
+        async fn chat(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<Tool>,
+            _callbacks: LlmCallbacks,
+            _cancel: &CancellationToken,
+        ) -> Result<StepResult, lm_bridge::errors::LlmError> {
+            unreachable!("context_usage makes no request")
+        }
+    }
+
+    /// `/context` measures the request a step would send: the system prompt,
+    /// the tool table within the model's cap (naming what the cap leaves
+    /// out), and the conversation; and it says where compaction starts.
+    #[test]
+    fn context_usage_measures_the_next_request() {
+        use crate::context_usage::{PartKind, ToolSource};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = Agent::new(dir.path().to_path_buf(), "the system prompt")
+            .with_llm(Arc::new(ThreeToolLlm));
+        agent.context.add_user_message("Fix the bug.");
+        let offered = crate::agent_loop::run_turn::offered_tools(
+            &agent.registry,
+            &agent.next_turn_tool_ctx(),
+            &Mutex::new(ToolDisclosureState::new()),
+        )
+        .len();
+        assert!(offered > 3);
+
+        let usage = agent.context_usage();
+
+        assert_eq!(usage.parts[0].kind, PartKind::SystemPrompt);
+        let built_in = usage
+            .parts
+            .iter()
+            .find(|part| part.kind == PartKind::Tools(ToolSource::BuiltIn))
+            .expect("the built-in tools");
+        assert_eq!(built_in.items, 3);
+        assert_eq!(usage.tools_left_out.len(), offered - 3);
+        let mine = usage
+            .parts
+            .iter()
+            .find(|part| part.kind == PartKind::UserMessages)
+            .expect("the user's message");
+        assert_eq!(
+            mine.tokens,
+            crate::context_compaction::estimate_tokens("Fix the bug.")
+        );
+        let budget = agent.context.budget();
+        assert_eq!(usage.window, budget.max_tokens());
+        assert_eq!(usage.compaction_at, budget.proactive_threshold());
+        assert_eq!(usage.compaction_measure, agent.context.estimate_tokens());
+        assert_eq!(
+            usage.total(),
+            usage.parts.iter().map(|part| part.tokens).sum::<u64>()
+        );
     }
 }
