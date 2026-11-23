@@ -540,6 +540,17 @@ fn zai_quota_exhausted_code(body: &str) -> Option<String> {
         .map(|code| (*code).to_string())
 }
 
+/// Z.AI error codes refusing the request itself: `1211` an unknown model,
+/// `1220` a model or API the account may not use, `1221` an API taken
+/// offline. Retrying re-sends a request that cannot succeed.
+fn zai_refusal_code(body: &str) -> Option<String> {
+    const REFUSED: [&str; 3] = ["1211", "1220", "1221"];
+    REFUSED
+        .iter()
+        .find(|code| error_code_is(body, code))
+        .map(|code| (*code).to_string())
+}
+
 /// Moonshot signals a spent balance or token quota with an error *type* rather
 /// than a numeric code, on an HTTP 429 it shares with the retryable rate-limit
 /// and overload errors.
@@ -587,8 +598,9 @@ pub fn classify_api_error(status: reqwest::StatusCode, body: &str, retry_hint: b
         );
     }
 
-    // A spent balance or allowance is a business error: fatal, never retried.
-    if let Some(code) = quota_exhausted_code(body) {
+    // A spent balance or allowance, or a refused model, is a business error:
+    // fatal, never retried.
+    if let Some(code) = quota_exhausted_code(body).or_else(|| zai_refusal_code(body)) {
         return LlmError::ApiBusinessError {
             code,
             message: error_message(body).unwrap_or_else(|| body.to_string()),
@@ -995,6 +1007,39 @@ mod tests {
         );
         assert!(!err.is_retryable());
         assert!(err.is_fatal());
+    }
+
+    /// Z.AI's refusals of the request itself — an unknown model, one the
+    /// account may not use, an API taken offline — are business errors with
+    /// Z.AI's own message, never retried.
+    #[test]
+    fn zai_refusals_are_business_errors() {
+        for (status, code, message) in [
+            (
+                StatusCode::BAD_REQUEST,
+                "1211",
+                "Unknown Model, please check the model code.",
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                "1220",
+                "You do not have permission to access glm-5.4",
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                "1221",
+                "API `glm-4` has been taken offline",
+            ),
+        ] {
+            let body = json!({"error": {"code": code, "message": message}}).to_string();
+            let err = classify_api_error(status, &body, false);
+            assert!(
+                matches!(&err, LlmError::ApiBusinessError { code: c, message: m } if c == code && m == message),
+                "{err:?}"
+            );
+            assert!(!err.is_retryable());
+            assert!(err.is_fatal());
+        }
     }
 
     /// Moonshot phrases a token overflow without any of the words the original
