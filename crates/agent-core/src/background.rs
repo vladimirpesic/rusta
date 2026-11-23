@@ -11,16 +11,21 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use tokio::{
-    io::{AsyncBufReadExt, BufReader, Lines},
+    io::BufReader,
     process::{Child, ChildStderr, ChildStdout},
     sync::{Notify, Semaphore},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::lossy_lines::LossyLines;
+
 /// The stdout/stderr line readers handed over when a foreground command is
 /// adopted into the background — already partially consumed, still live.
-type AdoptedReaders = (Lines<BufReader<ChildStdout>>, Lines<BufReader<ChildStderr>>);
+type AdoptedReaders = (
+    LossyLines<BufReader<ChildStdout>>,
+    LossyLines<BufReader<ChildStderr>>,
+);
 
 /// Owner ids for [`BackgroundManager`] handles; see
 /// [`BackgroundManager::scoped`].
@@ -963,7 +968,7 @@ async fn run_task(
     let tasks_stdout = tasks.clone();
     let id_stdout = id.clone();
     let stdout_handle = tokio::spawn(async move {
-        let mut lines = stdout_reader.lines();
+        let mut lines = LossyLines::new(stdout_reader);
         let mut out = OutputFile::default();
         while let Ok(Some(line)) = lines.next_line().await {
             append_stdout(&tasks_stdout, &id_stdout, line, &mut out);
@@ -973,7 +978,7 @@ async fn run_task(
     let tasks_stderr = tasks.clone();
     let id_stderr = id.clone();
     let stderr_handle = tokio::spawn(async move {
-        let mut lines = stderr_reader.lines();
+        let mut lines = LossyLines::new(stderr_reader);
         let mut out = OutputFile::default();
         while let Ok(Some(line)) = lines.next_line().await {
             append_stderr(&tasks_stderr, &id_stderr, line, &mut out);
@@ -1583,6 +1588,26 @@ mod tests {
         assert_eq!(manager.status(&id), Some(TaskStatus::Completed));
         assert!(manager.stdout_contains(&id, "20000"));
         assert_eq!(manager.tasks.lock().unwrap()[&id].exit_code, Some(0));
+    }
+
+    /// A task whose output is not UTF-8 keeps all of it and finishes, though
+    /// it goes on to fill the pipe after the first such byte.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_task_whose_output_is_not_utf8_finishes_with_all_of_it() {
+        let (manager, _dir) = temp_manager();
+        let id = manager.spawn(
+            r"printf 'caf\351\n'; head -c 200000 /dev/zero | tr '\0' a; printf '\nend\n'",
+            std::env::current_dir().unwrap(),
+            HashMap::new(),
+            None,
+        );
+
+        wait_until("the task to finish", || settled(&manager, &id)).await;
+
+        assert_eq!(manager.status(&id), Some(TaskStatus::Completed));
+        assert!(manager.stdout_contains(&id, "caf\u{fffd}"));
+        assert!(manager.stdout_contains(&id, "end"));
     }
 
     #[tokio::test]

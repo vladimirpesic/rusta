@@ -93,6 +93,10 @@ what the command had printed by then. A command that finishes leaves alone what 
 started on purpose, such as `server > log 2>&1 &`. A task is marked finished
 only once its output is all in.
 
+A command's output is read to its end whatever bytes it prints: a byte that is
+not valid UTF-8, from a Latin-1 file or a binary one, reads as U+FFFD, and the
+lines after it arrive as the others do.
+
 A foreground command that runs past its timeout is moved to the background, not
 killed: it keeps running under a fresh, longer deadline and the call returns a
 task id, so a slow build or a migration is never cut off mid-way. Set

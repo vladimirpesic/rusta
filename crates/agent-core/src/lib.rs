@@ -14,6 +14,7 @@ pub mod dangerous_command;
 pub mod errors;
 pub mod git_context;
 pub mod goal;
+pub mod lossy_lines;
 pub mod model_pool;
 pub mod permissions;
 pub mod plan_mode;

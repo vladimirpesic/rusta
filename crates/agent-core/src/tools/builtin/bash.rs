@@ -6,12 +6,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use lm_bridge::tool::Tool;
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 
 use crate::agent_loop::types::{
     ExecutableTool, ExecutableToolContext, ExecutableToolResult, ToolAccesses, ToolEvent,
     ToolStatus,
 };
+use crate::lossy_lines::LossyLines;
 
 const DEFAULT_TIMEOUT_SECONDS: u64 = 60;
 const MAX_TIMEOUT_SECONDS: u64 = 5 * 60;
@@ -180,8 +181,10 @@ impl ExecutableTool for BashTool {
         let stdout_reader = BufReader::new(stdout);
         let stderr_reader = BufReader::new(stderr);
 
-        let mut stdout_lines = stdout_reader.lines();
-        let mut stderr_lines = stderr_reader.lines();
+        // Read as bytes: output that is not UTF-8 must neither end the read
+        // nor leave the command blocked on a full pipe.
+        let mut stdout_lines = LossyLines::new(stdout_reader);
+        let mut stderr_lines = LossyLines::new(stderr_reader);
 
         let mut stdout_text = String::new();
         let mut stderr_text = String::new();
@@ -618,6 +621,76 @@ mod tests {
 
         // Clean up the still-running sleep.
         c.background.stop(task_id);
+    }
+
+    /// What `printf` prints for the output tests below: a Latin-1 `é` that is
+    /// not UTF-8, then more than a pipe holds, then a last line.
+    #[cfg(unix)]
+    const NOT_UTF8_THEN_A_FULL_PIPE: &str = r"printf 'before\ncaf\351\nafter\n'; head -c 200000 /dev/zero | tr '\0' a; printf '\nend\n'";
+
+    /// Output that is not UTF-8 neither ends the read nor blocks the command:
+    /// the byte reads as U+FFFD, the lines after it arrive, and the command,
+    /// which goes on to fill the pipe, finishes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_that_is_not_utf8_is_read_to_its_end() {
+        let result = BashTool::new()
+            .execute(
+                json!({
+                    "command": NOT_UTF8_THEN_A_FULL_PIPE,
+                    "timeout": 30,
+                    "auto_background_on_timeout": false
+                }),
+                &ctx(),
+                "test-id",
+            )
+            .await;
+        let text = result.text_content();
+        assert!(!result.is_error, "{}", &text[..text.len().min(200)]);
+        assert!(
+            text.starts_with("before\ncaf\u{fffd}\nafter\naaa"),
+            "{}",
+            &text[..text.len().min(200)]
+        );
+        assert!(text.ends_with("\nend"), "the last line is missing");
+    }
+
+    /// A command moved to the background mid-output keeps being read past
+    /// bytes that are not UTF-8, to its last line.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_adopted_command_is_read_past_output_that_is_not_utf8() {
+        let c = ctx();
+        let result = BashTool::new()
+            .execute(
+                json!({
+                    "command": format!("sleep 2; {NOT_UTF8_THEN_A_FULL_PIPE}"),
+                    "timeout": 1
+                }),
+                &c,
+                "test-id",
+            )
+            .await;
+        let text = result.text_content();
+        let task_id = text
+            .lines()
+            .find_map(|l| l.strip_prefix("task_id: "))
+            .expect("the command was moved to the background");
+        for _ in 0..600 {
+            if c.background
+                .status(task_id)
+                .is_some_and(crate::background::TaskStatus::is_terminal)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            c.background.status(task_id),
+            Some(crate::background::TaskStatus::Completed)
+        );
+        assert!(c.background.stdout_contains(task_id, "caf\u{fffd}"));
+        assert!(c.background.stdout_contains(task_id, "end"));
     }
 
     #[tokio::test]
