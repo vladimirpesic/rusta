@@ -41,7 +41,7 @@ tempfile.workspace = true
 
 ratatui = { version = "0.30", features = ["crossterm"], optional = true }
 crossterm = { version = "0.29", features = ["event-stream"], optional = true }
-rustyline = "18"
+rustyline = "19"
 
 [features]
 default = []

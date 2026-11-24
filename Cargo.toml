@@ -39,7 +39,7 @@ toml_edit = "0.25"
 # `file://` refs, and bring aws-lc. A tool schema from an MCP server is not
 # allowed to make Rusta fetch URLs or read files; an unresolvable `$ref` now
 # fails validation with `InvalidSchema` instead.
-jsonschema = { version = "0.58", default-features = false, features = ["idna"] }
+jsonschema = { version = "0.61", default-features = false, features = ["idna"] }
 
 # Error / logging
 thiserror = "2"
@@ -76,8 +76,8 @@ strsim = "0.11"
 # `fetch` gives a web page's readable content, found with Mozilla Readability:
 # dom_smoothie is its Rust port, and dom_query the HTML tree under it, for the
 # page's plain text where Readability finds none.
-dom_smoothie = "0.18"
-dom_query = "0.28"
+dom_smoothie = "0.20"
+dom_query = "0.30"
 # The system calls Rusta makes itself, through safe wrappers: on Linux, closing
 # its process to inspection by the processes it starts (`child_env`).
 rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
