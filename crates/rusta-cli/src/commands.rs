@@ -551,7 +551,7 @@ async fn refresh_catalog_now<T: lm_bridge::providers::catalog_cache::CatalogEntr
     provider: &str,
     current: &str,
 ) -> Result<crate::catalogs::Refresh, String> {
-    let (base_url, key, headers) = crate::catalog_source(&ctx.cli, provider)
+    let (base_url, key, headers) = crate::provider_setup::catalog_source(&ctx.cli, provider)
         .map_err(|e| format!("Could not refresh {provider}'s models: {e}"))?;
     let known: Vec<String> = if provider == current {
         ctx.llm.known_models().into_iter().map(|m| m.id).collect()
@@ -733,9 +733,13 @@ async fn switch_model_provider(
     model: Option<String>,
     provider: Option<String>,
 ) -> Result<String, String> {
-    let new_provider =
-        crate::build_provider_for(&ctx.cli, provider.clone(), model.clone(), ctx.timeouts)
-            .map_err(|e| format!("failed to build provider: {e}"))?;
+    let new_provider = crate::provider_setup::build_provider_for(
+        &ctx.cli,
+        provider.clone(),
+        model.clone(),
+        ctx.timeouts,
+    )
+    .map_err(|e| format!("failed to build provider: {e}"))?;
 
     // Report what was *built*, not what was asked for. Switching provider
     // re-derives the model — `/provider glm` from a Kimi session lands on
@@ -908,10 +912,14 @@ async fn add_context_dir(ctx: &mut CommandContext, path: PathBuf) -> Result<Stri
 /// the system prompt from them, and tell the model what changed.
 async fn reload_context(ctx: &mut CommandContext) -> Result<String, String> {
     let cwd = &ctx.cli.cwd;
-    let profiles =
-        crate::load_profile_registry(cwd).map_err(|e| format!("failed to reload profiles: {e}"))?;
-    let skills = crate::load_skill_registry(cwd, &ctx.cli.additional_dirs, &ctx.config.skill_dirs)
-        .map_err(|e| format!("failed to reload skills: {e}"))?;
+    let profiles = crate::registries::load_profile_registry(cwd)
+        .map_err(|e| format!("failed to reload profiles: {e}"))?;
+    let skills = crate::registries::load_skill_registry(
+        cwd,
+        &ctx.cli.additional_dirs,
+        &ctx.config.skill_dirs,
+    )
+    .map_err(|e| format!("failed to reload skills: {e}"))?;
     let built = crate::system_prompt::build(&ctx.cli, &ctx.config, &profiles)?;
     let changes = ReloadChanges::between(
         &Snapshot {
@@ -1515,7 +1523,8 @@ mod tests {
         ctx.cli.base_url = Some(server.uri());
         ctx.cli.api_key = Some("sk-test".to_string());
         let provider =
-            crate::build_provider_for(&ctx.cli, None, None, ctx.timeouts).expect("a Kimi provider");
+            crate::provider_setup::build_provider_for(&ctx.cli, None, None, ctx.timeouts)
+                .expect("a Kimi provider");
         ctx.llm = Arc::new(ProviderLlm::new(provider));
         (ctx, server)
     }

@@ -161,8 +161,9 @@ async fn make(cli: &Cli, timeouts: HttpTimeouts, chat: &str) -> Result<String, S
         } else {
             cli.model.clone()
         };
-        let provider = crate::build_provider_for(cli, Some(provider), model, timeouts)
-            .map_err(|e| e.to_string())?;
+        let provider =
+            crate::provider_setup::build_provider_for(cli, Some(provider), model, timeouts)
+                .map_err(|e| e.to_string())?;
         let llm = ProviderLlm::new(provider).with_thinking(ThinkingConfig::Disabled);
         ask(&llm, chat).await?
     };

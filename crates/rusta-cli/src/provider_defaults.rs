@@ -8,7 +8,7 @@ use crate::endpoints::Billing;
 
 /// Providers the runtime can actually construct.
 ///
-/// Must stay in sync with the dispatch in [`crate::build_provider_for`]; the
+/// Must stay in sync with the dispatch in [`crate::provider_setup::build_provider_for`]; the
 /// `providers_match_dispatch` test below enforces that.
 pub const VALID_PROVIDERS: &[&str] = &["kimi", "glm", "zai", "openai", "deepseek"];
 
@@ -99,7 +99,7 @@ impl ModelSource {
     }
 }
 
-/// Resolve the model for `provider`, mirroring [`crate::build_provider_for`].
+/// Resolve the model for `provider`, mirroring [`crate::provider_setup::build_provider_for`].
 ///
 /// `explicit` is the already-merged `--model` / config value. `env` reads an
 /// environment variable, injected so tests need not mutate the process.

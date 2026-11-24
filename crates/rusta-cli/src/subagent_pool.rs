@@ -163,7 +163,7 @@ impl ModelPool for CliModelPool {
 
         let cli = Self::entry_cli(&self.base, alias, entry);
 
-        let provider = crate::build_provider_for(
+        let provider = crate::provider_setup::build_provider_for(
             &cli,
             entry.provider.clone(),
             Some(entry.model.clone()),

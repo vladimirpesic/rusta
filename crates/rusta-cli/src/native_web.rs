@@ -83,14 +83,14 @@ fn search_engine(region: Region) -> &'static str {
 /// The Kimi Coding Plan's own services on the session's host, key and
 /// custom headers; `None` without a key.
 pub fn kimi_services(cli: &Cli) -> Option<KimiServices> {
-    let key = crate::resolve_api_key(cli, "kimi")?;
-    let base = crate::resolve_base_url(
+    let key = crate::provider_setup::resolve_api_key(cli, "kimi")?;
+    let base = crate::provider_setup::resolve_base_url(
         cli,
         "kimi",
         cli.billing.unwrap_or_default(),
         cli.region.unwrap_or_default(),
     );
-    let headers = crate::custom_headers(cli, "kimi").unwrap_or_default();
+    let headers = crate::provider_setup::custom_headers(cli, "kimi").unwrap_or_default();
     KimiServices::new(&base, &key, headers).ok()
 }
 
@@ -110,10 +110,10 @@ fn kimi_clients(cli: &Cli) -> NativeWeb {
 }
 
 fn deepseek_clients(cli: &Cli) -> NativeWeb {
-    let Some(key) = crate::resolve_api_key(cli, "deepseek") else {
+    let Some(key) = crate::provider_setup::resolve_api_key(cli, "deepseek") else {
         return NativeWeb::default();
     };
-    let base = crate::resolve_base_url(
+    let base = crate::provider_setup::resolve_base_url(
         cli,
         "deepseek",
         cli.billing.unwrap_or_default(),

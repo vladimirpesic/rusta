@@ -377,7 +377,7 @@ impl Config {
         // holding a Kimi key — the lower layer's credential and endpoint are for
         // the other provider and must not carry across, or a Kimi key is sent to
         // Z.AI and rejected as if it were wrong. (`zai` is an alias for `glm`, so
-        // it is not a change.) Mirrors `main::apply_config`'s `same_provider` rule.
+        // it is not a change.) Mirrors `settings::apply_config`'s `same_provider` rule.
         let provider_changed = higher
             .provider
             .as_deref()

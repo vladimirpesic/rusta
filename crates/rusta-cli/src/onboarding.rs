@@ -97,7 +97,7 @@ pub async fn run(cli: &Cli, config: &Config) -> anyhow::Result<PathBuf> {
         region,
         base_url,
         custom_url.is_some(),
-        &crate::custom_headers(cli, &provider)?,
+        &crate::provider_setup::custom_headers(cli, &provider)?,
     )
     .await?;
     let Verified {

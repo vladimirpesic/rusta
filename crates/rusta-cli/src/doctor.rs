@@ -131,7 +131,7 @@ fn check_api_key_with(cli: &Cli, env: impl Fn(&str) -> Option<String>) -> Check 
     }
 
     // A configured `api_key_env` is the only variable consulted.
-    if let Some(var) = crate::configured_key_env_with(cli, &provider, &env) {
+    if let Some(var) = crate::provider_setup::configured_key_env_with(cli, &provider, &env) {
         return if env(var).is_some() {
             Check {
                 name: "api key",
@@ -234,16 +234,16 @@ async fn check_kimi(cli: &Cli) -> Option<Check> {
         return None;
     }
     // A missing key is the api-key check's to report.
-    let api_key = crate::resolve_api_key(cli, &provider)?;
+    let api_key = crate::provider_setup::resolve_api_key(cli, &provider)?;
     let billing = cli.billing.unwrap_or_default();
     let region = cli.region.unwrap_or_default();
-    let base_url = crate::resolve_base_url(cli, &provider, billing, region);
+    let base_url = crate::provider_setup::resolve_base_url(cli, &provider, billing, region);
     // A pinned URL is where the runtime goes, alternate or not.
     let pinned = crate::endpoints::base_url(&provider, billing, region) != Some(base_url.as_str());
     let alternate = (!pinned)
         .then(|| crate::endpoints::alternate_kimi_coding_host(&base_url))
         .flatten();
-    let headers = match crate::custom_headers(cli, &provider) {
+    let headers = match crate::provider_setup::custom_headers(cli, &provider) {
         Ok(headers) => headers,
         Err(e) => {
             return Some(Check {
@@ -344,13 +344,13 @@ async fn check_deepseek(cli: &Cli) -> Vec<Check> {
         return Vec::new();
     }
     // A missing key is the api-key check's to report.
-    let Some(api_key) = crate::resolve_api_key(cli, &provider) else {
+    let Some(api_key) = crate::provider_setup::resolve_api_key(cli, &provider) else {
         return Vec::new();
     };
     let billing = cli.billing.unwrap_or_default();
     let region = cli.region.unwrap_or_default();
-    let base_url = crate::resolve_base_url(cli, &provider, billing, region);
-    let headers = match crate::custom_headers(cli, &provider) {
+    let base_url = crate::provider_setup::resolve_base_url(cli, &provider, billing, region);
+    let headers = match crate::provider_setup::custom_headers(cli, &provider) {
         Ok(headers) => headers,
         Err(e) => {
             return vec![Check {
@@ -535,7 +535,7 @@ fn check_glm_plan(cli: &Cli, config: &Config) -> Option<Check> {
     }
     let billing = cli.billing.unwrap_or_default();
     let region = cli.region.unwrap_or_default();
-    let base_url = crate::resolve_base_url(cli, &provider, billing, region);
+    let base_url = crate::provider_setup::resolve_base_url(cli, &provider, billing, region);
     let coding_plan = GlmChatProvider::endpoint_is_coding_plan(&base_url)
         .unwrap_or(billing == crate::endpoints::Billing::Subscription);
     let models = crate::vision_mcp::session_models(cli, &provider, &config.subagent);

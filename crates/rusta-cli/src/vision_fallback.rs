@@ -53,14 +53,14 @@ pub fn for_provider(
 /// without it. `None` without a key, or when the catalogue says the model
 /// does not take images after all.
 fn deepseek(cli: &Cli, timeouts: HttpTimeouts) -> Option<Arc<dyn VisionFallback>> {
-    let key = crate::resolve_api_key(cli, "deepseek")?;
-    let base_url = crate::resolve_base_url(
+    let key = crate::provider_setup::resolve_api_key(cli, "deepseek")?;
+    let base_url = crate::provider_setup::resolve_base_url(
         cli,
         "deepseek",
         cli.billing.unwrap_or_default(),
         cli.region.unwrap_or_default(),
     );
-    let headers = crate::custom_headers(cli, "deepseek").ok()?;
+    let headers = crate::provider_setup::custom_headers(cli, "deepseek").ok()?;
     let cached = crate::catalogs::cached_models::<DeepseekModelInfo>(&base_url);
     let mut provider =
         DeepseekChatProvider::new(DEEPSEEK_VISION_MODEL, Some(key), base_url, timeouts).ok()?;
