@@ -432,9 +432,9 @@ impl KimiChatProvider {
 
     /// The models an endpoint serves when its catalogue is not at hand: the
     /// Kimi Code endpoints' (`kimi_coding`), or the platform's. Built from the
-    /// built-in table, never hand-written: a hand-written vision flag once
-    /// drifted from `supports_vision_for` and silently stripped every image
-    /// sent to `kimi-for-coding`.
+    /// built-in table, never hand-written, so a model's vision flag always
+    /// agrees with `supports_vision_for`: one that did not would strip every
+    /// image sent to the model.
     fn builtin_models(kimi_coding: bool) -> Vec<KimiModelInfo> {
         let ids = if kimi_coding {
             KIMI_CODING_MODELS

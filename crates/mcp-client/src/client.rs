@@ -171,7 +171,10 @@ struct StderrTail(std::sync::Arc<std::sync::Mutex<String>>);
 
 impl StderrTail {
     fn push_line(&self, line: &str) {
-        let mut tail = self.0.lock().unwrap();
+        let mut tail = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         tail.push_str(line);
         tail.push('\n');
         if tail.len() > STDERR_TAIL_BYTES {
@@ -185,7 +188,10 @@ impl StderrTail {
 
     /// What was kept, trimmed; `None` when the server wrote nothing.
     fn snapshot(&self) -> Option<String> {
-        let tail = self.0.lock().unwrap();
+        let tail = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let trimmed = tail.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     }

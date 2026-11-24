@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use async_trait::async_trait;
 use lm_bridge::tool::Tool;
 use serde_json::json;
@@ -75,7 +76,7 @@ impl ExecutableTool for SetGoalBudgetTool {
             wall_clock_budget_ms: args.get("wall_clock_budget_ms").and_then(|v| v.as_u64()),
         };
 
-        let mut manager = ctx.goal_manager.lock().unwrap();
+        let mut manager = ctx.goal_manager.lock_or_recover();
         match manager.set_budgets(budgets) {
             Ok(id) => ExecutableToolResult::text(format!("Budgets set for goal {id}.")),
             Err(e) => ExecutableToolResult::error(e),

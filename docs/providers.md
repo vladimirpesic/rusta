@@ -115,10 +115,10 @@ Rusta does not depend on these tables staying current:
   video input, whether the model reasons); what it leaves out — that the K3
   series always thinks, its effort levels, its dynamic tools — comes from the
   table above.
-- **Cache.** The list is cached per host for a day in `~/.cache/rusta/`.
-  Startup refreshes it in the background. `rusta init` and `rusta doctor`
-  refresh it on the spot and print it, and `/provider refresh` does in a
-  session.
+- **Cache.** The list is cached per endpoint (scheme, host, port and path) for
+  a day in `~/.cache/rusta/`. Startup refreshes it in the background. `rusta
+  init` and `rusta doctor` refresh it on the spot and print it, and `/provider
+  refresh` does in a session.
 - **Fallback.** The tables above are built in, for a machine that has never
   reached the endpoint.
 - **`/model`** with no argument lists the provider's models with Kimi's name for

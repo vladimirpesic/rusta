@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use async_trait::async_trait;
 use lm_bridge::tool::Tool;
 use serde_json::json;
@@ -84,7 +85,7 @@ impl ExecutableTool for UpdateGoalTool {
             _ => return ExecutableToolResult::error(format!("unknown status: {status_str}")),
         };
 
-        let mut manager = ctx.goal_manager.lock().unwrap();
+        let mut manager = ctx.goal_manager.lock_or_recover();
         match manager.update(status) {
             Ok(id) => ExecutableToolResult::text(format!("Goal {id} updated to {status}.")),
             Err(e) => ExecutableToolResult::error(e),

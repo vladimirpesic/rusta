@@ -140,8 +140,8 @@ impl ActiveSkills {
         };
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| crate::errors::AgentError::Config(e.to_string()))?;
-        std::fs::write(path, json).map_err(|e| crate::errors::AgentError::Config(e.to_string()))?;
-        Ok(())
+        crate::private_fs::write(path, json)
+            .map_err(|e| crate::errors::AgentError::Config(e.to_string()))
     }
 
     /// Load activations from a sidecar file, and persist later ones to it.

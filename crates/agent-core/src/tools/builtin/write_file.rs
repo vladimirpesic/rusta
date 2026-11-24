@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
@@ -74,7 +75,7 @@ impl ExecutableTool for WriteFileTool {
         // turns old, so it is checked exactly as an edit is. A path that does
         // not exist yet is always allowed — creating a file destroys nothing.
         let current = crate::stale_guard::FileStamp::of(&path).await;
-        if let Err(reason) = ctx.stale_guard.lock().unwrap().check(&path, current) {
+        if let Err(reason) = ctx.stale_guard.lock_or_recover().check(&path, current) {
             return ExecutableToolResult::error(reason.message(&path));
         }
 
@@ -88,8 +89,10 @@ impl ExecutableTool for WriteFileTool {
             ));
         }
 
-        match tokio::fs::write(&path, content).await {
-            Ok(_) => {
+        // Replaced whole, and only if the file is still as it was checked
+        // ([`crate::replace_file`]).
+        match crate::replace_file::replace(&path, content.as_bytes().to_vec(), current).await {
+            Ok(()) => {
                 // The agent has now seen this file: it just wrote its contents,
                 // so they can be digested without reading them back.
                 if let Ok(metadata) = tokio::fs::metadata(&path).await {
@@ -97,13 +100,13 @@ impl ExecutableTool for WriteFileTool {
                         &metadata,
                         Some(content.as_bytes()),
                     );
-                    ctx.stale_guard.lock().unwrap().record(path.clone(), stamp);
+                    ctx.stale_guard
+                        .lock_or_recover()
+                        .record(path.clone(), stamp);
                 }
                 ExecutableToolResult::text(format!("Wrote {}", path.display()))
             }
-            Err(e) => {
-                ExecutableToolResult::error(format!("Failed to write {}: {}", path.display(), e))
-            }
+            Err(e) => ExecutableToolResult::error(e.message(&path)),
         }
     }
 }

@@ -2,6 +2,7 @@
 //! description of it kept beside its records so that a resume rebuilds the
 //! same sub-agent.
 
+use crate::sync::LockExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -46,7 +47,7 @@ impl SubagentMeta {
     /// Save beside the records file `records`.
     pub(crate) async fn save(&self, records: &Path) -> Result<(), String> {
         let json = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
-        tokio::fs::write(Self::path(records), json)
+        crate::private_fs::write_async(&Self::path(records), json)
             .await
             .map_err(|e| format!("failed to save the sub-agent's description: {e}"))
     }
@@ -156,7 +157,7 @@ pub(crate) fn spawn_fork(
     let mut agent = fork_agent(ctx, source.system_prompt, ctx.profile.clone(), llm)
         .with_forked_context(source.history);
     agent.tool_ctx.cron = Arc::new(crate::cron::CronManager::new());
-    *agent.tool_ctx.fork_prefix_baseline.lock().unwrap() = Some(baseline);
+    *agent.tool_ctx.fork_prefix_baseline.lock_or_recover() = Some(baseline);
     if let Some(hooks) = &ctx.user_hooks {
         let name = ctx.profile.clone().unwrap_or_else(|| "fork".to_string());
         let mut fields = serde_json::Map::new();

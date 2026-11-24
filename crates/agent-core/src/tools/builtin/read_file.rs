@@ -18,6 +18,7 @@
 //! `max_chars`. Notes about the read (the range shown, where to continue,
 //! decoding warnings) follow the lines in brackets after a blank line.
 
+use crate::sync::LockExt;
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::fs::File;
@@ -158,7 +159,7 @@ impl ExecutableTool for ReadFileTool {
                 // shown. The record is made even for a partial read
                 // (`offset`/`limit`) — the guard answers "has this file moved
                 // since you looked", not "have you seen every line of it".
-                ctx.stale_guard.lock().unwrap().record(path, read.stamp);
+                ctx.stale_guard.lock_or_recover().record(path, read.stamp);
                 ExecutableToolResult::text(read.text)
             }
             Ok(Err(e)) => ExecutableToolResult::error(e.message(&path)),

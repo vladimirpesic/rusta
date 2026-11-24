@@ -146,7 +146,7 @@ pub async fn run_repl(
 
     if let Some(path) = &history_path {
         if let Some(parent) = path.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
+            let _ = agent_core::private_fs::create_dir_all_async(parent).await;
         }
         let _ = rl.lock().await.save_history(path);
     }

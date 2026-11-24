@@ -16,6 +16,7 @@
 //! `new_string`, the text is matched on the line the numbers name (or wherever
 //! it occurs once), and the result says so.
 
+use crate::sync::LockExt;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
@@ -116,8 +117,7 @@ impl ExecutableTool for EditFileTool {
         let current = crate::stale_guard::FileStamp::of(&path).await;
         let picture_current = ctx
             .stale_guard
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .check(&path, current)
             .is_ok();
 
@@ -130,15 +130,21 @@ impl ExecutableTool for EditFileTool {
                 ));
             }
         };
+        // The file as this edit read it: the edit lands only if it still is.
+        let read = tokio::fs::metadata(&path).await.ok().map(|metadata| {
+            crate::stale_guard::FileStamp::from_parts(&metadata, Some(content.as_bytes()))
+        });
         let edited = match apply(&content, old, new, replace_all) {
             Ok(edited) => edited,
             Err(e) => return ExecutableToolResult::error(e.message(&path)),
         };
-        if let Err(e) = tokio::fs::write(&path, &edited.text).await {
-            // A failed write may have left the file partly changed; drop the
-            // record so an overwrite must read it again.
-            ctx.stale_guard.lock().unwrap().forget(&path);
-            return ExecutableToolResult::error(format!("Failed to write {}: {e}", path.display()));
+        if let Err(e) =
+            crate::replace_file::replace(&path, edited.text.as_bytes().to_vec(), read).await
+        {
+            // Unchanged by this edit, but perhaps by someone else: drop the
+            // record so an overwrite must read the file again.
+            ctx.stale_guard.lock_or_recover().forget(&path);
+            return ExecutableToolResult::error(e.message(&path));
         }
         // A file the agent read, unchanged since, it still knows: re-stamped, so
         // its own edit does not stand between it and an overwrite. Of any other
@@ -147,7 +153,9 @@ impl ExecutableTool for EditFileTool {
         if picture_current && let Ok(metadata) = tokio::fs::metadata(&path).await {
             let stamp =
                 crate::stale_guard::FileStamp::from_parts(&metadata, Some(edited.text.as_bytes()));
-            ctx.stale_guard.lock().unwrap().record(path.clone(), stamp);
+            ctx.stale_guard
+                .lock_or_recover()
+                .record(path.clone(), stamp);
         }
         ExecutableToolResult::text(edited.summary(&path))
     }

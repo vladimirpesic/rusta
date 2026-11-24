@@ -1,5 +1,6 @@
 //! Shared slash-command dispatcher for the REPL and TUI.
 
+use agent_core::sync::LockExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -985,7 +986,7 @@ async fn run_goal_create(ctx: &CommandContext, objective: String) -> Result<Stri
         return Err("/goal create requires an objective.".to_string());
     }
     let agent = ctx.agent.lock().await;
-    let mut manager = agent.tool_ctx().goal_manager.lock().unwrap();
+    let mut manager = agent.tool_ctx().goal_manager.lock_or_recover();
     match manager.create(objective, None, true) {
         Ok(id) => Ok(format!(
             "Created goal {id}. The agent will pursue it across turns until it is paused, completed, or blocked."
@@ -996,7 +997,7 @@ async fn run_goal_create(ctx: &CommandContext, objective: String) -> Result<Stri
 
 async fn run_goal_update(ctx: &CommandContext, status: GoalStatus) -> Result<String, String> {
     let agent = ctx.agent.lock().await;
-    let mut manager = agent.tool_ctx().goal_manager.lock().unwrap();
+    let mut manager = agent.tool_ctx().goal_manager.lock_or_recover();
     match manager.update(status) {
         Ok(id) => Ok(format!("Goal {id} updated to {status}.")),
         Err(e) => Err(e),

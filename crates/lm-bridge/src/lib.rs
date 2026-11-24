@@ -5,6 +5,7 @@ pub mod http;
 pub mod media;
 pub mod message;
 pub mod model_version;
+pub mod private_fs;
 pub mod provider;
 pub mod tool;
 pub mod usage;

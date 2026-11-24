@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use std::{
     collections::HashSet,
     path::PathBuf,
@@ -148,7 +149,7 @@ impl Agent {
         let builtin_profiles = Arc::new(ProfileRegistry::with_builtin_profiles());
         let swarm_switch = Arc::new(AtomicBool::new(false));
         {
-            let mut reg = registry.lock().unwrap();
+            let mut reg = registry.lock_or_recover();
             reg.register(Arc::new(ReadFileTool::new()));
             reg.register(Arc::new(WriteFileTool::new()));
             reg.register(Arc::new(EditFileTool::new()));
@@ -183,7 +184,7 @@ impl Agent {
 
         let tool_disclosure = Arc::new(Mutex::new(ToolDisclosureState::new()));
         {
-            let mut reg = registry.lock().unwrap();
+            let mut reg = registry.lock_or_recover();
             reg.register(Arc::new(SelectToolsTool::new(
                 Arc::downgrade(&registry),
                 Arc::clone(&tool_disclosure),
@@ -292,7 +293,7 @@ impl Agent {
             skills.set_persist_path(skills_path);
             skills
         });
-        *self.active_skills.lock().unwrap() = skills;
+        *self.active_skills.lock_or_recover() = skills;
         let reads_path = sidecar("reads");
         let guard = if resumed {
             StaleGuard::load(&reads_path).unwrap_or_else(|_| StaleGuard::saved_to(reads_path))
@@ -415,15 +416,13 @@ impl Agent {
         if let Some(disclosure) = &self.tool_ctx.tool_disclosure {
             let context = &self.context;
             disclosure
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .fold_loaded_from_history(&messages, |text| context.expand_blob_text(text));
         }
         self.context.replay_messages(messages);
         if let Some(disclosure) = &self.tool_ctx.tool_disclosure {
             disclosure
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .fold_announcements_from_history(&self.context.build_history());
         }
     }
@@ -816,8 +815,7 @@ impl Agent {
         // The instruction files the new prompt carries are seen.
         self.tool_ctx
             .agents_md
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .seed_from_prompt(&prompt);
         self.context.set_system_prompt(prompt);
     }
@@ -860,8 +858,7 @@ impl Agent {
     pub fn with_web_reader_client(mut self, client: Arc<dyn WebReaderClient>) -> Self {
         self.web_reader_client = Some(client);
         self.registry
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .register(Arc::new(WebReaderTool::new()));
         self
     }
@@ -869,10 +866,9 @@ impl Agent {
     /// Replace the web-reader client at runtime and register the tool if needed.
     pub fn set_web_reader_client(&mut self, client: Arc<dyn WebReaderClient>) {
         self.web_reader_client = Some(client);
-        if self.registry.lock().unwrap().get("web_reader").is_none() {
+        if self.registry.lock_or_recover().get("web_reader").is_none() {
             self.registry
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .register(Arc::new(WebReaderTool::new()));
         }
     }
@@ -880,7 +876,7 @@ impl Agent {
     /// Clear the web-reader client and unregister the built-in tool.
     pub fn clear_web_reader_client(&mut self) {
         self.web_reader_client = None;
-        self.registry.lock().unwrap().unregister("web_reader");
+        self.registry.lock_or_recover().unregister("web_reader");
     }
 
     /// Update the session display title, which the hooks' payloads carry.
@@ -948,8 +944,8 @@ impl Agent {
             },
         )
         .await?;
-        disclosure.lock().unwrap().forget_announcements();
-        self.tool_ctx.agents_md.lock().unwrap().forget_reminders();
+        disclosure.lock_or_recover().forget_announcements();
+        self.tool_ctx.agents_md.lock_or_recover().forget_reminders();
         self.context.persist().await?;
         Ok(notice)
     }
@@ -965,9 +961,9 @@ impl Agent {
     /// step puts them back.
     fn forget_context_artifacts(&self) {
         if let Some(disclosure) = &self.tool_ctx.tool_disclosure {
-            disclosure.lock().unwrap().forget_announcements();
+            disclosure.lock_or_recover().forget_announcements();
         }
-        self.tool_ctx.agents_md.lock().unwrap().forget_reminders();
+        self.tool_ctx.agents_md.lock_or_recover().forget_reminders();
     }
 
     /// Undo the last user/assistant turn.
@@ -1053,8 +1049,7 @@ impl Agent {
         // tools are the caller's.
         if let Some(disclosure) = &self.tool_ctx.tool_disclosure {
             disclosure
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .fold_loaded_from_history(&history, str::to_string);
         }
         self.context.replay_messages(history);
@@ -1157,7 +1152,7 @@ impl Agent {
             return;
         };
         let tools: Vec<(Arc<dyn crate::agent_loop::types::ExecutableTool>, bool)> = {
-            let reg = source.lock().unwrap();
+            let reg = source.lock_or_recover();
             reg.all()
                 .iter()
                 .filter(|tool| tool.tool_definition().name.starts_with("mcp__"))
@@ -1173,7 +1168,7 @@ impl Agent {
                 .collect()
         };
         let adopts_deferred = tools.iter().any(|(_, dynamic)| *dynamic);
-        let mut reg = self.registry.lock().unwrap();
+        let mut reg = self.registry.lock_or_recover();
         for (tool, dynamic) in tools {
             if dynamic {
                 reg.register_dynamic(tool);
@@ -1206,7 +1201,7 @@ impl Agent {
             return;
         };
         let builtins: Vec<(Arc<dyn crate::agent_loop::types::ExecutableTool>, bool)> = {
-            let reg = source.lock().unwrap();
+            let reg = source.lock_or_recover();
             reg.all()
                 .iter()
                 .filter(|tool| tool.tool_definition().is_builtin_function())
@@ -1219,7 +1214,7 @@ impl Agent {
         if builtins.is_empty() {
             return;
         }
-        let mut reg = self.registry.lock().unwrap();
+        let mut reg = self.registry.lock_or_recover();
         for (tool, dynamic) in builtins {
             if reg.get(&tool.tool_definition().name).is_some() {
                 continue;
@@ -1250,7 +1245,7 @@ impl Agent {
             return;
         };
         let tools: Vec<(Arc<dyn crate::agent_loop::types::ExecutableTool>, bool)> = {
-            let reg = source.lock().unwrap();
+            let reg = source.lock_or_recover();
             reg.all()
                 .iter()
                 .map(|tool| {
@@ -1269,7 +1264,7 @@ impl Agent {
             disclosure: Arc::clone(&disclosure),
             active_skills: Arc::clone(&self.active_skills),
         };
-        let mut reg = self.registry.lock().unwrap();
+        let mut reg = self.registry.lock_or_recover();
         reg.clear();
         for (tool, dynamic) in tools {
             let tool = tool.rebind_for_fork(&binding).unwrap_or(tool);
@@ -1321,7 +1316,7 @@ impl Agent {
     /// Register `agent` and `agent_swarm` afresh, in their places: replacing
     /// a tool keeps the table's order, and with it the prompt cache.
     fn rebuild_subagent_tools(&self) {
-        let mut reg = self.registry.lock().unwrap();
+        let mut reg = self.registry.lock_or_recover();
         reg.register(Arc::new(AgentTool::with_pool(
             Arc::clone(&self.profile_registry),
             self.model_pool.clone(),
@@ -1348,8 +1343,7 @@ impl Agent {
     /// place in the tool table (`/reload`).
     pub fn set_skill_registry(&mut self, registry: Arc<SkillRegistry>) {
         self.registry
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .register(Arc::new(SkillTool::new(
                 Arc::clone(&registry),
                 Arc::clone(&self.active_skills),
@@ -1392,8 +1386,7 @@ impl Agent {
     #[must_use]
     pub fn tool_definitions(&self) -> Vec<lm_bridge::tool::Tool> {
         self.registry
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .definitions()
             .into_iter()
             .cloned()
@@ -1410,14 +1403,12 @@ impl Agent {
         let has_goal = self
             .tool_ctx
             .goal_manager
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .active_goal()
             .is_some();
         let ctx = self.next_turn_tool_ctx();
         self.registry
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .all()
             .iter()
             .filter(|tool| tool.is_available(&ctx))
@@ -1556,7 +1547,7 @@ impl Agent {
         // of a stopped, cancelled or failed turn are what a resume picks up.
         self.context.persist().await?;
         // And with them what the turn read, so the resume may edit those files.
-        if let Err(e) = self.tool_ctx.stale_guard.lock().unwrap().persist() {
+        if let Err(e) = self.tool_ctx.stale_guard.lock_or_recover().persist() {
             tracing::warn!(
                 "could not save which files this session has read: {e}. A resumed session \
                  will have to read them again before editing them."
@@ -1734,8 +1725,7 @@ impl Agent {
             if let Some(reason) = self
                 .tool_ctx
                 .goal_manager
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .record_turn(tokens, elapsed_ms)
             {
                 self.context
@@ -1746,8 +1736,7 @@ impl Agent {
             let status = self
                 .tool_ctx
                 .goal_manager
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .active_goal()
                 .map(|g| g.status);
             if status != Some(GoalStatus::Active) {
@@ -1767,8 +1756,7 @@ impl Agent {
     fn goal_reminder(&self) -> Option<String> {
         self.tool_ctx
             .goal_manager
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .active_goal()
             .map(|g| format!("Continue pursuing the active goal: {}", g.objective))
     }
@@ -1814,8 +1802,7 @@ impl Agent {
     pub fn has_active_goal(&self) -> bool {
         self.tool_ctx
             .goal_manager
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .active_goal()
             .is_some_and(|g| g.status == GoalStatus::Active)
     }
@@ -1844,7 +1831,7 @@ impl Agent {
 
     /// Register an arbitrary executable tool as a static tool.
     pub fn register_tool(&mut self, tool: Arc<dyn crate::agent_loop::types::ExecutableTool>) {
-        self.registry.lock().unwrap().register(tool);
+        self.registry.lock_or_recover().register(tool);
     }
 
     /// Register a dynamic tool. Its definition is withheld until the model
@@ -1853,7 +1840,7 @@ impl Agent {
         &mut self,
         tool: Arc<dyn crate::agent_loop::types::ExecutableTool>,
     ) {
-        self.registry.lock().unwrap().register_dynamic(tool);
+        self.registry.lock_or_recover().register_dynamic(tool);
     }
 
     /// Remove a tool from the registry.
@@ -1861,7 +1848,7 @@ impl Agent {
         &mut self,
         name: &str,
     ) -> Option<Arc<dyn crate::agent_loop::types::ExecutableTool>> {
-        self.registry.lock().unwrap().unregister(name)
+        self.registry.lock_or_recover().unregister(name)
     }
 
     /// Restrict the tool registry to only the named tools. Provider built-ins
@@ -1869,7 +1856,7 @@ impl Agent {
     /// server-side tools, not tools the profile gates.
     pub(crate) fn restrict_tools(&mut self, allowed: &std::collections::HashSet<String>) {
         let to_remove: Vec<String> = {
-            let reg = self.registry.lock().unwrap();
+            let reg = self.registry.lock_or_recover();
             reg.definitions()
                 .iter()
                 .map(|t| t.name.clone())
@@ -1881,7 +1868,7 @@ impl Agent {
                 .collect()
         };
         for name in to_remove {
-            self.registry.lock().unwrap().unregister(&name);
+            self.registry.lock_or_recover().unregister(&name);
         }
     }
 
@@ -1890,7 +1877,7 @@ impl Agent {
     /// are never cut (same rule as [`Agent::restrict_tools`]).
     pub(crate) fn remove_tools(&mut self, denied: &std::collections::HashSet<String>) {
         let to_remove: Vec<String> = {
-            let reg = self.registry.lock().unwrap();
+            let reg = self.registry.lock_or_recover();
             reg.definitions()
                 .iter()
                 .map(|t| t.name.clone())
@@ -1902,7 +1889,7 @@ impl Agent {
                 .collect()
         };
         for name in to_remove {
-            self.registry.lock().unwrap().unregister(&name);
+            self.registry.lock_or_recover().unregister(&name);
         }
     }
 
@@ -3122,6 +3109,7 @@ mod tests {
                 command: Some("^rm ".into()),
                 action: PolicyAction::Deny,
                 scope: PolicyScope::Once,
+                origin: None,
             }]);
         let mut child = Agent::spawn_child(&parent.tool_ctx, "sub", None);
         child.set_approval_requester(Some("sub-1".into()));
@@ -3136,7 +3124,12 @@ mod tests {
         );
         let answer = child
             .permissions
-            .request_approval("run_command", "bash", &serde_json::json!({"command": "ls"}))
+            .request_approval(
+                "run_command",
+                None,
+                "bash",
+                &serde_json::json!({"command": "ls"}),
+            )
             .await;
         assert_eq!(answer, ApprovalResponse::AllowOnce);
         assert_eq!(

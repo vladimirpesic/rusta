@@ -283,6 +283,9 @@ struct FetchOutcome {
 /// * each hop's connection is pinned to the exact addresses the check approved
 ///   (`resolve_to_addrs`), closing the DNS-rebinding window between the check
 ///   and the connect.
+///
+/// `timeout` covers the whole fetch, every redirect included, and the body is
+/// read only up to `max_bytes` ([`lm_bridge::http::read_limited`]).
 async fn guarded_get(
     raw_url: &str,
     timeout: std::time::Duration,
@@ -293,8 +296,14 @@ async fn guarded_get(
 
     let mut current =
         reqwest::Url::parse(raw_url).map_err(|e| format!("Invalid URL {raw_url}: {e}"))?;
+    let deadline = tokio::time::Instant::now() + timeout;
+    let timed_out = || format!("Timed out fetching {raw_url} after {} s", timeout.as_secs());
 
     for _hop in 0..=MAX_REDIRECT_HOPS {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(timed_out());
+        }
         match current.scheme() {
             "http" | "https" => {}
             other => {
@@ -308,22 +317,27 @@ async fn guarded_get(
             .host_str()
             .ok_or_else(|| format!("URL has no host: {current}"))?
             .to_string();
-        let addrs = crate::address::resolve_allowed(&current, |class| !class.is_internal())
-            .await
-            .map_err(|e| match e {
-                crate::address::AddressError::Unresolved(reason) => {
-                    format!("Failed to fetch {current}: {reason}")
-                }
-                refused @ crate::address::AddressError::Refused { .. } => format!(
-                    "Refusing to fetch {current}: {refused} — blocked to prevent server-side \
+        let addrs = tokio::time::timeout(
+            remaining,
+            crate::address::resolve_allowed(&current, |class| !class.is_internal()),
+        )
+        .await
+        .map_err(|_| timed_out())?
+        .map_err(|e| match e {
+            crate::address::AddressError::Unresolved(reason) => {
+                format!("Failed to fetch {current}: {reason}")
+            }
+            refused @ crate::address::AddressError::Refused { .. } => format!(
+                "Refusing to fetch {current}: {refused} — blocked to prevent server-side \
 request forgery"
-                ),
-            })?;
+            ),
+        })?;
 
         // Pin the connection to the validated addresses and follow redirects by
         // hand so every hop is re-checked.
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let client = lm_bridge::http::client_builder()
-            .timeout(timeout)
+            .timeout(remaining)
             .user_agent(user_agent)
             .redirect(reqwest::redirect::Policy::none())
             .resolve_to_addrs(&host, &addrs)
@@ -359,27 +373,21 @@ request forgery"
             .unwrap_or("unknown")
             .to_string();
 
-        if let Some(len) = response.content_length()
-            && len as usize > max_bytes
-        {
-            return Err(format!("Response too large: {len} bytes (max {max_bytes})"));
-        }
-
-        let bytes = response
-            .bytes()
+        let bytes = lm_bridge::http::read_limited(response, max_bytes)
             .await
-            .map_err(|e| format!("Failed to read response: {e}"))?;
-        if bytes.len() > max_bytes {
-            return Err(format!(
-                "Response too large: {} bytes (max {max_bytes})",
-                bytes.len()
-            ));
-        }
+            .map_err(|e| match e {
+                lm_bridge::http::ReadLimitedError::TooLarge { limit } => {
+                    format!("Response too large: more than {limit} bytes")
+                }
+                lm_bridge::http::ReadLimitedError::Http(e) => {
+                    format!("Failed to read response: {e}")
+                }
+            })?;
 
         return Ok(FetchOutcome {
             status,
             content_type,
-            bytes: bytes.to_vec(),
+            bytes,
         });
     }
 

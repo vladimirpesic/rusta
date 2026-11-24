@@ -257,7 +257,7 @@ impl SessionLocks {
     /// is gone.
     fn claim(&self, path: &Path, token: &str) -> std::io::Result<Claim> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            crate::private_fs::create_dir_all(parent)?;
         }
         for _ in 0..2 {
             if self.try_publish(path, token)? {
@@ -302,7 +302,7 @@ impl SessionLocks {
         let body = serde_json::to_vec(&holder).map_err(std::io::Error::other)?;
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         let staged = path.with_file_name(format!("{name}.{}.tmp", token.replace(':', "-")));
-        std::fs::write(&staged, body)?;
+        std::io::Write::write_all(&mut crate::private_fs::create(&staged)?, &body)?;
         let linked = std::fs::hard_link(&staged, path);
         let _ = std::fs::remove_file(&staged);
         match linked {

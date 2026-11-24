@@ -3,8 +3,14 @@
 //! Kimi and DeepSeek publish what each model can do at `GET {base}/models`
 //! ([`super::kimi_catalog`], [`super::deepseek_catalog`]), so a new model or a
 //! changed limit needs no Rusta release. A fetched catalogue is kept per
-//! vendor and host for a day; each provider's built-in table is the fallback
-//! when none is at hand.
+//! vendor and endpoint for a day; each provider's built-in table is the
+//! fallback when none is at hand.
+//!
+//! An endpoint is its whole base URL — scheme, host, port and path — so two
+//! endpoints on one host (two local servers on different ports, say) keep
+//! catalogues of their own. A cache file records the endpoint and the
+//! file's format version, and one that names another endpoint or version is
+//! not used.
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -27,7 +33,8 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 pub trait CatalogEntry:
     Clone + std::fmt::Debug + Serialize + DeserializeOwned + Send + 'static
 {
-    /// The vendor, which names the cache file: `<vendor>-models-<host>.json`.
+    /// The vendor, which names the cache file:
+    /// `<vendor>-models-<host>-<endpoint digest>.json`.
     const VENDOR: &'static str;
 
     /// The model id.
@@ -92,10 +99,31 @@ impl<T: CatalogEntry> CachedCatalog<T> {
     }
 }
 
+/// The format of a cache file; a file of another version is not used.
+const CACHE_VERSION: u32 = 2;
+
 #[derive(Serialize, Deserialize)]
 struct CacheFile<T> {
+    version: u32,
+    /// The endpoint the catalogue came from ([`endpoint`]).
+    endpoint: String,
     fetched_at: u64,
     models: Vec<T>,
+}
+
+/// `base_url` as one endpoint: scheme, host, effective port and path, without
+/// a trailing slash. A URL that does not parse stands for itself.
+fn endpoint(base_url: &str) -> String {
+    match url::Url::parse(base_url) {
+        Ok(url) => format!(
+            "{}://{}:{}{}",
+            url.scheme(),
+            url.host_str().unwrap_or_default().to_ascii_lowercase(),
+            url.port_or_known_default().unwrap_or_default(),
+            url.path().trim_end_matches('/')
+        ),
+        Err(_) => base_url.trim_end_matches('/').to_string(),
+    }
 }
 
 impl<T: CatalogEntry> CatalogCache<T> {
@@ -108,9 +136,11 @@ impl<T: CatalogEntry> CatalogCache<T> {
         }
     }
 
-    /// The cache file for `base_url`'s host: `<vendor>-models-<host>.json`.
+    /// The cache file for `base_url`'s endpoint:
+    /// `<vendor>-models-<host>-<endpoint digest>.json`.
     #[must_use]
     pub fn path_for(&self, base_url: &str) -> PathBuf {
+        use sha2::Digest as _;
         let host = url::Url::parse(base_url)
             .ok()
             .and_then(|url| url.host_str().map(str::to_string))
@@ -125,26 +155,32 @@ impl<T: CatalogEntry> CatalogCache<T> {
                 }
             })
             .collect();
-        self.dir.join(format!("{}-models-{host}.json", T::VENDOR))
+        let digest = sha2::Sha256::digest(endpoint(base_url).as_bytes());
+        let digest: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
+        self.dir
+            .join(format!("{}-models-{host}-{digest}.json", T::VENDOR))
     }
 
     /// The cached catalogue for `base_url`, fresh or not.
     #[must_use]
     pub fn load(&self, base_url: &str) -> Option<CachedCatalog<T>> {
-        read_cache(&self.path_for(base_url))
+        read_cache(&self.path_for(base_url), &endpoint(base_url))
     }
 
-    /// Save `models` as `base_url`'s catalogue, fetched now.
+    /// Save `models` as `base_url`'s catalogue, fetched now: privately and
+    /// atomically ([`crate::private_fs`]), so a crash never leaves half a file.
     pub fn save(&self, base_url: &str, models: &[T]) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
+        crate::private_fs::create_dir_all(&self.dir)?;
         let file = CacheFile {
+            version: CACHE_VERSION,
+            endpoint: endpoint(base_url),
             fetched_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()),
             models: models.to_vec(),
         };
         let json = serde_json::to_string_pretty(&file).map_err(std::io::Error::other)?;
-        std::fs::write(self.path_for(base_url), json)
+        crate::private_fs::write(&self.path_for(base_url), json)
     }
 
     /// Fetch `base_url`'s catalogue and save it.
@@ -167,9 +203,12 @@ impl<T: CatalogEntry> CatalogCache<T> {
     }
 }
 
-fn read_cache<T: CatalogEntry>(path: &Path) -> Option<CachedCatalog<T>> {
+fn read_cache<T: CatalogEntry>(path: &Path, endpoint: &str) -> Option<CachedCatalog<T>> {
     let text = std::fs::read_to_string(path).ok()?;
     let file: CacheFile<T> = serde_json::from_str(&text).ok()?;
+    if file.version != CACHE_VERSION || file.endpoint != endpoint {
+        return None;
+    }
     Some(CachedCatalog {
         models: file.models,
         fetched_at: UNIX_EPOCH + Duration::from_secs(file.fetched_at),
@@ -231,6 +270,8 @@ mod tests {
                 .unwrap()
                 .as_secs();
             let file = serde_json::json!({
+                "version": CACHE_VERSION,
+                "endpoint": endpoint(base),
                 "fetched_at": fetched_at,
                 "models": DeepseekModelInfo::builtin_models(),
             });
@@ -243,6 +284,38 @@ mod tests {
         let stale = cache.load(base).expect("a stale catalogue is still read");
         assert!(!stale.is_fresh());
         assert_eq!(stale.models, DeepseekModelInfo::builtin_models());
+    }
+
+    /// Two endpoints on one host keep catalogues of their own, and a file that
+    /// names another endpoint, or another format, is not used.
+    #[test]
+    fn each_endpoint_has_its_own_catalogue() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = CatalogCache::<DeepseekModelInfo>::new(dir.path());
+        let (one, two) = ("http://127.0.0.1:8001/v1", "http://127.0.0.1:8002/v1");
+        assert_ne!(cache.path_for(one), cache.path_for(two));
+        assert_ne!(
+            cache.path_for("https://host/a"),
+            cache.path_for("https://host/b")
+        );
+        assert_eq!(
+            cache.path_for("https://HOST/v1/"),
+            cache.path_for("https://host:443/v1"),
+            "one endpoint, however it is written"
+        );
+        let models = DeepseekModelInfo::builtin_models();
+        cache.save(one, &models[..1]).unwrap();
+        cache.save(two, &models).unwrap();
+        assert_eq!(cache.load(one).unwrap().models.len(), 1);
+        assert_eq!(cache.load(two).unwrap().models.len(), models.len());
+
+        // A file copied under another endpoint's name is not that endpoint's.
+        std::fs::copy(cache.path_for(one), cache.path_for(two)).unwrap();
+        assert!(cache.load(two).is_none());
+        // A file of the old format, without a version, is not used either.
+        let old = serde_json::json!({ "fetched_at": 0, "models": models });
+        std::fs::write(cache.path_for(one), old.to_string()).unwrap();
+        assert!(cache.load(one).is_none());
     }
 
     /// An endpoint that cannot be reached fails the refresh and leaves the

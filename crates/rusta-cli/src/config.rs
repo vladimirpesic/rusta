@@ -22,6 +22,17 @@ pub enum Source {
     Explicit,
 }
 
+impl Source {
+    /// The kind of config file, as an approval prompt names a rule's origin.
+    fn label(self) -> &'static str {
+        match self {
+            Self::User => "your config",
+            Self::Project => "project config",
+            Self::Explicit => "config",
+        }
+    }
+}
+
 /// Configuration loaded from file.
 ///
 /// Values here are overridden by the corresponding CLI arguments or
@@ -292,9 +303,16 @@ impl Config {
     ) -> anyhow::Result<Self> {
         let mut merged = Self::default();
         for (source, path) in sources {
-            let Some(layer) = Self::read_layer(path)? else {
+            let Some(mut layer) = Self::read_layer(path)? else {
                 continue;
             };
+            // Each rule says where it was configured, for its approval prompts.
+            if let Some(permissions) = layer.permissions.as_mut() {
+                let origin = format!("{} {}", source.label(), path.display());
+                for rule in &mut permissions.rules {
+                    rule.origin = Some(origin.clone());
+                }
+            }
             let layer = if *source == Source::Project {
                 project(&merged, path, layer)?
             } else {
@@ -331,6 +349,22 @@ impl Config {
             rule.validate().map_err(|e| {
                 anyhow::anyhow!("config {}: invalid [[hooks]] entry: {e}", path.display())
             })?;
+        }
+        if let Some(permissions) = &layer.permissions {
+            let mut names = std::collections::HashSet::new();
+            for name in permissions
+                .rules
+                .iter()
+                .filter_map(|rule| rule.name.as_deref())
+            {
+                if !names.insert(name) {
+                    anyhow::bail!(
+                        "config {}: two [[permissions.rules]] are named \"{name}\"; \
+                         give each rule a name of its own",
+                        path.display()
+                    );
+                }
+            }
         }
         Ok(Some(layer))
     }
@@ -525,6 +559,54 @@ mod tests {
     /// user config, and a project keeps its own permission rules and MCP
     /// servers. Under first-file-wins the user config would shadow the project
     /// file outright, so those rules would silently stop applying.
+    #[test]
+    fn a_file_naming_two_rules_alike_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[[permissions.rules]]\nname = \"same\"\ntool = \"bash\"\naction = \"prompt\"\n\
+             [[permissions.rules]]\nname = \"same\"\ntool = \"edit_file\"\naction = \"prompt\"\n",
+        )
+        .unwrap();
+        let error = Config::load_from(&[path]).unwrap_err().to_string();
+        assert!(
+            error.contains("two [[permissions.rules]] are named \"same\""),
+            "{error}"
+        );
+    }
+
+    /// Each rule says which file it came from, for its approval prompts; the
+    /// same name in two files is two rules.
+    #[test]
+    fn rules_carry_the_file_they_came_from() {
+        let dir = tempfile::tempdir().unwrap();
+        let user = dir.path().join("config.toml");
+        let project = dir.path().join(".rusta.toml");
+        let rule = "[[permissions.rules]]\nname = \"ask\"\ntool = \"bash\"\naction = \"prompt\"\n";
+        std::fs::write(&user, rule).unwrap();
+        std::fs::write(&project, rule).unwrap();
+        let sources = [
+            (Source::User, user.clone()),
+            (Source::Project, project.clone()),
+        ];
+        let config = Config::load_sources(&sources, |_, _, layer| Ok(layer)).unwrap();
+        let origins: Vec<String> = config
+            .permissions
+            .expect("rules")
+            .rules
+            .into_iter()
+            .map(|rule| rule.origin.expect("an origin"))
+            .collect();
+        assert_eq!(
+            origins,
+            [
+                format!("project config {}", project.display()),
+                format!("your config {}", user.display()),
+            ]
+        );
+    }
+
     #[test]
     fn project_config_layers_over_the_user_config() {
         let dir = tempfile::tempdir().unwrap();

@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use async_trait::async_trait;
 use lm_bridge::tool::Tool;
 use serde_json::json;
@@ -52,7 +53,7 @@ impl ExecutableTool for GetGoalTool {
         ctx: &ExecutableToolContext,
         _tool_call_id: &str,
     ) -> ExecutableToolResult {
-        let manager = ctx.goal_manager.lock().unwrap();
+        let manager = ctx.goal_manager.lock_or_recover();
         match manager.active_summary() {
             Some(summary) => ExecutableToolResult::text(summary),
             None => ExecutableToolResult::text("No active goal.".to_string()),

@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
@@ -138,7 +139,7 @@ impl BackgroundTask {
         seq: u64,
     ) -> Self {
         let task_dir = env.data_dir.join("tasks").join(&id);
-        std::fs::create_dir_all(&task_dir).ok();
+        crate::private_fs::create_dir_all(&task_dir).ok();
         Self {
             id,
             command,
@@ -277,19 +278,19 @@ impl BackgroundManager {
         {
             manager.scratch = self.scratch.clone();
         }
-        *manager.user_hooks.lock().unwrap() = self.user_hooks.lock().unwrap().clone();
+        *manager.user_hooks.lock_or_recover() = self.user_hooks.lock_or_recover().clone();
         manager
     }
 
     /// Attach the session's user hooks. Background tasks report their starts
     /// (TaskStarted) and terminal states (Notification) through them.
     pub fn set_user_hooks(&self, hooks: Arc<crate::user_hooks::UserHooks>) {
-        *self.user_hooks.lock().unwrap() = Some(hooks);
+        *self.user_hooks.lock_or_recover() = Some(hooks);
     }
 
     /// Create a manager with a custom data directory.
     pub fn with_data_dir(data_dir: PathBuf) -> Self {
-        std::fs::create_dir_all(&data_dir).ok();
+        crate::private_fs::create_dir_all(&data_dir).ok();
         let semaphore = Arc::new(Mutex::new(Some(Arc::new(Semaphore::new(
             DEFAULT_MAX_RUNNING_TASKS,
         )))));
@@ -332,7 +333,7 @@ impl BackgroundManager {
 
     /// Fire the TaskStarted event for a new background task.
     fn fire_task_started(&self, id: &str, description: &str, kind: &str) {
-        let hooks = self.user_hooks.lock().unwrap().clone();
+        let hooks = self.user_hooks.lock_or_recover().clone();
         let Some(hooks) = hooks else {
             return;
         };
@@ -380,7 +381,7 @@ impl BackgroundManager {
         } else {
             Some(Arc::new(Semaphore::new(max)))
         };
-        *self.semaphore.lock().unwrap() = sem;
+        *self.semaphore.lock_or_recover() = sem;
         self
     }
 
@@ -419,8 +420,7 @@ impl BackgroundManager {
     /// notifications.
     pub fn pending_completion_count(&self) -> usize {
         self.completion_markers
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .iter()
             .filter(|m| m.owner == self.owner)
             .count()
@@ -428,7 +428,7 @@ impl BackgroundManager {
 
     /// Remove and return this agent's notices that `wanted` accepts.
     fn take_markers(&self, wanted: impl Fn(&str) -> bool) -> Vec<String> {
-        let mut markers = self.completion_markers.lock().unwrap();
+        let mut markers = self.completion_markers.lock_or_recover();
         let (taken, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut *markers)
             .into_iter()
             .partition(|m| m.owner == self.owner && wanted(&m.task_id));
@@ -456,7 +456,7 @@ impl BackgroundManager {
         steer: &crate::steer::SteerChannel,
     ) -> Result<WaitOutcome, WaitError> {
         let watched: Vec<String> = {
-            let tasks = self.tasks.lock().unwrap();
+            let tasks = self.tasks.lock_or_recover();
             match task_id {
                 Some(id) => match tasks.get(id) {
                     Some(task) if task.owner == self.owner => vec![id.to_string()],
@@ -515,7 +515,7 @@ impl BackgroundManager {
             ..WaitOutcome::default()
         };
         {
-            let tasks = self.tasks.lock().unwrap();
+            let tasks = self.tasks.lock_or_recover();
             for id in &watched {
                 match tasks.get(id) {
                     Some(task) if task.notified => outcome.finished.push(FinishedTask {
@@ -537,7 +537,7 @@ impl BackgroundManager {
 
     /// Whether any of `ids` has finished and been announced, or is gone.
     fn any_settled(&self, ids: &[String]) -> bool {
-        let tasks = self.tasks.lock().unwrap();
+        let tasks = self.tasks.lock_or_recover();
         ids.iter()
             .any(|id| tasks.get(id).is_none_or(|task| task.notified))
     }
@@ -548,8 +548,7 @@ impl BackgroundManager {
     /// has not run yet, and dropping it would silently discard its work.
     pub fn active_agent_task_count(&self) -> usize {
         self.tasks
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .values()
             .filter(|t| t.kind == TaskKind::Agent && !t.status.is_terminal())
             .count()
@@ -587,7 +586,7 @@ impl BackgroundManager {
         self.fire_task_started(&id, &label, "agent");
 
         {
-            let mut tasks = self.tasks.lock().unwrap();
+            let mut tasks = self.tasks.lock_or_recover();
             tasks.insert(
                 id.clone(),
                 BackgroundTask::new(
@@ -607,11 +606,11 @@ impl BackgroundManager {
         let completion_markers = self.completion_markers.clone();
         let finished = self.finished.clone();
         let max_tracked_tasks = self.max_tracked_tasks;
-        let user_hooks = self.user_hooks.lock().unwrap().clone();
+        let user_hooks = self.user_hooks.lock_or_recover().clone();
         let id_spawn = id.clone();
         tokio::spawn(async move {
             let sem = {
-                let guard = semaphore.lock().unwrap();
+                let guard = semaphore.lock_or_recover();
                 guard.clone()
             };
             let _permit = if let Some(sem) = sem.as_ref() {
@@ -686,7 +685,7 @@ impl BackgroundManager {
         self.fire_task_started(&id, &command, "process");
 
         {
-            let mut tasks = self.tasks.lock().unwrap();
+            let mut tasks = self.tasks.lock_or_recover();
             tasks.insert(
                 id.clone(),
                 BackgroundTask::new(
@@ -706,11 +705,11 @@ impl BackgroundManager {
         let completion_markers = self.completion_markers.clone();
         let finished = self.finished.clone();
         let max_tracked_tasks = self.max_tracked_tasks;
-        let user_hooks = self.user_hooks.lock().unwrap().clone();
+        let user_hooks = self.user_hooks.lock_or_recover().clone();
         let id_spawn = id.clone();
         tokio::spawn(async move {
             let sem = {
-                let guard = semaphore.lock().unwrap();
+                let guard = semaphore.lock_or_recover();
                 guard.clone()
             };
             let _permit = if let Some(sem) = sem.as_ref() {
@@ -772,7 +771,7 @@ impl BackgroundManager {
         let cancel = CancellationToken::new();
 
         {
-            let mut tasks = self.tasks.lock().unwrap();
+            let mut tasks = self.tasks.lock_or_recover();
             let mut task = BackgroundTask::new(
                 id.clone(),
                 command,
@@ -791,7 +790,7 @@ impl BackgroundManager {
         let completion_markers = self.completion_markers.clone();
         let finished = self.finished.clone();
         let max_tracked_tasks = self.max_tracked_tasks;
-        let user_hooks = self.user_hooks.lock().unwrap().clone();
+        let user_hooks = self.user_hooks.lock_or_recover().clone();
         let id_spawn = id.clone();
         tokio::spawn(async move {
             run_adopted_task(
@@ -820,14 +819,14 @@ impl BackgroundManager {
 
     /// List all known tasks.
     pub fn list(&self) -> Vec<String> {
-        let tasks = self.tasks.lock().unwrap();
+        let tasks = self.tasks.lock_or_recover();
         tasks.values().map(|t| t.summary()).collect()
     }
 
     /// Return the current output for a task, if it exists.
     pub async fn output(&self, id: &str, offset: usize, limit: Option<usize>) -> Option<String> {
         let (stdout_path, stderr_path) = {
-            let tasks = self.tasks.lock().unwrap();
+            let tasks = self.tasks.lock_or_recover();
             let task = tasks.get(id)?;
             (task.stdout_path.clone(), task.stderr_path.clone())
         };
@@ -870,7 +869,7 @@ impl BackgroundManager {
 
     /// Stop a running background task.
     pub fn stop(&self, id: &str) -> bool {
-        let tasks = self.tasks.lock().unwrap();
+        let tasks = self.tasks.lock_or_recover();
         if let Some(task) = tasks.get(id) {
             task.cancel.cancel();
             true
@@ -882,15 +881,14 @@ impl BackgroundManager {
     /// Test helper: return the current status of a task.
     #[cfg(test)]
     pub fn status(&self, id: &str) -> Option<TaskStatus> {
-        self.tasks.lock().unwrap().get(id).map(|t| t.status)
+        self.tasks.lock_or_recover().get(id).map(|t| t.status)
     }
 
     /// Test helper: return whether the captured stdout contains a substring.
     #[cfg(test)]
     pub fn stdout_contains(&self, id: &str, needle: &str) -> bool {
         self.tasks
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .get(id)
             .map(|t| t.stdout.iter().any(|l| l.contains(needle)))
             .unwrap_or(false)
@@ -900,8 +898,7 @@ impl BackgroundManager {
     #[cfg(test)]
     pub fn stderr_contains(&self, id: &str, needle: &str) -> bool {
         self.tasks
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .get(id)
             .map(|t| t.stderr.iter().any(|l| l.contains(needle)))
             .unwrap_or(false)
@@ -1062,8 +1059,7 @@ async fn drain_output(
 ) {
     let stored = || {
         tasks
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .get(id)
             .map_or(0, |task| task.stdout_bytes + task.stderr_bytes)
     };
@@ -1129,7 +1125,7 @@ async fn finalize_exit(
             (TaskStatus::Failed, None)
         }
     };
-    let mut tasks = tasks.lock().unwrap();
+    let mut tasks = tasks.lock_or_recover();
     if let Some(task) = tasks.get_mut(id) {
         task.status = outcome;
         if code.is_some() {
@@ -1139,7 +1135,7 @@ async fn finalize_exit(
 }
 
 fn set_status(tasks: &Arc<Mutex<HashMap<String, BackgroundTask>>>, id: &str, status: TaskStatus) {
-    let mut tasks = tasks.lock().unwrap();
+    let mut tasks = tasks.lock_or_recover();
     if let Some(task) = tasks.get_mut(id) {
         task.status = status;
     }
@@ -1158,10 +1154,7 @@ impl OutputFile {
     /// is the one open.
     fn append(&mut self, path: &Path, line: &str) {
         if self.0.as_ref().is_none_or(|(open, _)| open != path) {
-            self.0 = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
+            self.0 = crate::private_fs::open_append(path)
                 .ok()
                 .map(|file| (path.to_path_buf(), file));
         }
@@ -1180,7 +1173,7 @@ fn append_line(
     out: &mut OutputFile,
 ) {
     let (path, cap, capped) = {
-        let mut tasks = tasks.lock().unwrap();
+        let mut tasks = tasks.lock_or_recover();
         let Some(task) = tasks.get_mut(id) else {
             return;
         };
@@ -1213,7 +1206,7 @@ fn append_line(
         line
     };
     out.append(&path, &line);
-    let mut tasks = tasks.lock().unwrap();
+    let mut tasks = tasks.lock_or_recover();
     if let Some(task) = tasks.get_mut(id) {
         let lines = if is_stdout {
             &mut task.stdout
@@ -1257,7 +1250,7 @@ fn notify_completion(
     let notification = {
         // The notice is posted and the task marked under the tasks lock, so a
         // waiter that sees `notified` also finds the notice to take.
-        let mut tasks = tasks.lock().unwrap();
+        let mut tasks = tasks.lock_or_recover();
         if let Some(task) = tasks.get_mut(id) {
             let status = task.status;
             tracing::info!("[background] task {id} finished with status {status}");
@@ -1271,7 +1264,7 @@ fn notify_completion(
                 r#"<notification category="task" source_kind="background_task" severity="{severity}" title="Background task {id} {status}"><body><![CDATA[{}]]></body></notification>"#,
                 task.command
             );
-            completion_markers.lock().unwrap().push(CompletionMarker {
+            completion_markers.lock_or_recover().push(CompletionMarker {
                 owner: task.owner,
                 task_id: id.to_string(),
                 text,
@@ -1291,7 +1284,7 @@ fn notify_completion(
             _ => return,
         };
         let message = {
-            let tasks = tasks.lock().unwrap();
+            let tasks = tasks.lock_or_recover();
             tasks.get(id).map(|task| task.command.clone())
         };
         let mut fields = serde_json::Map::new();
@@ -1324,7 +1317,7 @@ fn prune_terminal_tasks(
     }
 
     let ids_and_dirs: Vec<(String, PathBuf)> = {
-        let tasks = tasks.lock().unwrap();
+        let tasks = tasks.lock_or_recover();
         let mut terminal: Vec<&BackgroundTask> =
             tasks.values().filter(|t| t.status.is_terminal()).collect();
         // The budget is over *terminal* tasks, which is what the cap documents
@@ -1357,7 +1350,7 @@ fn prune_terminal_tasks(
     };
 
     {
-        let mut tasks = tasks.lock().unwrap();
+        let mut tasks = tasks.lock_or_recover();
         for (id, _) in &ids_and_dirs {
             tasks.remove(id);
         }

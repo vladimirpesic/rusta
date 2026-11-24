@@ -1,3 +1,4 @@
+use agent_core::sync::LockExt;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
@@ -25,25 +26,27 @@ pub fn headless_callbacks() -> (LlmCallbacks, ToolEventSender) {
 
     let callbacks = LlmCallbacks {
         on_text_delta: Some(Arc::new(move |delta: &str| {
-            text_printer.lock().unwrap().print_text_delta(delta);
+            text_printer.lock_or_recover().print_text_delta(delta);
         })),
         on_think_delta: Some(Arc::new(move |delta: &str| {
-            think_printer.lock().unwrap().print_think_delta(delta);
+            think_printer.lock_or_recover().print_think_delta(delta);
         })),
         on_tool_call_delta: Some(Arc::new(move |tc: &ToolCall| {
-            tool_printer.lock().unwrap().print_tool_call_delta(tc);
+            tool_printer.lock_or_recover().print_tool_call_delta(tc);
         })),
         on_retry: Some(Arc::new(move |notice: &RetryNotice| {
-            retry_printer.lock().unwrap().print_retry(notice);
+            retry_printer.lock_or_recover().print_retry(notice);
         })),
         on_compaction: Some(Arc::new(move |notice: &CompactionNotice| {
-            compaction_printer.lock().unwrap().print_compaction(notice);
+            compaction_printer
+                .lock_or_recover()
+                .print_compaction(notice);
         })),
     };
 
     let event_printer = printer.clone();
     let tool_event_sender: ToolEventSender = Arc::new(move |event: ToolEvent| {
-        event_printer.lock().unwrap().print_tool_event(event);
+        event_printer.lock_or_recover().print_tool_event(event);
     });
 
     (callbacks, tool_event_sender)
@@ -62,25 +65,27 @@ pub fn repl_callbacks() -> (LlmCallbacks, ToolEventSender) {
 
     let callbacks = LlmCallbacks {
         on_text_delta: Some(Arc::new(move |delta: &str| {
-            text_printer.lock().unwrap().print_text_delta(delta);
+            text_printer.lock_or_recover().print_text_delta(delta);
         })),
         on_think_delta: Some(Arc::new(move |delta: &str| {
-            think_printer.lock().unwrap().print_think_delta(delta);
+            think_printer.lock_or_recover().print_think_delta(delta);
         })),
         on_tool_call_delta: Some(Arc::new(move |tc: &ToolCall| {
-            tool_printer.lock().unwrap().print_tool_call_delta(tc);
+            tool_printer.lock_or_recover().print_tool_call_delta(tc);
         })),
         on_retry: Some(Arc::new(move |notice: &RetryNotice| {
-            retry_printer.lock().unwrap().print_retry(notice);
+            retry_printer.lock_or_recover().print_retry(notice);
         })),
         on_compaction: Some(Arc::new(move |notice: &CompactionNotice| {
-            compaction_printer.lock().unwrap().print_compaction(notice);
+            compaction_printer
+                .lock_or_recover()
+                .print_compaction(notice);
         })),
     };
 
     let event_printer = printer.clone();
     let tool_event_sender: ToolEventSender = Arc::new(move |event: ToolEvent| {
-        event_printer.lock().unwrap().print_tool_event(event);
+        event_printer.lock_or_recover().print_tool_event(event);
     });
 
     (callbacks, tool_event_sender)
@@ -99,27 +104,27 @@ pub fn json_callbacks() -> (LlmCallbacks, ToolEventSender) {
     let callbacks = LlmCallbacks {
         on_text_delta: Some(Arc::new(move |delta: &str| {
             text_printer
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .emit(JsonEvent::AssistantDelta {
                     delta: delta.to_string(),
                 });
         })),
         on_think_delta: Some(Arc::new(move |delta: &str| {
             think_printer
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .emit(JsonEvent::ThinkingDelta {
                     delta: delta.to_string(),
                 });
         })),
         on_tool_call_delta: Some(Arc::new(move |tc: &ToolCall| {
-            tool_printer.lock().unwrap().emit(JsonEvent::ToolCallDelta {
-                tool_call: tc.clone(),
-            });
+            tool_printer
+                .lock_or_recover()
+                .emit(JsonEvent::ToolCallDelta {
+                    tool_call: tc.clone(),
+                });
         })),
         on_retry: Some(Arc::new(move |notice: &RetryNotice| {
-            retry_printer.lock().unwrap().emit(JsonEvent::Retry {
+            retry_printer.lock_or_recover().emit(JsonEvent::Retry {
                 attempt: notice.attempt,
                 max_attempts: notice.max_attempts,
                 delay_ms: u64::try_from(notice.delay.as_millis()).unwrap_or(u64::MAX),
@@ -128,15 +133,14 @@ pub fn json_callbacks() -> (LlmCallbacks, ToolEventSender) {
         })),
         on_compaction: Some(Arc::new(move |notice: &CompactionNotice| {
             compaction_printer
-                .lock()
-                .unwrap()
+                .lock_or_recover()
                 .emit(JsonEvent::compaction(notice));
         })),
     };
 
     let event_printer = printer.clone();
     let tool_event_sender: ToolEventSender = Arc::new(move |event: ToolEvent| {
-        emit_tool_event(&mut event_printer.lock().unwrap(), event, None);
+        emit_tool_event(&mut event_printer.lock_or_recover(), event, None);
     });
 
     (callbacks, tool_event_sender)
@@ -148,7 +152,7 @@ pub fn json_callbacks() -> (LlmCallbacks, ToolEventSender) {
 pub fn json_subagent_tool_events() -> SubagentToolEventSender {
     let printer = Mutex::new(JsonPrinter::new());
     Arc::new(move |agent_id: &str, event: ToolEvent| {
-        emit_tool_event(&mut printer.lock().unwrap(), event, Some(agent_id));
+        emit_tool_event(&mut printer.lock_or_recover(), event, Some(agent_id));
     })
 }
 

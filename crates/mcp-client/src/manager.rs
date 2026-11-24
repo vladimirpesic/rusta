@@ -335,13 +335,16 @@ impl ServerHandle {
     }
 
     pub fn set_self_ref(&self, weak: Weak<ServerHandle>) {
-        *self.self_ref.lock().unwrap() = weak;
+        *self
+            .self_ref
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = weak;
     }
 
     async fn self_arc(&self) -> Arc<ServerHandle> {
         self.self_ref
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .upgrade()
             .expect("ServerHandle self-reference was not initialized")
     }

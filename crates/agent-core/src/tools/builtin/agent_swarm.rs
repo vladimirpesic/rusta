@@ -5,6 +5,7 @@
 //! launched before new members, launches are paced, and the outcome is one
 //! `<agent_swarm_result>` report.
 
+use crate::sync::LockExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -636,7 +637,7 @@ impl AgentSwarmTool {
                     ))
                 };
                 if let Some(parent) = path.parent()
-                    && let Err(e) = tokio::fs::create_dir_all(parent).await
+                    && let Err(e) = crate::private_fs::create_dir_all_async(parent).await
                 {
                     return unavailable(format!("failed to create subagent records dir: {e}"));
                 }
@@ -726,7 +727,7 @@ impl ExecutableTool for AgentSwarmTool {
                 }
                 // The loop fills this for the batch that asked to fork; empty
                 // means there is no conversation to inherit.
-                fork_source = ctx.fork_source.lock().unwrap().clone();
+                fork_source = ctx.fork_source.lock_or_recover().clone();
                 if fork_source.is_none() {
                     return ExecutableToolResult::error(
                         "fork is unavailable here: there is no conversation to inherit. \

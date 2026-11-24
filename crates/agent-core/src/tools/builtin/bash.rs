@@ -655,6 +655,35 @@ mod tests {
         assert!(text.ends_with("\nend"), "the last line is missing");
     }
 
+    /// A command printing 32 MiB without a newline is cut at the output cap:
+    /// the line arrives in bounded pieces, so the cap bounds the memory too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_line_without_end_stops_at_the_output_cap() {
+        let result = BashTool::new()
+            .execute(
+                json!({
+                    "command": "head -c 33554432 /dev/zero | tr '\\0' x",
+                    "timeout": 60,
+                    "auto_background_on_timeout": false
+                }),
+                &ctx(),
+                "test-id",
+            )
+            .await;
+        let text = result.text_content();
+        assert!(
+            text.contains(TRUNCATION_MARKER.trim()),
+            "{}",
+            &text[text.len().saturating_sub(200)..]
+        );
+        assert!(
+            text.len() <= MAX_OUTPUT_BYTES + 4096,
+            "{} bytes",
+            text.len()
+        );
+    }
+
     /// A command moved to the background mid-output keeps being read past
     /// bytes that are not UTF-8, to its last line.
     #[cfg(unix)]

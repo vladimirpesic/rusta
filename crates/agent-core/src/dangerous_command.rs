@@ -56,17 +56,44 @@ const PRIVILEGE_VALUE_OPTIONS: &[&str] = &[
     "-t",
     "--type",
 ];
-const LAUNCH_WRAPPERS: &[&str] = &["env", "command", "exec", "nohup", "builtin", "nice"];
-const WRAPPER_VALUE_OPTIONS: &[&str] = &[
-    "-u",
-    "--unset",
-    "-C",
-    "--chdir",
-    "-S",
-    "--split-string",
-    "-a",
-    "-n",
-    "--adjustment",
+/// `env`'s options that take a value as the next word.
+const ENV_VALUE_OPTIONS: &[&str] = &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"];
+/// Commands that run the command after them, each with its options that take
+/// a value as the next word.
+const LAUNCH_WRAPPERS: &[(&str, &[&str])] = &[
+    ("env", ENV_VALUE_OPTIONS),
+    ("command", &[]),
+    ("exec", &["-a"]),
+    ("nohup", &[]),
+    ("builtin", &[]),
+    ("nice", &["-n", "--adjustment"]),
+    ("timeout", &["-s", "--signal", "-k", "--kill-after"]),
+    ("time", &["-f", "--format", "-o", "--output"]),
+    (
+        "stdbuf",
+        &["-i", "--input", "-o", "--output", "-e", "--error"],
+    ),
+    ("ionice", &["-c", "--class", "-n", "--classdata"]),
+    ("setsid", &[]),
+    (
+        "xargs",
+        &[
+            "-a",
+            "--arg-file",
+            "-d",
+            "--delimiter",
+            "-E",
+            "-I",
+            "-L",
+            "-n",
+            "--max-args",
+            "-P",
+            "--max-procs",
+            "-s",
+            "--max-chars",
+            "--process-slot-var",
+        ],
+    ),
 ];
 const NESTED_SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "ksh", "ash"];
 const SYSTEMCTL_DANGEROUS: &[&str] = &["poweroff", "reboot", "halt", "kexec"];
@@ -85,16 +112,99 @@ const DD_SAFE_TARGETS: &[&str] = &[
 const RM_SAFE_TEMP_ROOTS: &[&str] = &["/tmp", "/temp"];
 /// How deep `sh -c '…'`, `eval` and substitutions are followed.
 const MAX_DEPTH: usize = 4;
+/// Git's global options that take the next word as their value.
+const GIT_VALUE_OPTIONS: &[&str] = &[
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--super-prefix",
+    "--config-env",
+];
+/// Git's global options that stand alone.
+const GIT_FLAGS: &[&str] = &[
+    "-p",
+    "--paginate",
+    "-P",
+    "--no-pager",
+    "--bare",
+    "--no-replace-objects",
+    "--no-lazy-fetch",
+    "--literal-pathspecs",
+    "--glob-pathspecs",
+    "--noglob-pathspecs",
+    "--icase-pathspecs",
+    "--no-optional-locks",
+    "--no-advice",
+];
+/// Git's global options that print something and run no command.
+const GIT_INFO_OPTIONS: &[&str] = &[
+    "-v",
+    "--version",
+    "-h",
+    "--help",
+    "--exec-path",
+    "--html-path",
+    "--man-path",
+    "--info-path",
+];
+/// Git's global options written `--option=value`.
+const GIT_ASSIGNED_OPTIONS: &[&str] = &[
+    "--git-dir=",
+    "--work-tree=",
+    "--namespace=",
+    "--super-prefix=",
+    "--exec-path=",
+    "--list-cmds=",
+];
+/// Git commands that rewrite or publish history, asked about whatever their
+/// options.
+const GIT_DESTRUCTIVE: &[&str] = &["push", "reset", "rebase"];
+
+/// What a command is judged for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Judge {
+    /// Commands that destroy data or stop the machine ([`analyze`]).
+    Danger,
+    /// Git commands that rewrite or publish history, or discard work
+    /// ([`git_operation`]).
+    Git,
+}
 
 /// Judge `command`.
 #[must_use]
 pub fn analyze(command: &str) -> Verdict {
-    analyze_source(command, 0)
+    analyze_source(command, 0, Judge::Danger)
 }
 
-fn analyze_source(source: &str, depth: usize) -> Verdict {
+/// Judge `command` for git operations that rewrite or publish history, or
+/// discard uncommitted work: `push`, `reset`, `rebase`, a forced `checkout` or
+/// `switch` and a forced `clean`, however git is invoked — after global
+/// options (`-C`, `--git-dir`, `-c`), through wrappers (`sudo`, `env`,
+/// `timeout`, `xargs`, …), in a nested shell or `eval`, or quoted (`g''it`).
+///
+/// [`Verdict::Dangerous`] names the operation (`git push`). A git command
+/// whose operation cannot be established — its subcommand or a force flag is
+/// only known at run time, an option is not one git documents, or a `-c`
+/// defines an alias — is [`Verdict::Unanalyzable`]. A command that is not
+/// recognizably git (its name only known at run time, say) is
+/// [`Verdict::Safe`]: this judge looks for git, while [`analyze`] asks about
+/// anything it cannot read.
+#[must_use]
+pub fn git_operation(command: &str) -> Verdict {
+    analyze_source(command, 0, Judge::Git)
+}
+
+fn analyze_source(source: &str, depth: usize, judge: Judge) -> Verdict {
     let Some(commands) = split_commands(source) else {
-        return Verdict::Unanalyzable;
+        // Unbalanced quoting: the shell refuses it, but its words cannot be
+        // read, so a git command in it cannot be ruled out either.
+        return match judge {
+            Judge::Danger => Verdict::Unanalyzable,
+            Judge::Git if mentions_git(source) => Verdict::Unanalyzable,
+            Judge::Git => Verdict::Safe,
+        };
     };
     let mut unanalyzable = false;
     for command in commands {
@@ -103,13 +213,13 @@ fn analyze_source(source: &str, depth: usize) -> Verdict {
             if depth >= MAX_DEPTH {
                 return Verdict::Unanalyzable;
             }
-            match analyze_source(inner, depth + 1) {
+            match analyze_source(inner, depth + 1, judge) {
                 Verdict::Safe => {}
                 Verdict::Dangerous(what) => return Verdict::Dangerous(what),
                 Verdict::Unanalyzable => unanalyzable = true,
             }
         }
-        match analyze_command(&command.words, depth) {
+        match analyze_command(&command.words, depth, judge) {
             Verdict::Safe => {}
             Verdict::Dangerous(what) => return Verdict::Dangerous(what),
             Verdict::Unanalyzable => unanalyzable = true,
@@ -120,6 +230,15 @@ fn analyze_source(source: &str, depth: usize) -> Verdict {
     } else {
         Verdict::Safe
     }
+}
+
+/// Whether `source` has the word `git` in it.
+fn mentions_git(source: &str) -> bool {
+    source
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .any(|word| {
+            word.eq_ignore_ascii_case("git") || word.to_ascii_lowercase().starts_with("git-")
+        })
 }
 
 /// A word of a simple command: its value with quotes removed, and whether
@@ -459,126 +578,258 @@ fn normalize_name(raw: &str) -> String {
         .map_or(base.clone(), str::to_string)
 }
 
-fn analyze_command(words: &[Word], depth: usize) -> Verdict {
-    let Some(first) = words.first() else {
-        return Verdict::Safe;
-    };
-    if !first.literal || first.value.is_empty() {
-        return Verdict::Unanalyzable;
-    }
-    let dropped = words[1..].iter().any(|w| !w.literal);
-    let args: Vec<&str> = words[1..]
-        .iter()
-        .filter(|w| w.literal)
-        .map(|w| w.value.as_str())
-        .collect();
-    invocation(&normalize_name(&first.value), &args, dropped, depth)
+/// A word after a command's name, in its place: its value, and whether that
+/// value is what the command receives. A word that expands at run time keeps
+/// its place, so that the words around it are still read as what they are.
+#[derive(Debug, Clone, Copy)]
+struct Arg<'a> {
+    value: &'a str,
+    literal: bool,
 }
 
-/// Drop leading options (and the values of `value_options`) from `args`.
-fn drop_leading_options<'a>(args: &[&'a str], value_options: &[&str]) -> Vec<&'a str> {
+fn analyze_command(words: &[Word], depth: usize, judge: Judge) -> Verdict {
+    let Some((first, rest)) = words.split_first() else {
+        return Verdict::Safe;
+    };
+    let args: Vec<Arg<'_>> = rest
+        .iter()
+        .map(|word| Arg {
+            value: &word.value,
+            literal: word.literal,
+        })
+        .collect();
+    if !first.literal || first.value.is_empty() {
+        // A command known only at run time: it cannot be read, but neither is
+        // it recognizably git.
+        return match judge {
+            Judge::Danger => Verdict::Unanalyzable,
+            Judge::Git => Verdict::Safe,
+        };
+    }
+    invocation(&normalize_name(&first.value), &args, depth, judge)
+}
+
+/// What to make of a command whose words cannot all be read: for the danger
+/// judge, a command that cannot be checked; for the git judge, one only when
+/// git is among its words.
+fn unknown(judge: Judge, args: &[Arg<'_>]) -> Verdict {
+    match judge {
+        Judge::Danger => Verdict::Unanalyzable,
+        Judge::Git
+            if args.iter().any(|arg| {
+                let name = normalize_name(arg.value);
+                name == "git" || name.starts_with("git-")
+            }) =>
+        {
+            Verdict::Unanalyzable
+        }
+        Judge::Git => Verdict::Safe,
+    }
+}
+
+impl Arg<'_> {
+    /// Whether the word may reach the command as an option: it is one, or it
+    /// starts with an expansion that may produce one.
+    fn may_be_option(self) -> bool {
+        self.value.starts_with('-')
+            || (!self.literal && self.value.starts_with(['$', '`', '*', '?', '[', '~']))
+    }
+}
+
+/// The words of `args` after its leading options, skipping the value of each
+/// option in `value_options`. `None` when a word where an option may stand is
+/// only known at run time: it could be an option or the command itself.
+fn after_options<'a, 'b>(args: &'b [Arg<'a>], value_options: &[&str]) -> Option<&'b [Arg<'a>]> {
     let mut i = 0;
-    while i < args.len() {
-        let arg = args[i];
-        if arg == "--" {
-            return args[i + 1..].to_vec();
+    while let Some(arg) = args.get(i) {
+        if !arg.literal && arg.may_be_option() {
+            return None;
         }
-        if arg == "-" || !arg.starts_with('-') {
-            return args[i..].to_vec();
+        if arg.value == "--" {
+            return Some(&args[i + 1..]);
         }
-        if !arg.contains('=') && value_options.contains(&arg) {
+        if arg.value == "-" || !arg.may_be_option() {
+            return Some(&args[i..]);
+        }
+        if !arg.value.contains('=') && value_options.contains(&arg.value) {
+            // The option's value, whatever it expands to.
             i += 1;
         }
         i += 1;
     }
-    Vec::new()
+    Some(&[])
 }
 
-fn unanalyzable_if(dropped: bool) -> Verdict {
-    if dropped {
-        Verdict::Unanalyzable
-    } else {
-        Verdict::Safe
+/// Judge the command that `rest` starts with: the one a wrapper runs.
+fn wrapped(rest: &[Arg<'_>], depth: usize, judge: Judge) -> Verdict {
+    match rest.split_first() {
+        None => Verdict::Safe,
+        Some((name, args)) if name.literal => {
+            invocation(&normalize_name(name.value), args, depth, judge)
+        }
+        Some(_) => unknown(judge, rest),
     }
 }
 
-fn invocation(name: &str, args: &[&str], dropped: bool, depth: usize) -> Verdict {
+/// `source`, written out as the words of a nested shell or `eval`, judged as
+/// commands of their own.
+fn nested(source: &str, depth: usize, judge: Judge) -> Verdict {
+    if depth >= MAX_DEPTH {
+        return Verdict::Unanalyzable;
+    }
+    analyze_source(source, depth + 1, judge)
+}
+
+fn invocation(name: &str, args: &[Arg<'_>], depth: usize, judge: Judge) -> Verdict {
     if PRIVILEGE_WRAPPERS.contains(&name) {
-        let rest = drop_leading_options(args, PRIVILEGE_VALUE_OPTIONS);
-        return match rest.split_first() {
-            Some((inner, rest)) => invocation(&normalize_name(inner), rest, dropped, depth),
-            None => unanalyzable_if(dropped),
+        return match after_options(args, PRIVILEGE_VALUE_OPTIONS) {
+            Some(rest) => wrapped(rest, depth, judge),
+            None => unknown(judge, args),
         };
     }
-    if LAUNCH_WRAPPERS.contains(&name) {
-        if name == "command" {
-            // `command -v x` only looks `x` up.
-            for arg in args {
-                if *arg == "--" || !arg.starts_with('-') {
-                    break;
-                }
-                if arg.contains(['v', 'V']) {
-                    return Verdict::Safe;
-                }
-            }
-        }
-        let mut rest = drop_leading_options(args, WRAPPER_VALUE_OPTIONS);
-        if name == "env" {
-            let skip = rest
-                .iter()
-                .skip(usize::from(rest.first() == Some(&"-")))
-                .take_while(|arg| is_assignment(arg))
-                .count()
-                + usize::from(rest.first() == Some(&"-"));
-            rest = rest[skip.min(rest.len())..].to_vec();
-        }
-        return match rest.split_first() {
-            Some((inner, rest)) => invocation(&normalize_name(inner), rest, dropped, depth),
-            None => unanalyzable_if(dropped),
-        };
+    if let Some((_, value_options)) = LAUNCH_WRAPPERS.iter().find(|(wrapper, _)| *wrapper == name) {
+        return launch_wrapper(name, value_options, args, depth, judge);
     }
     if NESTED_SHELLS.contains(&name) {
-        let mut payload = None;
-        for (i, arg) in args.iter().enumerate() {
-            if *arg == "--" {
-                break;
-            }
-            if arg.len() > 1
-                && arg.starts_with('-')
-                && arg[1..].chars().all(|c| c.is_ascii_alphabetic())
-            {
-                if arg.contains('c') {
-                    payload = Some(i + 1);
-                }
-            } else {
-                break;
-            }
-        }
-        let Some(index) = payload else {
-            return unanalyzable_if(dropped);
-        };
-        return match args.get(index) {
-            Some(source) if depth < MAX_DEPTH => analyze_source(source, depth + 1),
-            _ => Verdict::Unanalyzable,
-        };
+        return nested_shell(args, depth, judge);
     }
     if name == "eval" {
         if args.is_empty() {
-            return unanalyzable_if(dropped);
+            return Verdict::Safe;
         }
-        if dropped || depth >= MAX_DEPTH {
-            return Verdict::Unanalyzable;
-        }
-        return analyze_source(&args.join(" "), depth + 1);
+        let source: Vec<&str> = args.iter().map(|arg| arg.value).collect();
+        return nested(&source.join(" "), depth, judge);
     }
     if name == "busybox" {
         return match args.split_first() {
-            Some((applet, rest)) if !applet.starts_with('-') => {
-                invocation(&normalize_name(applet), rest, dropped, depth)
+            Some((applet, rest)) if applet.literal && !applet.value.starts_with('-') => {
+                invocation(&normalize_name(applet.value), rest, depth, judge)
             }
-            _ => unanalyzable_if(dropped),
+            Some((applet, _)) if !applet.literal => unknown(judge, args),
+            _ => Verdict::Safe,
         };
     }
+    match judge {
+        Judge::Danger => dangerous_invocation(name, args),
+        Judge::Git => git_invocation(name, args),
+    }
+}
+
+fn launch_wrapper(
+    name: &str,
+    value_options: &[&str],
+    args: &[Arg<'_>],
+    depth: usize,
+    judge: Judge,
+) -> Verdict {
+    if name == "command" {
+        // `command -v x` only looks `x` up.
+        for arg in args {
+            if !arg.literal || arg.value == "--" || !arg.value.starts_with('-') {
+                break;
+            }
+            if arg.value.contains(['v', 'V']) {
+                return Verdict::Safe;
+            }
+        }
+    }
+    if name == "env"
+        && let Some((line, rest)) = env_split_string(args)
+    {
+        // `env -S 'cmd args'` splits its value into the command it runs.
+        let rest: Vec<&str> = rest.iter().map(|arg| arg.value).collect();
+        return nested(&format!("{line} {}", rest.join(" ")), depth, judge);
+    }
+    let Some(mut rest) = after_options(args, value_options) else {
+        return unknown(judge, args);
+    };
+    match name {
+        "env" => {
+            if rest.first().is_some_and(|arg| arg.value == "-") {
+                rest = &rest[1..];
+            }
+            // The assignments before the command, whatever their values.
+            let assignments = rest
+                .iter()
+                .take_while(|arg| is_assignment(arg.value))
+                .count();
+            rest = &rest[assignments..];
+        }
+        // `timeout DURATION command`.
+        "timeout" => rest = rest.get(1..).unwrap_or_default(),
+        _ => {}
+    }
+    wrapped(rest, depth, judge)
+}
+
+/// The value of `env`'s `-S` option among its options, and the words after it.
+fn env_split_string<'a, 'b>(args: &'b [Arg<'a>]) -> Option<(&'a str, &'b [Arg<'a>])> {
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        let value = arg.value;
+        if !arg.literal || value == "--" || value == "-" || !value.starts_with('-') {
+            return None;
+        }
+        if value == "-S" || value == "--split-string" {
+            return args.get(i + 1).map(|line| (line.value, &args[i + 2..]));
+        }
+        if let Some(line) = value
+            .strip_prefix("--split-string=")
+            .or_else(|| value.strip_prefix("-S"))
+        {
+            return Some((line, &args[i + 1..]));
+        }
+        if ENV_VALUE_OPTIONS.contains(&value) {
+            i += 1;
+        }
+        i += 1;
+    }
+    None
+}
+
+fn nested_shell(args: &[Arg<'_>], depth: usize, judge: Judge) -> Verdict {
+    let mut payload = None;
+    for (i, arg) in args.iter().enumerate() {
+        if payload == Some(i) {
+            break;
+        }
+        if !arg.literal {
+            return unknown(judge, args);
+        }
+        if arg.value == "--" {
+            break;
+        }
+        if arg.value.len() > 1
+            && arg.value.starts_with('-')
+            && arg.value[1..].chars().all(|c| c.is_ascii_alphabetic())
+        {
+            if arg.value.contains('c') {
+                payload = Some(i + 1);
+            }
+        } else {
+            break;
+        }
+    }
+    match payload {
+        // The command string, as the nested shell will read it; a part only
+        // known at run time stays a word that expands.
+        Some(index) => match args.get(index) {
+            Some(source) => nested(source.value, depth, judge),
+            None => Verdict::Safe,
+        },
+        // A script file or standard input: not readable here.
+        None if args.iter().any(|arg| !arg.literal) => unknown(judge, args),
+        None => Verdict::Safe,
+    }
+}
+
+fn dangerous_invocation(name: &str, words: &[Arg<'_>]) -> Verdict {
+    let args: Vec<&str> = words
+        .iter()
+        .filter(|arg| arg.literal)
+        .map(|arg| arg.value)
+        .collect();
+    let dropped = args.len() != words.len();
     if SIMPLE_DANGEROUS.contains(&name) || name.starts_with("mkfs.") {
         return Verdict::Dangerous(name.to_string());
     }
@@ -589,11 +840,12 @@ fn invocation(name: &str, args: &[&str], dropped: bool, depth: usize) -> Verdict
         return unanalyzable_if(dropped);
     }
     if name == "systemctl" {
-        let rest = drop_leading_options(args, SYSTEMCTL_VALUE_OPTIONS);
-        if let Some(sub) = rest.first()
-            && SYSTEMCTL_DANGEROUS.contains(sub)
+        let literal: Vec<Arg<'_>> = words.iter().copied().filter(|arg| arg.literal).collect();
+        if let Some(rest) = after_options(&literal, SYSTEMCTL_VALUE_OPTIONS)
+            && let Some(sub) = rest.first()
+            && SYSTEMCTL_DANGEROUS.contains(&sub.value)
         {
-            return Verdict::Dangerous(format!("systemctl {sub}"));
+            return Verdict::Dangerous(format!("systemctl {}", sub.value));
         }
         return unanalyzable_if(dropped);
     }
@@ -612,7 +864,7 @@ fn invocation(name: &str, args: &[&str], dropped: bool, depth: usize) -> Verdict
         let (mut recursive, mut force) = (false, false);
         let mut operands = Vec::new();
         let mut options_ended = false;
-        for arg in args {
+        for arg in &args {
             if !options_ended && *arg == "--" {
                 options_ended = true;
             } else if options_ended {
@@ -640,6 +892,119 @@ fn invocation(name: &str, args: &[&str], dropped: bool, depth: usize) -> Verdict
         return unanalyzable_if(dropped);
     }
     Verdict::Safe
+}
+
+fn unanalyzable_if(dropped: bool) -> Verdict {
+    if dropped {
+        Verdict::Unanalyzable
+    } else {
+        Verdict::Safe
+    }
+}
+
+/// `git` (or a `git-<command>` program) and its words, judged for an operation
+/// [`git_operation`] asks about.
+fn git_invocation(name: &str, args: &[Arg<'_>]) -> Verdict {
+    if let Some(command) = name.strip_prefix("git-") {
+        return git_command(command, args);
+    }
+    if name != "git" {
+        return Verdict::Safe;
+    }
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        if !arg.literal {
+            // An option or the command, known only at run time.
+            return Verdict::Unanalyzable;
+        }
+        let value = arg.value;
+        if !value.starts_with('-') {
+            return git_command(value, &args[i + 1..]);
+        }
+        if GIT_INFO_OPTIONS.contains(&value) {
+            return Verdict::Safe;
+        }
+        if GIT_FLAGS.contains(&value) || GIT_ASSIGNED_OPTIONS.iter().any(|o| value.starts_with(o)) {
+            i += 1;
+            continue;
+        }
+        if let Some(setting) = value.strip_prefix("--config-env=") {
+            if defines_alias(setting) {
+                return Verdict::Unanalyzable;
+            }
+            i += 1;
+            continue;
+        }
+        if GIT_VALUE_OPTIONS.contains(&value) {
+            let Some(setting) = args.get(i + 1) else {
+                return Verdict::Safe;
+            };
+            if (value == "-c" || value == "--config-env") && defines_alias(setting.value) {
+                return Verdict::Unanalyzable;
+            }
+            i += 2;
+            continue;
+        }
+        // An option git does not document: what follows it cannot be read.
+        return Verdict::Unanalyzable;
+    }
+    Verdict::Safe
+}
+
+/// Whether a `-c`/`--config-env` setting may define an alias, which would make
+/// the command name stand for something else. A key known only at run time may.
+fn defines_alias(setting: &str) -> bool {
+    let key = setting.split('=').next().unwrap_or(setting);
+    expands(key) || key.to_ascii_lowercase().starts_with("alias.")
+}
+
+/// A git command and the words after it.
+fn git_command(command: &str, args: &[Arg<'_>]) -> Verdict {
+    if GIT_DESTRUCTIVE.contains(&command) {
+        return Verdict::Dangerous(format!("git {command}"));
+    }
+    let extra: &[&str] = match command {
+        "checkout" => &[],
+        "switch" => &["--discard-changes"],
+        "clean" => &[],
+        _ => return Verdict::Safe,
+    };
+    match forced(args, extra) {
+        Some(true) => Verdict::Dangerous(format!("git {command} -f")),
+        Some(false) => Verdict::Safe,
+        None => Verdict::Unanalyzable,
+    }
+}
+
+/// Whether `args` force the command: `-f`, `--force`, a bundle of short
+/// options with `f` in it, or one of `extra`. `None` when a word that could be
+/// one of them is only known at run time.
+fn forced(args: &[Arg<'_>], extra: &[&str]) -> Option<bool> {
+    for arg in args {
+        if arg.value == "--" {
+            break;
+        }
+        if !arg.literal {
+            // A word whose expansion can start with `-` could be a force flag.
+            if arg.may_be_option() {
+                return None;
+            }
+            continue;
+        }
+        let value = arg.value;
+        if value == "--force" || extra.contains(&value) {
+            return Some(true);
+        }
+        if value.len() > 1
+            && value.starts_with('-')
+            && !value.starts_with("--")
+            && value[1..].chars().all(|c| c.is_ascii_alphabetic())
+            && value.contains('f')
+        {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 /// A literal path under `/tmp` or `/temp`, with no `..` to climb out.
@@ -711,6 +1076,133 @@ mod tests {
     fn expanding_operands_cannot_be_cleared() {
         assert_eq!(dangerous("rm -rf /tmp/$DIR"), "rm -rf");
         assert_eq!(dangerous("rm -rf /tmp/*"), "rm -rf");
+    }
+
+    /// A word that expands keeps its place: `-u $U` is an option and its
+    /// value, and the `rm -rf` after them is still seen.
+    #[test]
+    fn an_expanding_word_keeps_its_place() {
+        assert_eq!(dangerous("sudo -u $U rm -rf /"), "rm -rf");
+        assert_eq!(dangerous("env FOO=$BAR rm -rf data"), "rm -rf");
+        assert_eq!(dangerous("bash -c \"rm -rf $DIR\""), "rm -rf");
+        assert_eq!(dangerous("eval rm -rf $DIR"), "rm -rf");
+        assert_eq!(analyze("sudo $CMD -rf /"), Verdict::Unanalyzable);
+    }
+
+    #[test]
+    fn launch_wrappers_are_seen_through() {
+        assert_eq!(dangerous("timeout -s KILL 30 rm -rf build"), "rm -rf");
+        assert_eq!(dangerous("time rm -rf build"), "rm -rf");
+        assert_eq!(dangerous("stdbuf -o L rm -rf build"), "rm -rf");
+        assert_eq!(dangerous("ionice -c 3 nice -n 10 rm -rf build"), "rm -rf");
+        assert_eq!(dangerous("setsid shutdown now"), "shutdown");
+        assert_eq!(dangerous("find . -name x | xargs -0 -n 1 rm -rf"), "rm -rf");
+        assert_eq!(dangerous("env -S 'rm -rf build'"), "rm -rf");
+        assert_eq!(dangerous("env --split-string='rm -rf build'"), "rm -rf");
+        assert_eq!(analyze("xargs echo"), Verdict::Safe);
+        assert_eq!(analyze("timeout 5 cargo test"), Verdict::Safe);
+        assert_eq!(analyze("env FOO=1 cargo test -S x"), Verdict::Safe);
+    }
+
+    fn git(command: &str) -> String {
+        match git_operation(command) {
+            Verdict::Dangerous(what) => what,
+            other => panic!("{command:?}: expected a git operation, got {other:?}"),
+        }
+    }
+
+    /// Every guarded git operation, in every way of invoking git the judge
+    /// knows: plain, after global options, through wrappers, in nested shells
+    /// and `eval`, quoted, by path and as a `git-<command>` program.
+    #[test]
+    fn every_form_of_a_guarded_git_operation_is_found() {
+        let operations = [
+            ("push origin main", "git push"),
+            ("reset --hard HEAD~1", "git reset"),
+            ("rebase -i main", "git rebase"),
+            ("checkout -f main", "git checkout -f"),
+            ("checkout --force main", "git checkout -f"),
+            ("switch --discard-changes main", "git switch -f"),
+            ("switch -f main", "git switch -f"),
+            ("clean -fdx", "git clean -f"),
+            ("clean --force", "git clean -f"),
+        ];
+        let forms = [
+            "git {}",
+            "git -C /repo {}",
+            "git -C \"$DIR\" {}",
+            "git --git-dir=.git --work-tree=. {}",
+            "git --git-dir .git --work-tree . {}",
+            "git -c core.pager=cat {}",
+            "git -c user.name=\"$NAME\" {}",
+            "git --no-pager -P --bare --namespace ns {}",
+            "/usr/bin/git {}",
+            "G\"I\"T {}",
+            "g''it {}",
+            "sudo -u root git {}",
+            "env GIT_DIR=.git git {}",
+            "command git {}",
+            "exec git {}",
+            "nohup nice -n 5 git {}",
+            "timeout 10 git {}",
+            "xargs -n 1 git {}",
+            "busybox env git {}",
+            "sh -c 'git {}'",
+            "bash -lc \"cd /repo && git {}\"",
+            "eval git {}",
+            "echo $(git {})",
+            "cd /repo; git status && git {}",
+        ];
+        for (operation, expected) in operations {
+            for form in forms {
+                let command = form.replace("{}", operation);
+                assert_eq!(git(&command), expected, "{command:?}");
+            }
+        }
+        assert_eq!(git("/usr/lib/git-core/git-push origin"), "git push");
+    }
+
+    #[test]
+    fn everyday_git_and_other_commands_are_not_asked_about() {
+        for command in [
+            "git status",
+            "git diff HEAD~1",
+            "git log --oneline -5",
+            "git stash push -m wip",
+            "git checkout -b feature",
+            "git checkout main -- src/lib.rs",
+            "git checkout HEAD~1",
+            "git switch --force-create topic",
+            "git clean -n",
+            "git -C /repo commit -m 'push it'",
+            "git --version",
+            "git --help push",
+            "echo git push",
+            "grep -rn 'git reset' docs",
+            "cargo test",
+            "$GIT push",
+            "rm -rf build",
+        ] {
+            assert_eq!(git_operation(command), Verdict::Safe, "{command:?}");
+        }
+    }
+
+    /// A git command whose operation cannot be established is asked about.
+    #[test]
+    fn a_git_command_that_cannot_be_read_is_unanalyzable() {
+        for command in [
+            "git $SUBCOMMAND",
+            "git -c alias.p=push p origin",
+            "git -c \"$KEY\"=push p",
+            "git --config-env=alias.p=CMD p",
+            "git --frobnicate push",
+            "git checkout $FLAG main",
+            "git clean \"$OPTS\"",
+            "sudo $FLAGS git push",
+            "echo 'git push",
+        ] {
+            assert_eq!(git_operation(command), Verdict::Unanalyzable, "{command:?}");
+        }
     }
 
     #[test]

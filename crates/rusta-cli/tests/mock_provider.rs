@@ -878,29 +878,23 @@ async fn provider_refresh_fetches_the_list_now_and_says_what_changed() {
         .await;
     let home = tempfile::tempdir().unwrap();
     let work = tempfile::tempdir().unwrap();
+    let uri = server.uri();
     // A fresh cached list, so startup does not refresh it on its own.
-    let cache = home.path().join(".cache/rusta");
-    std::fs::create_dir_all(&cache).unwrap();
-    let fetched_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
     let model = |id: &str| {
         serde_json::json!({
             "id": id, "display_name": null, "context_window": 1048576,
             "max_output_tokens": 393216, "image_in": false, "efforts": null
         })
     };
-    std::fs::write(
-        cache.join("deepseek-models-127.0.0.1.json"),
-        serde_json::json!({
-            "fetched_at": fetched_at,
-            "models": [model("deepseek-flash"), model("deepseek-old")]
-        })
-        .to_string(),
-    )
-    .unwrap();
-    let uri = server.uri();
+    let models: Vec<lm_bridge::providers::deepseek_catalog::DeepseekModelInfo> =
+        serde_json::from_value(serde_json::json!([
+            model("deepseek-flash"),
+            model("deepseek-old")
+        ]))
+        .unwrap();
+    lm_bridge::providers::catalog_cache::CatalogCache::new(home.path().join(".cache/rusta"))
+        .save(&uri, &models)
+        .unwrap();
     let output = run_repl(
         home.path(),
         work.path(),

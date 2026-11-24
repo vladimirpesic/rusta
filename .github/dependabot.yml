@@ -1,0 +1,18 @@
+# Weekly pull requests that update the GitHub Actions the workflows pin by
+# commit, and the packages the lockfiles pin, each ecosystem's in one group.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]

@@ -205,7 +205,7 @@ pub async fn save_attachment(
     extension: &str,
     policy: &ToolOutputPolicy,
 ) -> std::io::Result<PathBuf> {
-    tokio::fs::create_dir_all(&policy.spill_dir).await?;
+    crate::private_fs::create_dir_all_async(&policy.spill_dir).await?;
     let extension: String = extension
         .chars()
         .filter(char::is_ascii_alphanumeric)
@@ -220,7 +220,7 @@ pub async fn save_attachment(
         "{}-{index}.{extension}",
         spill_file_stem(tool_call_id)
     ));
-    tokio::fs::write(&path, bytes).await?;
+    crate::private_fs::write_async(&path, bytes).await?;
     Ok(path)
 }
 
@@ -230,7 +230,7 @@ struct Spilled {
 }
 
 async fn spill(text: &str, tool_call_id: &str, dir: &Path) -> std::io::Result<Spilled> {
-    tokio::fs::create_dir_all(dir).await?;
+    crate::private_fs::create_dir_all_async(dir).await?;
     let path = dir.join(format!("{}.txt", spill_file_stem(tool_call_id)));
     let capped = text.len() > SPILL_RETENTION_BYTES;
     let kept = if capped {
@@ -238,7 +238,7 @@ async fn spill(text: &str, tool_call_id: &str, dir: &Path) -> std::io::Result<Sp
     } else {
         text
     };
-    tokio::fs::write(&path, kept).await?;
+    crate::private_fs::write_async(&path, kept).await?;
     Ok(Spilled { path, capped })
 }
 

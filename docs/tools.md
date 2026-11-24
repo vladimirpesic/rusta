@@ -95,7 +95,11 @@ only once its output is all in.
 
 A command's output is read to its end whatever bytes it prints: a byte that is
 not valid UTF-8, from a Latin-1 file or a binary one, reads as U+FFFD, and the
-lines after it arrive as the others do.
+lines after it arrive as the others do. A command's output is kept up to 16 MiB;
+past that the command is stopped and the output marked as truncated. The cap
+holds memory too: a line longer than 64 KiB — a command printing megabytes
+without a newline — is read in pieces of at most 64 KiB, cut between
+characters, each counted as it arrives.
 
 A foreground command that runs past its timeout is moved to the background, not
 killed: it keeps running under a fresh, longer deadline and the call returns a
@@ -136,9 +140,14 @@ tables, code and links, without navigation, scripts or styles. Other text (JSON,
 plain text, Markdown) comes back as it is, and binary content is not shown. The
 Wikipedia article on the Luhn algorithm comes back in 13 thousand characters
 instead of its 121 thousand of HTML. Because the model chooses the URLs, `fetch`
-refuses loopback, private, link-local and cloud-metadata addresses — checked
-after DNS resolution and again on every redirect, with each connection pinned
-to the approved address.
+refuses every address that is not globally reachable — loopback, private,
+link-local and cloud-metadata ones, and also multicast, documentation,
+benchmarking and reserved ranges, and IPv6 addresses that carry an IPv4 one for
+translation (NAT64, 6to4, Teredo) — checked after DNS resolution and again on
+every redirect, with each connection pinned to the approved address. Its
+timeout (30 seconds unless the call sets one) covers the whole fetch, redirects
+included, and it reads at most 5 MiB of a response, stopping as soon as more
+arrives rather than after reading it all.
 
 **`web_search`** and **`web_reader`** use the provider's own services when it has
 them:
@@ -164,7 +173,8 @@ them:
 
 A configured `search_url` (`RUSTA_SEARCH_URL`, with `{query}` as the
 placeholder) takes precedence over Kimi's and DeepSeek's search. For other
-providers it is the only search backend.
+providers it is the only search backend. Rusta reads at most 2 MiB of its
+answer, stopping as soon as more arrives.
 
 The model follows Rusta's `<system-reminder>` notes as the harness's own, so web
 content cannot carry one: in what `web_search`, `web_reader` and `fetch` return,

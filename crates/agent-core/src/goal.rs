@@ -254,15 +254,13 @@ impl GoalManager {
             return Ok(());
         };
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
+            crate::private_fs::create_dir_all(parent)
                 .map_err(|e| format!("failed to create goals directory: {e}"))?;
         }
         let goals: Vec<&Goal> = self.goals.values().collect();
-        let file =
-            std::fs::File::create(path).map_err(|e| format!("failed to create goals file: {e}"))?;
-        serde_json::to_writer_pretty(file, &goals)
+        let json = serde_json::to_vec_pretty(&goals)
             .map_err(|e| format!("failed to write goals file: {e}"))?;
-        Ok(())
+        crate::private_fs::write(path, json).map_err(|e| format!("failed to write goals file: {e}"))
     }
 }
 

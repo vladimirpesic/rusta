@@ -149,8 +149,8 @@ impl TodoList {
         };
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| crate::errors::AgentError::Config(e.to_string()))?;
-        std::fs::write(path, json).map_err(|e| crate::errors::AgentError::Config(e.to_string()))?;
-        Ok(())
+        crate::private_fs::write(path, json)
+            .map_err(|e| crate::errors::AgentError::Config(e.to_string()))
     }
 
     /// Load the todo list from a sidecar file, and persist later changes to

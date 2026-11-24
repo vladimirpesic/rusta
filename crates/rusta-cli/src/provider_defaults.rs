@@ -1,9 +1,8 @@
 //! Single source of truth for provider names, model resolution, and defaults.
 //!
-//! `main` builds the provider and `doctor` reports on it. When each kept its own
-//! copy of these rules they drifted: `doctor` blessed a `mock` provider that the
-//! runtime rejected, and warned "no model configured" while `KIMI_MODEL_NAME` was
-//! in fact supplying the model. Both now read from here.
+//! The provider a session builds and the one `doctor` reports on both read from
+//! here, so `doctor` approves no provider the session would refuse, and finds the
+//! model wherever the session would (`KIMI_MODEL_NAME` included).
 
 use crate::endpoints::Billing;
 

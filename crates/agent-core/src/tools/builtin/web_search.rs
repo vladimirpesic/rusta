@@ -122,17 +122,15 @@ impl ExecutableTool for WebSearchTool {
             ));
         }
 
-        let bytes = match response.bytes().await {
-            Ok(b) => b,
+        let bytes = match lm_bridge::http::read_limited(response, MAX_SIZE_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(lm_bridge::http::ReadLimitedError::TooLarge { limit }) => {
+                return ExecutableToolResult::error(format!(
+                    "Search response too large: more than {limit} bytes"
+                ));
+            }
             Err(e) => return ExecutableToolResult::error(format!("Failed to read response: {e}")),
         };
-
-        if bytes.len() > MAX_SIZE_BYTES {
-            return ExecutableToolResult::error(format!(
-                "Search response too large: {} bytes (max {MAX_SIZE_BYTES})",
-                bytes.len()
-            ));
-        }
 
         let body = String::from_utf8_lossy(&bytes);
         ExecutableToolResult::text(crate::prompt::escape_reminder_tags(format!(

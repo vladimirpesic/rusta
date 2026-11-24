@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use std::{
     collections::HashSet,
     str::FromStr,
@@ -72,9 +73,14 @@ pub enum PolicyScope {
 ///
 /// Rules are evaluated before the built-in `write_file`/`run_command`
 /// heuristics. All provided matchers must match for the rule to apply.
+///
+/// A rule's name is for people: approval prompts show it. A session answer
+/// to a rule's prompt is remembered for that rule alone, by its place among
+/// the configured rules — never by its name, so no rule can share an answer
+/// with another rule or with a built-in guardrail.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct PolicyRule {
-    /// Optional human-readable name for the rule (used for caching).
+    /// Optional human-readable name, shown when the rule asks for approval.
     pub name: Option<String>,
     /// Glob pattern matched against the tool name.
     pub tool: Option<String>,
@@ -85,59 +91,123 @@ pub struct PolicyRule {
     pub action: PolicyAction,
     #[serde(default)]
     pub scope: PolicyScope,
+    /// Where the rule was configured (a config file), named in its approval
+    /// prompts. Set by whoever loads the rule, never by the file itself.
+    #[serde(skip)]
+    pub origin: Option<String>,
 }
 
-impl PolicyRule {
-    /// Return a stable key used for session caching.
-    fn key(&self, index: usize) -> String {
-        self.name
-            .clone()
-            .unwrap_or_else(|| format!("__policy_rule_{index}"))
+/// The prefix of a configured rule's session key: the rule's place among
+/// the configured rules follows. No name, tool or approval rule produces it.
+const CONFIG_RULE_KEY: &str = "config-rule#";
+/// The prefix of a built-in guardrail's session key.
+const GUARDRAIL_KEY: &str = "builtin:";
+
+/// The paths the `sensitive-files` guardrail protects.
+const SENSITIVE_FILES: &str = "**/{.env*,.ssh/**,*.key,*.pem,.git/config,.git-credentials,id_*}";
+
+static SENSITIVE_FILES_MATCHER: std::sync::LazyLock<globset::GlobMatcher> =
+    std::sync::LazyLock::new(|| {
+        Glob::new(SENSITIVE_FILES)
+            .expect("the sensitive-files glob is valid")
+            .compile_matcher()
+    });
+
+/// A built-in guardrail, evaluated after the configured rules (so one of
+/// them can allow what a guardrail would ask about) and asked about in every
+/// permission mode, bypass included. `dangerous_command_guard = false` turns
+/// them off. Each has a session key of its own, which nothing configured can
+/// produce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Guardrail {
+    /// Writes to secrets: `.env` files, SSH keys, key and certificate files,
+    /// git's config and credentials.
+    SensitiveFiles,
+    /// Git operations that rewrite or publish history, or discard work
+    /// ([`crate::dangerous_command::git_operation`]).
+    GitControl,
+}
+
+impl Guardrail {
+    const ALL: [Self; 2] = [Self::SensitiveFiles, Self::GitControl];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::SensitiveFiles => "sensitive-files",
+            Self::GitControl => "git-control",
+        }
+    }
+
+    fn key(self) -> String {
+        format!("{GUARDRAIL_KEY}{}", self.name())
+    }
+
+    /// Why this guardrail asks about the call, or `None` when it does not
+    /// apply.
+    ///
+    /// A path is judged as given and as it resolves: a symlink in the
+    /// workspace named like any other file is judged by the file it leads to.
+    /// The resolution is the one the tool itself makes, new files' parents
+    /// included.
+    fn applies(
+        self,
+        tool_name: &str,
+        input: &Value,
+        ctx: &ExecutableToolContext,
+    ) -> Option<String> {
+        match self {
+            Self::SensitiveFiles => {
+                if tool_name != "write_file" && tool_name != "edit_file" {
+                    return None;
+                }
+                let path = input.get("path").and_then(Value::as_str).unwrap_or("");
+                if SENSITIVE_FILES_MATCHER.is_match(path) {
+                    return Some(format!(
+                        "a write to a secrets file, {path} (built-in guardrail)"
+                    ));
+                }
+                let resolved = ctx.resolve_allowed_path(std::path::Path::new(path)).ok()?;
+                SENSITIVE_FILES_MATCHER.is_match(&resolved).then(|| {
+                    format!(
+                        "a write to a secrets file: {path} is {} (built-in guardrail)",
+                        resolved.display()
+                    )
+                })
+            }
+            Self::GitControl => {
+                if tool_name != "bash" {
+                    return None;
+                }
+                let command = input.get("command").and_then(Value::as_str).unwrap_or("");
+                match crate::dangerous_command::git_operation(command) {
+                    crate::dangerous_command::Verdict::Safe => None,
+                    crate::dangerous_command::Verdict::Dangerous(what) => Some(format!(
+                        "destructive git command: {what} (built-in guardrail)"
+                    )),
+                    crate::dangerous_command::Verdict::Unanalyzable => Some(
+                        "a git command whose operation could not be checked (built-in guardrail)"
+                            .to_string(),
+                    ),
+                }
+            }
+        }
     }
 }
 
-/// Built-in safety rules that are evaluated after user-configured rules.
-///
-/// These prompt before writes to sensitive files and before destructive git
-/// operations. User rules are checked first so they can override defaults,
-/// and `dangerous_command_guard = false` turns them off.
-fn default_rules() -> Vec<PolicyRule> {
-    vec![
-        PolicyRule {
-            name: Some("sensitive-files".to_string()),
-            tool: Some("{write_file,edit_file}".to_string()),
-            path: Some(
-                "**/{.env*,.ssh/**,*.key,*.pem,.git/config,.git-credentials,id_*}".to_string(),
-            ),
-            command: None,
-            action: PolicyAction::Prompt,
-            scope: PolicyScope::Session,
-        },
-        PolicyRule {
-            name: Some("git-control".to_string()),
-            tool: Some("bash".to_string()),
-            path: None,
-            command: Some(r"git\s+(push|reset|rebase|checkout\s+-f|clean\s+-f)".to_string()),
-            action: PolicyAction::Prompt,
-            scope: PolicyScope::Session,
-        },
-    ]
-}
-
 struct CompiledPolicyRule {
+    /// The session key: the rule's place among the configured rules.
     key: String,
+    /// The rule as an approval prompt names it: its name and origin.
+    label: String,
     tool: Option<Glob>,
     path: Option<Glob>,
     command: Option<Regex>,
     action: PolicyAction,
     scope: PolicyScope,
-    /// A built-in guardrail (secrets, destructive git) rather than a
-    /// user/project rule. Bypass mode overrides user prompts but not these.
-    builtin: bool,
 }
 
 impl CompiledPolicyRule {
-    fn compile(rule: PolicyRule, index: usize) -> Option<Self> {
+    fn compile(rule: PolicyRule, position: usize) -> Option<Self> {
         let tool = rule
             .tool
             .as_ref()
@@ -159,14 +229,22 @@ impl CompiledPolicyRule {
             .transpose()
             .ok()?;
 
+        let name = rule.name.as_deref().map_or_else(
+            || "an unnamed rule".to_string(),
+            |name| format!("rule \"{name}\""),
+        );
+        let label = match &rule.origin {
+            Some(origin) => format!("{name} in {origin}"),
+            None => name,
+        };
         Some(Self {
-            key: rule.key(index),
+            key: format!("{CONFIG_RULE_KEY}{position}"),
+            label,
             tool,
             path,
             command,
             action: rule.action,
             scope: rule.scope,
-            builtin: false,
         })
     }
 
@@ -241,6 +319,9 @@ pub enum PolicyCheck {
     Prompt {
         rule_key: String,
         scope: PolicyScope,
+        /// Why the call is asked about: the rule or guardrail, and what it
+        /// found. Shown with the approval request.
+        reason: Option<String>,
     },
     /// No configured rule matched.
     NoMatch,
@@ -256,6 +337,8 @@ pub struct ApprovalRequest {
     /// agent. Several swarm members can ask at once, and the answer must be
     /// about the right one.
     pub requester: Option<String>,
+    /// Why the call is asked about, when a rule or guardrail says so.
+    pub why: Option<String>,
 }
 
 impl ApprovalRequest {
@@ -265,6 +348,7 @@ impl ApprovalRequest {
             rule: rule.into(),
             arguments,
             requester: None,
+            why: None,
         }
     }
 
@@ -275,10 +359,21 @@ impl ApprovalRequest {
         self
     }
 
+    /// The same request, with why it is asked.
+    #[must_use]
+    pub fn with_reason(mut self, why: Option<String>) -> Self {
+        self.why = why;
+        self
+    }
+
     /// Why this call is asked about, when that is more than its tool's usual
-    /// approval: a dangerous command, or one that could not be checked.
+    /// approval: the rule or guardrail that asks and what it found, a
+    /// dangerous command, or one that could not be checked.
     #[must_use]
     pub fn reason(&self) -> Option<String> {
+        if self.why.is_some() {
+            return self.why.clone();
+        }
         if let Some(what) = self
             .rule
             .strip_prefix(DANGEROUS_COMMAND_RULE)
@@ -365,7 +460,6 @@ pub struct PermissionEngine {
     session_deny: std::sync::Mutex<HashSet<String>>,
     plan_mode: Arc<AtomicBool>,
     rules: Vec<CompiledPolicyRule>,
-    builtin_rules: Vec<CompiledPolicyRule>,
     /// The built-in guards: ask before a dangerous `bash` command (see
     /// [`crate::dangerous_command`]) in every mode but bypass, and run the
     /// built-in rules (sensitive-file writes, destructive git commands).
@@ -390,15 +484,6 @@ impl PermissionEngine {
     }
 
     pub fn with_hook(mode: PermissionMode, hook: Arc<dyn ApprovalHook>) -> Self {
-        let builtin_rules: Vec<CompiledPolicyRule> = default_rules()
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, rule)| CompiledPolicyRule::compile(rule, index))
-            .map(|mut rule| {
-                rule.builtin = true;
-                rule
-            })
-            .collect();
         Self {
             mode,
             hook,
@@ -406,7 +491,6 @@ impl PermissionEngine {
             session_deny: std::sync::Mutex::new(HashSet::new()),
             plan_mode: Arc::new(AtomicBool::new(false)),
             rules: Vec::new(),
-            builtin_rules,
             dangerous_command_guard: true,
             requester: None,
         }
@@ -444,16 +528,45 @@ impl PermissionEngine {
                 UNANALYZABLE_COMMAND_RULE.to_string()
             }
         };
-        if self.session_allow.lock().unwrap().contains(&rule_key) {
+        if self.session_allow.lock_or_recover().contains(&rule_key) {
             return PolicyCheck::Allow;
         }
-        if self.session_deny.lock().unwrap().contains(&rule_key) {
+        if self.session_deny.lock_or_recover().contains(&rule_key) {
             return PolicyCheck::Deny;
         }
         PolicyCheck::Prompt {
             rule_key,
             scope: PolicyScope::Once,
+            reason: None,
         }
+    }
+
+    /// The first built-in guardrail that applies to the call: a prompt, unless
+    /// the session already answered that guardrail.
+    fn check_guardrails(
+        &self,
+        tool_name: &str,
+        input: &Value,
+        ctx: &ExecutableToolContext,
+    ) -> PolicyCheck {
+        for guardrail in Guardrail::ALL {
+            let Some(reason) = guardrail.applies(tool_name, input, ctx) else {
+                continue;
+            };
+            let rule_key = guardrail.key();
+            if self.session_allow.lock_or_recover().contains(&rule_key) {
+                return PolicyCheck::Allow;
+            }
+            if self.session_deny.lock_or_recover().contains(&rule_key) {
+                return PolicyCheck::Deny;
+            }
+            return PolicyCheck::Prompt {
+                rule_key,
+                scope: PolicyScope::Session,
+                reason: Some(reason),
+            };
+        }
+        PolicyCheck::NoMatch
     }
 
     pub fn mode(&self) -> PermissionMode {
@@ -479,9 +592,12 @@ impl PermissionEngine {
     }
 
     /// Add configured policy rules. Invalid patterns are logged and skipped.
+    /// Add configured rules, after those already added. Each is keyed by its
+    /// place among all of them, so rules added later never share a key with
+    /// earlier ones.
     pub fn add_rules(&mut self, rules: Vec<PolicyRule>) {
-        for (index, rule) in rules.into_iter().enumerate() {
-            if let Some(compiled) = CompiledPolicyRule::compile(rule, index) {
+        for rule in rules {
+            if let Some(compiled) = CompiledPolicyRule::compile(rule, self.rules.len()) {
                 self.rules.push(compiled);
             }
         }
@@ -496,12 +612,12 @@ impl PermissionEngine {
         &self,
         tool_name: &str,
         input: &Value,
-        _ctx: &ExecutableToolContext,
+        ctx: &ExecutableToolContext,
     ) -> PolicyCheck {
         // The user's rules first, so one can allow a command the guard would
         // ask about; then the dangerous-command guard; then the built-in
         // guardrails, which go off with the guard.
-        let check = self.check_rules(&self.rules, tool_name, input);
+        let check = self.check_rules(tool_name, input);
         if tool_name == PLAN_REVIEW_RULE {
             // Only the user's review approves a plan: a rule can refuse one,
             // never allow it.
@@ -521,17 +637,12 @@ impl PermissionEngine {
         if check != PolicyCheck::NoMatch || !self.dangerous_command_guard {
             return check;
         }
-        self.check_rules(&self.builtin_rules, tool_name, input)
+        self.check_guardrails(tool_name, input, ctx)
     }
 
-    /// The first of `rules` matching the invocation decides.
-    fn check_rules(
-        &self,
-        rules: &[CompiledPolicyRule],
-        tool_name: &str,
-        input: &Value,
-    ) -> PolicyCheck {
-        for rule in rules {
+    /// The first configured rule matching the invocation decides.
+    fn check_rules(&self, tool_name: &str, input: &Value) -> PolicyCheck {
+        for rule in &self.rules {
             if !rule.matches(tool_name, input) {
                 continue;
             }
@@ -539,21 +650,23 @@ impl PermissionEngine {
             match rule.action {
                 PolicyAction::Allow => {
                     if matches!(rule.scope, PolicyScope::Session | PolicyScope::Always) {
-                        self.session_allow.lock().unwrap().insert(rule.key.clone());
+                        self.session_allow
+                            .lock_or_recover()
+                            .insert(rule.key.clone());
                     }
                     return PolicyCheck::Allow;
                 }
                 PolicyAction::Deny => {
                     if matches!(rule.scope, PolicyScope::Session | PolicyScope::Always) {
-                        self.session_deny.lock().unwrap().insert(rule.key.clone());
+                        self.session_deny.lock_or_recover().insert(rule.key.clone());
                     }
                     return PolicyCheck::Deny;
                 }
                 PolicyAction::Prompt => {
-                    if self.session_allow.lock().unwrap().contains(&rule.key) {
+                    if self.session_allow.lock_or_recover().contains(&rule.key) {
                         return PolicyCheck::Allow;
                     }
-                    if self.session_deny.lock().unwrap().contains(&rule.key) {
+                    if self.session_deny.lock_or_recover().contains(&rule.key) {
                         return PolicyCheck::Deny;
                     }
                     // Bypass mode means "don't ask" for user/project rules — a
@@ -565,12 +678,13 @@ impl PermissionEngine {
                     // agent still must not silently write `.env` or force-push. A
                     // hard `deny` rule still denies (returns above), and an explicit
                     // session-deny is still honored (checked just above).
-                    if self.mode == PermissionMode::BypassPermissions && !rule.builtin {
+                    if self.mode == PermissionMode::BypassPermissions {
                         return PolicyCheck::Allow;
                     }
                     return PolicyCheck::Prompt {
                         rule_key: rule.key.clone(),
                         scope: rule.scope,
+                        reason: Some(format!("asked by {}", rule.label)),
                     };
                 }
             }
@@ -594,14 +708,12 @@ impl PermissionEngine {
         match response {
             ApprovalResponse::AllowSession => {
                 self.session_allow
-                    .lock()
-                    .unwrap()
+                    .lock_or_recover()
                     .insert(rule_key.to_string());
             }
             ApprovalResponse::DenySession => {
                 self.session_deny
-                    .lock()
-                    .unwrap()
+                    .lock_or_recover()
                     .insert(rule_key.to_string());
             }
             _ => {}
@@ -620,7 +732,7 @@ impl PermissionEngine {
         // asks before each edit in every mode, bypass included. Only the
         // user's own "yes to all" for edits lets them through.
         if plan_mode && is_edit_rule(rule) {
-            return self.session_allow.lock().unwrap().contains(rule);
+            return self.session_allow.lock_or_recover().contains(rule);
         }
 
         // BypassPermissions is an explicit opt-out of gating: commands run
@@ -633,16 +745,16 @@ impl PermissionEngine {
         if plan_mode && is_write_or_execute_rule(rule) {
             // Plan mode forces explicit approval for every command in the
             // interactive Default/AcceptEdits modes.
-            return self.session_allow.lock().unwrap().contains(rule);
+            return self.session_allow.lock_or_recover().contains(rule);
         }
 
         match self.mode {
             PermissionMode::AcceptEdits if is_edit_rule(rule) => true,
             _ => {
-                if self.session_deny.lock().unwrap().contains(rule) {
+                if self.session_deny.lock_or_recover().contains(rule) {
                     return false;
                 }
-                if self.session_allow.lock().unwrap().contains(rule) {
+                if self.session_allow.lock_or_recover().contains(rule) {
                     return true;
                 }
                 // Default and AcceptEdits for non-edit rules require a hook response.
@@ -655,24 +767,31 @@ impl PermissionEngine {
 
     /// Request approval asynchronously. The caller should consult `is_allowed`
     /// for fast paths (bypass / session rules) before calling this method.
+    ///
+    /// `reason` says why the call is asked about, when a rule or guardrail
+    /// does ([`PolicyCheck::Prompt`]); it is shown with the request.
     pub async fn request_approval(
         &self,
         rule: &str,
+        reason: Option<String>,
         tool_name: &str,
         input: &Value,
     ) -> ApprovalResponse {
         let request = ApprovalRequest::new(tool_name, rule, input.clone())
-            .with_requester(self.requester.clone());
+            .with_requester(self.requester.clone())
+            .with_reason(reason);
         let response = self.hook.request_approval(request).await;
 
         // A plan review answers for that plan only.
         match response {
             _ if rule == PLAN_REVIEW_RULE => {}
             ApprovalResponse::AllowSession => {
-                self.session_allow.lock().unwrap().insert(rule.to_string());
+                self.session_allow
+                    .lock_or_recover()
+                    .insert(rule.to_string());
             }
             ApprovalResponse::DenySession => {
-                self.session_deny.lock().unwrap().insert(rule.to_string());
+                self.session_deny.lock_or_recover().insert(rule.to_string());
             }
             _ => {}
         }
@@ -735,7 +854,9 @@ mod tests {
     async fn test_default_mode_calls_hook() {
         let engine = PermissionEngine::with_hook(PermissionMode::Default, Arc::new(AllowOnceHook));
         assert!(!engine.is_allowed("bash", &Value::Null, &ctx()));
-        let response = engine.request_approval("bash", "bash", &Value::Null).await;
+        let response = engine
+            .request_approval("bash", None, "bash", &Value::Null)
+            .await;
         assert_eq!(response, ApprovalResponse::AllowOnce);
         // AllowOnce is not cached.
         assert!(!engine.is_allowed("bash", &Value::Null, &ctx()));
@@ -755,7 +876,9 @@ mod tests {
         let engine =
             PermissionEngine::with_hook(PermissionMode::Default, Arc::new(AllowSessionHook));
         assert!(!engine.is_allowed("bash", &Value::Null, &ctx()));
-        let response = engine.request_approval("bash", "bash", &Value::Null).await;
+        let response = engine
+            .request_approval("bash", None, "bash", &Value::Null)
+            .await;
         assert_eq!(response, ApprovalResponse::AllowSession);
         assert!(engine.is_allowed("bash", &Value::Null, &ctx()));
     }
@@ -764,7 +887,9 @@ mod tests {
     async fn test_deny_session_caches() {
         let engine =
             PermissionEngine::with_hook(PermissionMode::Default, Arc::new(DenySessionHook));
-        let response = engine.request_approval("bash", "bash", &Value::Null).await;
+        let response = engine
+            .request_approval("bash", None, "bash", &Value::Null)
+            .await;
         assert_eq!(response, ApprovalResponse::DenySession);
         assert!(!engine.is_allowed("bash", &Value::Null, &ctx()));
     }
@@ -821,6 +946,7 @@ mod tests {
             command: Some(r"git\s+status".to_string()),
             action: PolicyAction::Allow,
             scope: PolicyScope::Session,
+            origin: None,
         }]);
 
         let plain = serde_json::json!({ "command": "git status" });
@@ -860,6 +986,7 @@ mod tests {
                 PolicyCheck::Prompt {
                     rule_key: "dangerous-command: rm -rf".to_string(),
                     scope: PolicyScope::Once,
+                    reason: None,
                 },
                 "{mode:?}"
             );
@@ -868,6 +995,7 @@ mod tests {
                 PolicyCheck::Prompt {
                     rule_key: "unanalyzable-command".to_string(),
                     scope: PolicyScope::Once,
+                    reason: None,
                 }
             );
             assert_eq!(
@@ -921,10 +1049,11 @@ mod tests {
             command: None,
             action: PolicyAction::Prompt,
             scope: PolicyScope::Session,
+            origin: None,
         }]);
         assert!(matches!(
             engine.check_policy("write_file", &serde_json::json!({ "path": ".env" }), &ctx()),
-            PolicyCheck::Prompt { rule_key, .. } if rule_key == "ask-before-env"
+            PolicyCheck::Prompt { reason: Some(reason), .. } if reason.contains("ask-before-env")
         ));
     }
 
@@ -952,6 +1081,7 @@ mod tests {
             command: Some(r"^rm -rf build$".to_string()),
             action: PolicyAction::Allow,
             scope: PolicyScope::Once,
+            origin: None,
         }]);
         assert_eq!(
             engine.check_policy("bash", &bash("rm -rf build"), &ctx()),
@@ -963,7 +1093,7 @@ mod tests {
             panic!("expected a prompt: {asked:?}");
         };
         engine
-            .request_approval(&rule_key, "bash", &bash("rm -rf dist"))
+            .request_approval(&rule_key, None, "bash", &bash("rm -rf dist"))
             .await;
         assert_eq!(
             engine.check_policy("bash", &bash("rm -rf dist"), &ctx()),
@@ -1001,6 +1131,7 @@ mod tests {
             command: Some(r"rm\s+-rf".to_string()),
             action: PolicyAction::Deny,
             scope: PolicyScope::Session,
+            origin: None,
         }]);
         for chained in [
             "rm -rf /tmp/x",
@@ -1029,6 +1160,7 @@ mod tests {
             command: Some(r"^git\s".to_string()),
             action: PolicyAction::Allow,
             scope: PolicyScope::Session,
+            origin: None,
         }]);
         let input = serde_json::json!({ "command": "git fetch && git status" });
         assert_eq!(
@@ -1047,6 +1179,7 @@ mod tests {
             command: Some(r"rm -rf /".to_string()),
             action: PolicyAction::Deny,
             scope: PolicyScope::Once,
+            origin: None,
         }]);
 
         let denied = serde_json::json!({ "command": "rm -rf /" });
@@ -1072,6 +1205,7 @@ mod tests {
             command: None,
             action: PolicyAction::Allow,
             scope: PolicyScope::Session,
+            origin: None,
         }]);
 
         assert_eq!(
@@ -1094,18 +1228,19 @@ mod tests {
             command: Some(r"rm\b".to_string()),
             action: PolicyAction::Prompt,
             scope: PolicyScope::Session,
+            origin: None,
         }]);
 
         let input = serde_json::json!({ "command": "rm file.txt" });
-        assert!(matches!(
-            engine.check_policy("bash", &input, &ctx()),
-            PolicyCheck::Prompt { .. }
-        ));
+        let PolicyCheck::Prompt { rule_key, .. } = engine.check_policy("bash", &input, &ctx())
+        else {
+            panic!("the rule asks");
+        };
 
         engine.record_policy_response(
             ApprovalResponse::AllowSession,
             PolicyScope::Session,
-            "ask-for-delete",
+            &rule_key,
         );
         assert_eq!(
             engine.check_policy("bash", &input, &ctx()),
@@ -1117,15 +1252,19 @@ mod tests {
     fn test_builtin_sensitive_file_prompts() {
         let engine = PermissionEngine::new(PermissionMode::BypassPermissions);
         let input = serde_json::json!({ "path": ".env" });
-        assert!(matches!(
-            engine.check_policy("write_file", &input, &ctx()),
-            PolicyCheck::Prompt { rule_key, .. } if rule_key == "sensitive-files"
-        ));
+        let PolicyCheck::Prompt {
+            rule_key, reason, ..
+        } = engine.check_policy("write_file", &input, &ctx())
+        else {
+            panic!("the guardrail asks");
+        };
+        assert_eq!(rule_key, "builtin:sensitive-files");
+        assert!(reason.unwrap().contains("secrets file"));
 
         engine.record_policy_response(
             ApprovalResponse::AllowSession,
             PolicyScope::Session,
-            "sensitive-files",
+            &rule_key,
         );
         assert_eq!(
             engine.check_policy("write_file", &input, &ctx()),
@@ -1143,6 +1282,7 @@ mod tests {
             command: None,
             action: PolicyAction::Allow,
             scope: PolicyScope::Session,
+            origin: None,
         }]);
 
         let input = serde_json::json!({ "path": ".env" });
@@ -1165,6 +1305,7 @@ mod tests {
             command: None,
             action: PolicyAction::Prompt,
             scope: PolicyScope::Session,
+            origin: None,
         };
         let tool = "mcp__devscriptor__lsp_arch_setup";
         let input = serde_json::json!({});
@@ -1189,10 +1330,28 @@ mod tests {
     #[test]
     fn test_builtin_git_control_prompts() {
         let engine = PermissionEngine::new(PermissionMode::BypassPermissions);
-        let input = serde_json::json!({ "command": "git push origin main" });
+        for command in [
+            "git push origin main",
+            "git -C /repo push",
+            "git --git-dir=.git --work-tree=. reset --hard",
+            "git -c core.pager=cat rebase main",
+            "g''it clean -fdx",
+            "timeout 30 git checkout --force main",
+        ] {
+            let input = serde_json::json!({ "command": command });
+            assert!(
+                matches!(
+                    engine.check_policy("bash", &input, &ctx()),
+                    PolicyCheck::Prompt { rule_key, reason: Some(reason), .. }
+                        if rule_key == "builtin:git-control" && reason.contains("git ")
+                ),
+                "{command}"
+            );
+        }
+        let input = serde_json::json!({ "command": "git -c alias.p=push p" });
         assert!(matches!(
             engine.check_policy("bash", &input, &ctx()),
-            PolicyCheck::Prompt { rule_key, .. } if rule_key == "git-control"
+            PolicyCheck::Prompt { reason: Some(reason), .. } if reason.contains("could not be checked")
         ));
 
         let safe = serde_json::json!({ "command": "git status" });
@@ -1229,7 +1388,7 @@ mod tests {
             PermissionEngine::with_hook(PermissionMode::BypassPermissions, Arc::new(AllowOnce));
         assert!(!engine.is_allowed("exit_plan_mode", &Value::Null, &ctx()));
         let response = engine
-            .request_approval("exit_plan_mode", "exit_plan_mode", &Value::Null)
+            .request_approval("exit_plan_mode", None, "exit_plan_mode", &Value::Null)
             .await;
         assert_eq!(response, ApprovalResponse::AllowOnce);
         assert!(!engine.is_allowed("exit_plan_mode", &Value::Null, &ctx()));
@@ -1237,7 +1396,7 @@ mod tests {
         let engine =
             PermissionEngine::with_hook(PermissionMode::BypassPermissions, Arc::new(AllowSession));
         engine
-            .request_approval("exit_plan_mode", "exit_plan_mode", &Value::Null)
+            .request_approval("exit_plan_mode", None, "exit_plan_mode", &Value::Null)
             .await;
         assert!(!engine.is_allowed("exit_plan_mode", &Value::Null, &ctx()));
         assert!(engine.session_allow.lock().unwrap().is_empty());
@@ -1252,6 +1411,7 @@ mod tests {
             command: None,
             action: PolicyAction::Allow,
             scope: PolicyScope::Always,
+            origin: None,
         }]);
         assert_eq!(
             engine.check_policy("exit_plan_mode", &Value::Null, &ctx()),
@@ -1266,6 +1426,7 @@ mod tests {
             command: None,
             action: PolicyAction::Deny,
             scope: PolicyScope::Always,
+            origin: None,
         }]);
         assert_eq!(
             engine.check_policy("exit_plan_mode", &Value::Null, &ctx()),
@@ -1287,6 +1448,7 @@ mod tests {
             command: None,
             action,
             scope: PolicyScope::Once,
+            origin: None,
         };
         engine.add_rules(vec![
             rule("write_file", Some("**/blocked.txt"), PolicyAction::Deny),
@@ -1321,6 +1483,175 @@ mod tests {
         assert!(
             PermissionEngine::with_hook(PermissionMode::Default, Arc::new(AllowOnceHook)).can_ask()
         );
+    }
+
+    fn rule(name: &str, tool: &str, path: &str, action: PolicyAction) -> PolicyRule {
+        PolicyRule {
+            name: Some(name.to_string()),
+            tool: Some(tool.to_string()),
+            path: Some(path.to_string()),
+            command: None,
+            action,
+            scope: PolicyScope::Session,
+            origin: Some("project config /work/.rusta.toml".to_string()),
+        }
+    }
+
+    /// A rule named like a built-in guardrail is a rule of its own: "yes to
+    /// all" for it leaves the guardrail asking.
+    #[test]
+    fn a_rule_named_like_a_guardrail_shares_nothing_with_it() {
+        for name in ["sensitive-files", "git-control", "builtin:sensitive-files"] {
+            let mut engine = PermissionEngine::new(PermissionMode::Default);
+            engine.add_rules(vec![rule(
+                name,
+                "edit_file",
+                "safe.txt",
+                PolicyAction::Prompt,
+            )]);
+            let PolicyCheck::Prompt {
+                rule_key, scope, ..
+            } = engine.check_policy(
+                "edit_file",
+                &serde_json::json!({ "path": "safe.txt" }),
+                &ctx(),
+            )
+            else {
+                panic!("the project rule asks");
+            };
+            engine.record_policy_response(ApprovalResponse::AllowSession, scope, &rule_key);
+
+            let env = serde_json::json!({ "path": ".env" });
+            assert!(
+                matches!(
+                    engine.check_policy("edit_file", &env, &ctx()),
+                    PolicyCheck::Prompt { rule_key, .. } if rule_key == "builtin:sensitive-files"
+                ),
+                "{name}"
+            );
+        }
+    }
+
+    /// Two rules of one name, or a rule named like a tool's approval, share
+    /// no answer: each answer is for its rule.
+    #[test]
+    fn rules_never_share_an_answer() {
+        let mut engine = PermissionEngine::new(PermissionMode::Default);
+        engine.add_rules(vec![
+            rule("same", "edit_file", "a.txt", PolicyAction::Prompt),
+            rule("same", "edit_file", "b.txt", PolicyAction::Prompt),
+            rule("write_file", "edit_file", "c.txt", PolicyAction::Prompt),
+        ]);
+        let ask = |path: &str| match engine.check_policy(
+            "edit_file",
+            &serde_json::json!({ "path": path }),
+            &ctx(),
+        ) {
+            PolicyCheck::Prompt { rule_key, .. } => rule_key,
+            other => panic!("{path}: {other:?}"),
+        };
+        let (a, b, c) = (ask("a.txt"), ask("b.txt"), ask("c.txt"));
+        assert_ne!(a, b);
+        engine.record_policy_response(ApprovalResponse::AllowSession, PolicyScope::Session, &a);
+        engine.record_policy_response(ApprovalResponse::AllowSession, PolicyScope::Session, &c);
+        assert_eq!(
+            ask("b.txt"),
+            b,
+            "the other rule of the same name still asks"
+        );
+        assert!(
+            !engine.is_allowed("write_file", &serde_json::json!({}), &ctx()),
+            "a rule's answer is not the write_file approval"
+        );
+
+        // Rules added later never take an earlier rule's key.
+        let mut engine = PermissionEngine::new(PermissionMode::Default);
+        engine.add_rules(vec![rule(
+            "first",
+            "edit_file",
+            "a.txt",
+            PolicyAction::Prompt,
+        )]);
+        engine.add_rules(vec![rule(
+            "second",
+            "edit_file",
+            "b.txt",
+            PolicyAction::Prompt,
+        )]);
+        let keys: Vec<String> = ["a.txt", "b.txt"]
+            .iter()
+            .map(|path| {
+                match engine.check_policy("edit_file", &serde_json::json!({ "path": path }), &ctx())
+                {
+                    PolicyCheck::Prompt { rule_key, .. } => rule_key,
+                    other => panic!("{path}: {other:?}"),
+                }
+            })
+            .collect();
+        assert_ne!(keys[0], keys[1]);
+    }
+
+    /// A rule's prompt names the rule and the file it came from.
+    #[test]
+    fn a_prompt_names_its_rule_and_origin() {
+        let mut engine = PermissionEngine::new(PermissionMode::Default);
+        engine.add_rules(vec![rule(
+            "ask-first",
+            "edit_file",
+            "safe.txt",
+            PolicyAction::Prompt,
+        )]);
+        let PolicyCheck::Prompt { reason, .. } = engine.check_policy(
+            "edit_file",
+            &serde_json::json!({ "path": "safe.txt" }),
+            &ctx(),
+        ) else {
+            panic!("the rule asks");
+        };
+        assert_eq!(
+            reason.as_deref(),
+            Some("asked by rule \"ask-first\" in project config /work/.rusta.toml")
+        );
+        let request =
+            ApprovalRequest::new("edit_file", "x", Value::Null).with_reason(reason.clone());
+        assert_eq!(request.reason(), reason);
+    }
+
+    /// The secrets guardrail judges a path as it resolves too: a symlink to a
+    /// secrets file, a file under a symlink to a secrets folder, and a new
+    /// file in one, are all asked about, in bypass mode too.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_a_secrets_file_is_asked_about() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join(".env"), "SECRET=1\n").unwrap();
+        std::fs::create_dir_all(root.join(".ssh")).unwrap();
+        std::fs::create_dir_all(root.join("repo/.git")).unwrap();
+        std::fs::write(root.join("repo/.git/config"), "[core]\n").unwrap();
+        std::os::unix::fs::symlink(".env", root.join("alias.txt")).unwrap();
+        std::os::unix::fs::symlink(".ssh", root.join("keys")).unwrap();
+        std::os::unix::fs::symlink("repo/.git/config", root.join("settings.ini")).unwrap();
+        std::fs::write(root.join("plain.txt"), "x").unwrap();
+        let mut context = ctx();
+        context.cwd = root.clone();
+
+        let engine = PermissionEngine::new(PermissionMode::BypassPermissions);
+        for tool in ["write_file", "edit_file"] {
+            for path in ["alias.txt", "keys/id_new", "settings.ini"] {
+                assert!(
+                    matches!(
+                        engine.check_policy(tool, &serde_json::json!({ "path": path }), &context),
+                        PolicyCheck::Prompt { rule_key, .. } if rule_key == "builtin:sensitive-files"
+                    ),
+                    "{tool} {path}"
+                );
+            }
+            assert_eq!(
+                engine.check_policy(tool, &serde_json::json!({ "path": "plain.txt" }), &context),
+                PolicyCheck::NoMatch
+            );
+        }
     }
 
     fn ctx() -> ExecutableToolContext {

@@ -53,7 +53,7 @@ pub struct SessionStore {
 impl SessionStore {
     /// Open (or create) a session index stored next to the records directory.
     pub async fn new(records_dir: PathBuf) -> Self {
-        std::fs::create_dir_all(&records_dir).ok();
+        agent_core::private_fs::create_dir_all(&records_dir).ok();
         let path = records_dir.join("index.json");
         let entries = read_entries(&path).await;
         Self { path, entries }
@@ -153,7 +153,7 @@ impl SessionStore {
         if tokio::fs::try_exists(&target).await.unwrap_or(false) {
             return Err(format!("{} already exists", target.display()));
         }
-        tokio::fs::copy(&original.records_path, &target)
+        agent_core::private_fs::copy_async(&original.records_path, &target)
             .await
             .map_err(|e| {
                 format!(
@@ -183,9 +183,11 @@ impl SessionStore {
                 continue;
             }
             let to = sidecar_path(&target, kind);
-            tokio::fs::copy(&from, &to).await.map_err(|e| {
-                format!("failed to copy {} to {}: {e}", from.display(), to.display())
-            })?;
+            agent_core::private_fs::copy_async(&from, &to)
+                .await
+                .map_err(|e| {
+                    format!("failed to copy {} to {}: {e}", from.display(), to.display())
+                })?;
         }
         let now = Utc::now();
         let entry = SessionEntry {
@@ -207,16 +209,9 @@ impl SessionStore {
     async fn save(&self) -> Result<(), String> {
         let json = serde_json::to_string_pretty(&self.entries)
             .map_err(|e| format!("failed to serialize session index: {e}"))?;
-        let staged = self
-            .path
-            .with_extension(format!("json.{}.tmp", std::process::id()));
-        tokio::fs::write(&staged, json)
+        agent_core::private_fs::write_async(&self.path, json)
             .await
-            .map_err(|e| format!("failed to write session index: {e}"))?;
-        tokio::fs::rename(&staged, &self.path)
-            .await
-            .map_err(|e| format!("failed to write session index: {e}"))?;
-        Ok(())
+            .map_err(|e| format!("failed to write session index: {e}"))
     }
 }
 

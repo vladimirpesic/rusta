@@ -418,7 +418,7 @@ fn save(
     let dir = agent_core::user_dirs::config_dir()
         .ok_or_else(|| anyhow::anyhow!("no config directory"))?
         .join("rusta");
-    std::fs::create_dir_all(&dir)?;
+    agent_core::private_fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
 
     let existing = load_existing(&path)?;
@@ -429,8 +429,10 @@ fn save(
         println!("  dropped the pinned model — it was for the old plan");
     }
 
-    std::fs::write(&path, edited.text)?;
-    restrict_permissions(&path);
+    // The key is a secret: the file is written privately and atomically, so
+    // it is never readable by others, not even briefly, and a write cut short
+    // leaves the old config whole.
+    agent_core::private_fs::write(&path, edited.text)?;
     Ok(path)
 }
 
@@ -522,16 +524,6 @@ fn edit_config(
         dropped_model,
     })
 }
-
-/// The key is a secret; keep it out of other users' reach.
-#[cfg(unix)]
-fn restrict_permissions(path: &std::path::Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-}
-
-#[cfg(not(unix))]
-fn restrict_permissions(_path: &std::path::Path) {}
 
 /// Serialize a `ValueEnum` the way the config file spells it.
 fn toml_value<T: serde::Serialize>(v: T) -> anyhow::Result<String> {

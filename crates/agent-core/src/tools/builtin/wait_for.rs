@@ -6,6 +6,7 @@
 //! sub-agent guidance is delivered at run time (a sub-agent's timeout advice
 //! and the repeat warning's advice variants).
 
+use crate::sync::LockExt;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -184,12 +185,12 @@ impl Default for WaitForTool {
 fn repeat_warning(ctx: &ExecutableToolContext, turn: u64) -> Option<String> {
     let advice = if ctx.depth > 0 {
         SUBAGENT_REPEAT_ADVICE
-    } else if ctx.goal_manager.lock().unwrap().active_goal().is_some() {
+    } else if ctx.goal_manager.lock_or_recover().active_goal().is_some() {
         GOAL_REPEAT_ADVICE
     } else {
         MAIN_REPEAT_ADVICE
     };
-    let tally = ctx.wait_tally.lock().unwrap();
+    let tally = ctx.wait_tally.lock_or_recover();
     if tally.turn != turn || tally.calls < 2 {
         return None;
     }
@@ -314,15 +315,14 @@ impl ExecutableTool for WaitForTool {
             }
         };
         let turn = ctx.turn_id.load(Ordering::SeqCst);
-        ctx.wait_tally.lock().unwrap().count_call(turn);
+        ctx.wait_tally.lock_or_recover().count_call(turn);
         let started = Instant::now();
         let outcome = ctx
             .background
             .wait_for(task_id, Duration::from_secs(timeout_s), &ctx.steer)
             .await;
         ctx.wait_tally
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .add_waited(turn, started.elapsed().as_millis() as u64);
         match outcome {
             Ok(outcome) => {

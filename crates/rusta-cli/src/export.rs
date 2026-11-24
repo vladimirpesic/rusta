@@ -72,7 +72,9 @@ pub async fn run_export(
         std::fs::create_dir_all(parent)?;
     }
 
-    let file = File::create(&output)?;
+    // The archive holds the whole conversation: the user's alone, wherever
+    // they chose to put it.
+    let file = agent_core::private_fs::create(&output)?;
     let mut zip = ZipWriter::new(file);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 

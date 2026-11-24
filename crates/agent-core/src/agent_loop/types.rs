@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use std::{
     collections::HashSet,
     path::PathBuf,
@@ -541,7 +542,7 @@ impl std::fmt::Debug for ExecutableToolContext {
             .field("cron", &self.cron.list().len())
             .field(
                 "goal_manager",
-                &self.goal_manager.lock().unwrap().active_goal().is_some(),
+                &self.goal_manager.lock_or_recover().active_goal().is_some(),
             )
             .field("user_hooks", &self.user_hooks.is_some())
             .field("tool_disclosure", &self.tool_disclosure.is_some())

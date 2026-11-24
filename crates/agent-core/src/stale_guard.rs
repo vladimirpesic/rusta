@@ -236,9 +236,7 @@ impl StaleGuard {
             files,
         })
         .map_err(|e| AgentError::Config(e.to_string()))?;
-        let temporary = path.with_extension("json.tmp");
-        std::fs::write(&temporary, json)
-            .and_then(|()| std::fs::rename(&temporary, path))
+        crate::private_fs::write(path, json)
             .map_err(|e| AgentError::Config(format!("{}: {e}", path.display())))
     }
 

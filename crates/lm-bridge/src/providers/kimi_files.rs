@@ -136,7 +136,10 @@ impl KimiFiles {
     /// disk, so the next request uploads those files again.
     pub fn forget(&self, ids: &[String]) {
         let stale: Vec<String> = {
-            let mut remembered = self.remembered.lock().unwrap();
+            let mut remembered = self
+                .remembered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let stale: Vec<String> = remembered
                 .iter()
                 .filter(|(_, id)| ids.contains(id))
@@ -202,7 +205,12 @@ impl KimiFiles {
     }
 
     fn recall(&self, key: &str) -> Option<String> {
-        if let Some(id) = self.remembered.lock().unwrap().get(key) {
+        if let Some(id) = self
+            .remembered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+        {
             return Some(id.clone());
         }
         let dir = self.cache_dir.as_ref()?;
@@ -213,7 +221,7 @@ impl KimiFiles {
         }
         self.remembered
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key.to_string(), id.clone());
         Some(id)
     }
@@ -221,12 +229,12 @@ impl KimiFiles {
     fn remember(&self, key: &str, id: &str) {
         self.remembered
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key.to_string(), id.to_string());
         if let Some(dir) = &self.cache_dir {
             // A failed write costs a re-upload next session, nothing more.
-            if std::fs::create_dir_all(dir).is_ok() {
-                let _ = std::fs::write(dir.join(key), id);
+            if crate::private_fs::create_dir_all(dir).is_ok() {
+                let _ = crate::private_fs::write(&dir.join(key), id);
             }
         }
     }

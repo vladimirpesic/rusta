@@ -592,13 +592,10 @@ impl TrustStore {
     /// contents rather than half of the new.
     fn save(&self) -> anyhow::Result<()> {
         if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)
+            agent_core::private_fs::create_dir_all(dir)
                 .with_context(|| format!("failed to create {}", dir.display()))?;
         }
-        let temporary = self.path.with_extension("json.tmp");
-        std::fs::write(&temporary, serde_json::to_string_pretty(&self.file)?)
-            .with_context(|| format!("failed to write {}", temporary.display()))?;
-        std::fs::rename(&temporary, &self.path)
+        agent_core::private_fs::write(&self.path, serde_json::to_string_pretty(&self.file)?)
             .with_context(|| format!("failed to write {}", self.path.display()))?;
         Ok(())
     }

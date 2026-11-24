@@ -10,6 +10,7 @@
 //! [`UserHookEvent::PreToolUse`], [`UserHookEvent::UserPromptSubmit`] and
 //! [`UserHookEvent::Stop`] can block.
 
+use crate::sync::LockExt;
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
@@ -231,13 +232,13 @@ impl UserHooks {
     /// The session's title, as payloads carry it.
     #[must_use]
     pub fn session_title(&self) -> String {
-        self.session_title.lock().unwrap().clone()
+        self.session_title.lock_or_recover().clone()
     }
 
     /// The session's title from the next event on: one set with `/title`,
     /// or made for the session after a turn.
     pub fn set_session_title(&self, title: impl Into<String>) {
-        *self.session_title.lock().unwrap() = title.into();
+        *self.session_title.lock_or_recover() = title.into();
     }
 
     /// No rules configured: firing is a no-op everywhere.

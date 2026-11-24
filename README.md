@@ -41,6 +41,14 @@ tar -xzf rusta-1.1.0-x86_64-unknown-linux-gnu.tar.gz
 sudo install rusta-1.1.0-x86_64-unknown-linux-gnu/rusta /usr/local/bin/
 ```
 
+Each archive also has a build provenance attestation: GitHub's signed record that
+the release workflow built it from the commit of the release's tag. Check it with
+the [GitHub CLI](https://cli.github.com/):
+
+```bash
+gh attestation verify rusta-1.1.0-x86_64-unknown-linux-gnu.tar.gz --repo vladimirpesic/rusta
+```
+
 The macOS binaries are not signed, so the first launch may need
 `xattr -d com.apple.quarantine "$(command -v rusta)"`.
 
@@ -127,6 +135,9 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for what a pull request passes, and
+[SECURITY.md](SECURITY.md) for reporting a vulnerability privately.
 
 ## License
 

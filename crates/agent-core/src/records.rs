@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex};
 
 use lm_bridge::message::Message;
 use serde::{Deserialize, Serialize};
-use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 /// Current record-file schema version.
@@ -117,12 +116,13 @@ impl Records {
         };
         let line = serde_json::to_string(&envelope)
             .map_err(|e| crate::errors::AgentError::Config(e.to_string()))?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
+        // Private: the records hold the whole conversation.
+        let path = self.path.clone();
+        let file = tokio::task::spawn_blocking(move || crate::private_fs::open_append(&path))
             .await
+            .map_err(|e| crate::errors::AgentError::Config(e.to_string()))?
             .map_err(|e| crate::errors::AgentError::Config(e.to_string()))?;
+        let mut file = tokio::fs::File::from_std(file);
         file.write_all(line.as_bytes())
             .await
             .map_err(|e| crate::errors::AgentError::Config(e.to_string()))?;

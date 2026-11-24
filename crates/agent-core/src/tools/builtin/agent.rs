@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
@@ -323,7 +324,7 @@ impl ExecutableTool for AgentTool {
             // A fork resumes under the instructions it ran under.
             fork_agent(ctx, instructions, Some(profile_name.clone()), llm)
         } else if fork {
-            let source = match ctx.fork_source.lock().unwrap().clone() {
+            let source = match ctx.fork_source.lock_or_recover().clone() {
                 Some(source) => source,
                 // The loop fills this before running the batch that asked to
                 // fork, so an empty slot means the call did not come through a
@@ -348,7 +349,7 @@ impl ExecutableTool for AgentTool {
 
         if let Some(path) = records_path.clone() {
             if let Some(parent) = path.parent()
-                && let Err(e) = tokio::fs::create_dir_all(parent).await
+                && let Err(e) = crate::private_fs::create_dir_all_async(parent).await
             {
                 return ExecutableToolResult::error(format!(
                     "failed to create subagent records dir: {e}"

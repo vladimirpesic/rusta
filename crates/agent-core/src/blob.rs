@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -5,7 +6,6 @@ use std::{
 };
 
 use regex::Regex;
-use tokio::fs;
 
 use crate::errors::AgentError;
 
@@ -49,7 +49,7 @@ impl BlobStore {
     /// Create or open a blob store rooted at `dir`.
     pub fn new(dir: impl Into<PathBuf>) -> Result<Self, AgentError> {
         let dir = dir.into();
-        std::fs::create_dir_all(&dir)
+        crate::private_fs::create_dir_all(&dir)
             .map_err(|e| AgentError::Config(format!("failed to create blob dir: {e}")))?;
         Ok(Self {
             dir,
@@ -61,10 +61,10 @@ impl BlobStore {
     pub async fn write(&self, content: impl AsRef<[u8]>) -> Result<String, AgentError> {
         let id = ulid::Ulid::generate().to_string();
         let bytes = content.as_ref().to_vec();
-        fs::write(self.path(&id), &bytes)
+        crate::private_fs::write_async(&self.path(&id), bytes.clone())
             .await
             .map_err(|e| AgentError::Config(format!("failed to write blob {id}: {e}")))?;
-        self.cache.lock().unwrap().insert(id.clone(), bytes);
+        self.cache.lock_or_recover().insert(id.clone(), bytes);
         Ok(id)
     }
 

@@ -10,6 +10,7 @@ the write guard, and the trust a project's own config needs.
 - [Built-in guardrails](#built-in-guardrails)
 - [Plan mode](#plan-mode)
 - [Write safety](#write-safety)
+- [What Rusta keeps on disk](#what-rusta-keeps-on-disk)
 - [Workspace trust](#workspace-trust)
 
 ## Permission modes
@@ -62,17 +63,29 @@ how long the decision on a call it matches is remembered: `once` (the default),
 `session`, or `always`, which lasts the session too, since decisions are not
 kept across restarts.
 
+A rule's `name` is for you: a `prompt` rule's approval request names it and the
+file it comes from (`asked by rule "ask-first" in project config
+/repo/.rusta.toml`). An answer is remembered for the rule that asked and no
+other: a "yes to all" for one rule never answers for another rule, whatever the
+names, nor for a built-in guardrail or a tool's own approval. Two rules of one
+file may not share a name; Rusta refuses such a config file.
+
 ## Dangerous commands
 
 In the `default` and `accept_edits` modes, `bash` asks before running a
-dangerous command. The whole chain is checked, including `sudo …`, `sh -c '…'`,
-`eval` and command substitutions:
+dangerous command. The whole chain is checked, including command substitutions,
+nested shells (`sh -c '…'`, `eval`) and the commands that run another:
+`sudo`, `doas`, `env` (`-S` included), `command`, `exec`, `nohup`, `nice`,
+`timeout`, `time`, `stdbuf`, `ionice`, `setsid`, `xargs` and `busybox`:
 
 - **What counts as dangerous:** `rm -rf`, `shutdown`/`reboot`/`halt`/`poweroff`,
   `mkfs*`, `wipefs`, `dd` to a device, `systemctl poweroff|reboot|halt|kexec`, and
   `init 0|6`.
 - **Unchecked commands:** a command whose name is only known at run time
-  (`$CMD`), or whose quoting does not balance, is asked about too.
+  (`$CMD`), or whose quoting does not balance, is asked about too. A word that
+  expands at run time stays in its place, so `sudo -u $USER rm -rf /` is still
+  read as `rm -rf /`, and a wrapper whose next word could be an option or the
+  command (`sudo $FLAGS …`) is asked about.
 - **Exempt:** `rm -rf` whose operands are all literal paths under `/tmp` or
   `/temp`.
 - **Rules and answers:** your own rules are checked first, so an `allow` rule can
@@ -89,16 +102,33 @@ either, since the command itself can `cd` anywhere.
 
 ## Built-in guardrails
 
-Two rules ask in every mode, `bypass_permissions` included, so a `--yes` run
-still cannot write a secret or rewrite history unasked:
+Two guardrails ask in every mode, `bypass_permissions` included, so a `--yes`
+run still cannot write a secret or rewrite history unasked:
 
-- `write_file` and `edit_file` on `.env*`, `.ssh/`, `*.key`, `*.pem`,
-  `.git/config`, `.git-credentials` and `id_*` files;
-- `git push`, `git reset`, `git rebase`, `git checkout -f` and `git clean -f`.
+- **Secrets:** `write_file` and `edit_file` on `.env*`, `.ssh/`, `*.key`,
+  `*.pem`, `.git/config`, `.git-credentials` and `id_*` files. A path is judged
+  as given and as it resolves, the way the tool resolves it: a symlink named
+  `notes.txt` that leads to `.env`, or a new file in a folder that is a symlink
+  to `.ssh`, is asked about too.
+- **Git history:** `git push`, `git reset`, `git rebase`, a forced
+  `git checkout` or `git switch` (`-f`, `--force`, `--discard-changes`) and a
+  forced `git clean`. Git is recognised however it is called: after its global
+  options (`git -C dir push`, `git --git-dir=… reset`, `git -c key=value
+  rebase`), quoted (`g''it push`), by path or as `git-push`, through the
+  commands that run another (listed above), in a nested shell or `eval`, and in
+  a command substitution. A git command whose operation cannot be read is asked
+  about too: its subcommand or a force flag only known at run time, an option
+  git does not document, or a `-c` that defines an alias. A command whose name
+  is only known at run time (`$GIT push`) is not recognisably git, and in
+  bypass mode it is not asked about.
 
-Your own rules are checked first, so an `allow` rule lets a specific case
-through; `dangerous_command_guard = false` turns both off. The REPL and the TUI
-ask in every mode, `--yes` included, when a guardrail or a plan review applies.
+The prompt says which guardrail asks and what it found (`destructive git
+command: git push (built-in guardrail)`). Each guardrail's answer is its own:
+"yes to all" for the secrets guardrail does not answer for the git one, and no
+configured rule can answer for either. Your own rules are checked first, so an
+`allow` rule lets a specific case through; `dangerous_command_guard = false`
+turns both off. The REPL and the TUI ask in every mode, `--yes` included, when a
+guardrail or a plan review applies.
 
 ## Keys stay with Rusta
 
@@ -204,6 +234,37 @@ replaced, and a later overwrite needs a read first.
   They are dropped from both strings, the text is matched on the line they name,
   even with its indentation left out (or wherever it occurs once), and the result
   says so.
+
+Both tools replace a file whole, never part of it:
+
+- **Atomically.** The new contents go to a temporary file in the same folder,
+  with the file's own permissions, are flushed to disk, and are renamed over the
+  file. A full disk, an I/O error or a crash leaves the old contents whole. A new
+  file gets the permissions any new file gets.
+- **Only if the file is still as read.** Right before the rename the file is
+  checked again: one someone changed while the edit was made is left as they
+  left it, and the tool says to read it again.
+- **Symlinks stay links.** A symlink's target gets the new contents.
+- **In place where a rename would change the file.** A file with other hard
+  links, or owned by another user, is written in place after the same check, so
+  every link sees the change and the owner stays; so is a file in a folder that
+  does not let Rusta create the temporary file. Renaming also drops extended
+  attributes and access lists set on the old file.
+
+## What Rusta keeps on disk
+
+The session records, their sidecars and blobs, the session index, spilled tool
+output and attachments, background task output, schedules, goals, the input
+history, the workspace trust store, cached provider data and the config `rusta
+init` writes are yours alone on Linux and macOS: their folders are `0700` and
+their files `0600`, whatever the umask. A file or folder of these that others
+can read is made yours alone again when Rusta next writes it. `rusta export`
+creates its archive `0600` too, in the folder you name. State files are replaced
+atomically, so a crash leaves the old file or the new one.
+
+On Windows, these files are in your profile (`%APPDATA%`, `%LOCALAPPDATA%`),
+whose access list lets only you and administrators read them; Rusta sets no
+access list of its own.
 
 ## Workspace trust
 

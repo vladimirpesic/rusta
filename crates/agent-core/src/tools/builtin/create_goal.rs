@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use async_trait::async_trait;
 use lm_bridge::tool::Tool;
 use serde_json::json;
@@ -79,7 +80,7 @@ impl ExecutableTool for CreateGoalTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let mut manager = ctx.goal_manager.lock().unwrap();
+        let mut manager = ctx.goal_manager.lock_or_recover();
         match manager.create(objective, completion_criterion, replace) {
             Ok(id) => ExecutableToolResult::text(format!(
                 "Created goal {id}: {objective}. I will work toward this objective across turns until you update it to complete, paused, or blocked."

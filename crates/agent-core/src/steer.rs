@@ -7,6 +7,7 @@
 //! and a `wait_for` in progress ends early with the interrupted-by-message
 //! result instead of holding the user hostage.
 
+use crate::sync::LockExt;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
@@ -39,19 +40,19 @@ impl SteerChannel {
     /// before the turn's next model request, and a `wait_for` in progress
     /// ends early.
     pub fn steer(&self, message: impl Into<String>) {
-        self.pending.lock().unwrap().push_back(message.into());
+        self.pending.lock_or_recover().push_back(message.into());
         self.notify.notify_waiters();
     }
 
     /// Take every pending message, oldest first.
     pub fn drain(&self) -> Vec<String> {
-        self.pending.lock().unwrap().drain(..).collect()
+        self.pending.lock_or_recover().drain(..).collect()
     }
 
     /// Whether no message is pending.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.pending.lock().unwrap().is_empty()
+        self.pending.lock_or_recover().is_empty()
     }
 
     /// Register interest in the next steered message. The registration sees

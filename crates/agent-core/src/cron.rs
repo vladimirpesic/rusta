@@ -12,6 +12,7 @@
 //! their single fire, and deterministic per-id jitter keeps the fleet off the
 //! `:00` and `:30` marks.
 
+use crate::sync::LockExt;
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -195,7 +196,7 @@ impl CronManager {
         if resumed {
             match std::fs::read_to_string(path) {
                 Ok(contents) => match serde_json::from_str::<Vec<CronTask>>(&contents) {
-                    Ok(tasks) => *manager.tasks.lock().unwrap() = tasks,
+                    Ok(tasks) => *manager.tasks.lock_or_recover() = tasks,
                     Err(e) => {
                         tracing::warn!("ignoring unreadable cron sidecar {}: {e}", path.display())
                     }
@@ -204,33 +205,33 @@ impl CronManager {
                 Err(e) => tracing::warn!("could not read cron sidecar {}: {e}", path.display()),
             }
         }
-        *manager.persist_path.lock().unwrap() = Some(path.to_path_buf());
+        *manager.persist_path.lock_or_recover() = Some(path.to_path_buf());
         manager
     }
 
     /// Path future changes persist to, when this store is backed by a file.
     pub fn persist_path(&self) -> Option<PathBuf> {
-        self.persist_path.lock().unwrap().clone()
+        self.persist_path.lock_or_recover().clone()
     }
 
     /// Point future changes at `path` without loading anything.
     pub fn set_persist_path(&self, path: PathBuf) {
-        *self.persist_path.lock().unwrap() = Some(path);
+        *self.persist_path.lock_or_recover() = Some(path);
     }
 
     pub(crate) fn save(&self) {
         let Some(path) = self.persist_path() else {
             return;
         };
-        let tasks = self.tasks.lock().unwrap().clone();
+        let tasks = self.tasks.lock_or_recover().clone();
         let write = || -> Result<(), String> {
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)
+                crate::private_fs::create_dir_all(parent)
                     .map_err(|e| format!("failed to create cron directory: {e}"))?;
             }
-            let file = std::fs::File::create(&path)
-                .map_err(|e| format!("failed to create cron file: {e}"))?;
-            serde_json::to_writer_pretty(file, &tasks)
+            let json = serde_json::to_vec_pretty(&tasks)
+                .map_err(|e| format!("failed to write cron file: {e}"))?;
+            crate::private_fs::write(&path, json)
                 .map_err(|e| format!("failed to write cron file: {e}"))
         };
         if let Err(e) = write() {
@@ -259,7 +260,7 @@ impl CronManager {
         now: i64,
     ) -> Result<CronTask, String> {
         {
-            let tasks = self.tasks.lock().unwrap();
+            let tasks = self.tasks.lock_or_recover();
             if tasks.len() >= MAX_TASKS {
                 return Err(format!(
                     "Cron job cap reached (max {MAX_TASKS} per session)."
@@ -285,7 +286,7 @@ impl CronManager {
             recurring,
             last_fired_at: None,
         };
-        self.tasks.lock().unwrap().push(task.clone());
+        self.tasks.lock_or_recover().push(task.clone());
         self.save();
         Ok(task)
     }
@@ -294,15 +295,15 @@ impl CronManager {
     /// empty state. The store itself stays: a front-end holding a handle to it
     /// (the TUI ticks it without the agent lock) keeps working after `/new`.
     pub fn clear(&self) {
-        self.tasks.lock().unwrap().clear();
-        self.pending_fires.lock().unwrap().clear();
+        self.tasks.lock_or_recover().clear();
+        self.pending_fires.lock_or_recover().clear();
         self.save();
     }
 
     /// Delete a task by id; not-found is a plain `false`, which the tool
     /// reports as an error rather than a silent no-op.
     pub fn remove(&self, id: &str) -> bool {
-        let mut tasks = self.tasks.lock().unwrap();
+        let mut tasks = self.tasks.lock_or_recover();
         let before = tasks.len();
         tasks.retain(|t| t.id != id);
         let removed = tasks.len() != before;
@@ -315,8 +316,7 @@ impl CronManager {
 
     pub fn get(&self, id: &str) -> Option<CronTask> {
         self.tasks
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .iter()
             .find(|t| t.id == id)
             .cloned()
@@ -324,11 +324,11 @@ impl CronManager {
 
     /// All live tasks, in insertion order.
     pub fn list(&self) -> Vec<CronTask> {
-        self.tasks.lock().unwrap().clone()
+        self.tasks.lock_or_recover().clone()
     }
 
     pub fn task_count(&self) -> usize {
-        self.tasks.lock().unwrap().len()
+        self.tasks.lock_or_recover().len()
     }
 
     /// Whether a recurring task is past its 7-day window at `now`.
@@ -361,7 +361,7 @@ impl CronManager {
         let mut fires = Vec::new();
         let mut changed = false;
         {
-            let mut tasks = self.tasks.lock().unwrap();
+            let mut tasks = self.tasks.lock_or_recover();
             let snapshot = tasks.clone();
             for task in &snapshot {
                 let Some((fire, remove, cursor)) = process_due(task, now) else {
@@ -398,7 +398,7 @@ impl CronManager {
     /// with the runs it missed in its `coalescedCount`. Returns the ids of
     /// the jobs that were not waiting yet, which a front-end announces.
     pub fn queue_fires(&self, fires: Vec<CronFire>) -> Vec<String> {
-        let mut pending = self.pending_fires.lock().unwrap();
+        let mut pending = self.pending_fires.lock_or_recover();
         let mut newly_due = Vec::new();
         for fire in fires {
             match pending.iter_mut().find(|p| p.job_id == fire.job_id) {
@@ -415,7 +415,7 @@ impl CronManager {
     /// Take the queued fires' `<cron-fire>` envelopes, one per job, in the
     /// order the jobs came due.
     pub fn drain_fire_markers(&self) -> Vec<String> {
-        std::mem::take(&mut *self.pending_fires.lock().unwrap())
+        std::mem::take(&mut *self.pending_fires.lock_or_recover())
             .iter()
             .map(CronFire::envelope)
             .collect()
@@ -423,7 +423,7 @@ impl CronManager {
 
     /// Number of jobs whose fire waits for the next turn.
     pub fn pending_fire_count(&self) -> usize {
-        self.pending_fires.lock().unwrap().len()
+        self.pending_fires.lock_or_recover().len()
     }
 }
 

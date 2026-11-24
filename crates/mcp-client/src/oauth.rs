@@ -164,22 +164,14 @@ impl AddressPolicy {
 }
 
 /// Read `response`'s body, up to [`MAX_RESPONSE_BYTES`].
-async fn read_limited(mut response: reqwest::Response) -> Result<Vec<u8>, OAuthError> {
-    let too_large = |response: &reqwest::Response| OAuthError::TooLarge(response.url().to_string());
-    if response
-        .content_length()
-        .is_some_and(|len| len > MAX_RESPONSE_BYTES as u64)
-    {
-        return Err(too_large(&response));
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
-            return Err(too_large(&response));
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
+async fn read_limited(response: reqwest::Response) -> Result<Vec<u8>, OAuthError> {
+    let url = response.url().to_string();
+    lm_bridge::http::read_limited(response, MAX_RESPONSE_BYTES)
+        .await
+        .map_err(|e| match e {
+            lm_bridge::http::ReadLimitedError::TooLarge { .. } => OAuthError::TooLarge(url),
+            lm_bridge::http::ReadLimitedError::Http(e) => e.into(),
+        })
 }
 
 /// What an authorization server publishes about itself (RFC 8414).
@@ -680,32 +672,14 @@ impl CredentialStore {
         Self { path: path.into() }
     }
 
-    /// Persist a token.
-    ///
-    /// On Unix the file is created with mode `0o600`; on other platforms it
-    /// falls back to the default permissions.
+    /// Persist a token, privately and atomically ([`lm_bridge::private_fs`]):
+    /// `0600` in a `0700` folder on Unix, replaced whole.
     pub fn save(&self, token: &OAuthToken) -> Result<(), OAuthError> {
         if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
+            lm_bridge::private_fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(token)?;
-
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&self.path)?;
-            file.write_all(json.as_bytes())?;
-        }
-        #[cfg(not(unix))]
-        {
-            std::fs::write(&self.path, json)?;
-        }
+        lm_bridge::private_fs::write(&self.path, json)?;
         Ok(())
     }
 

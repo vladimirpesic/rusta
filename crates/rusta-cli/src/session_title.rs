@@ -8,6 +8,7 @@
 //! effort: a failure leaves the session untitled, to try again after a later
 //! turn, at most three times in a run.
 
+use agent_core::sync::LockExt;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -62,12 +63,12 @@ impl SessionTitle {
     /// The title, empty while the session has none.
     #[must_use]
     pub fn current(&self) -> String {
-        self.current.lock().unwrap().clone()
+        self.current.lock_or_recover().clone()
     }
 
     /// The session's title from now on.
     pub fn set(&self, title: impl Into<String>) {
-        *self.current.lock().unwrap() = title.into();
+        *self.current.lock_or_recover() = title.into();
     }
 
     /// Start an attempt at a title: `false` while one is under way, or once

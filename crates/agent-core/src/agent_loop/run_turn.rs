@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use std::sync::{Arc, Mutex, atomic::Ordering};
 
 use lm_bridge::{message::Message, provider::FinishReason, usage::TokenUsage};
@@ -119,7 +120,7 @@ pub(crate) fn step_tool_table(
     tool_disclosure: &Mutex<ToolDisclosureState>,
 ) -> Vec<lm_bridge::tool::Tool> {
     let (list, left_out) = capped_tool_table(registry, tool_ctx, tool_disclosure);
-    if tool_disclosure.lock().unwrap().note_capped(&left_out) && !left_out.is_empty() {
+    if tool_disclosure.lock_or_recover().note_capped(&left_out) && !left_out.is_empty() {
         tracing::warn!(
             "the model takes at most {} tools per request; left out: {}",
             list.len(),
@@ -154,9 +155,9 @@ pub(crate) fn offered_tools(
     tool_ctx: &ExecutableToolContext,
     tool_disclosure: &Mutex<ToolDisclosureState>,
 ) -> Vec<lm_bridge::tool::Tool> {
-    let reg = registry.lock().unwrap();
+    let reg = registry.lock_or_recover();
     let has_dynamic = !reg.dynamic_definition_names().is_empty();
-    let goal_manager = tool_ctx.goal_manager.lock().unwrap();
+    let goal_manager = tool_ctx.goal_manager.lock_or_recover();
     let mut list: Vec<lm_bridge::tool::Tool> = reg
         .all()
         .iter()
@@ -180,7 +181,7 @@ pub(crate) fn offered_tools(
     {
         return list;
     }
-    let loaded = tool_disclosure.lock().unwrap().loaded().clone();
+    let loaded = tool_disclosure.lock_or_recover().loaded().clone();
     for name in loaded {
         if let Some(tool) = reg.get(&name)
             && reg.is_dynamic(&name)
@@ -201,7 +202,7 @@ fn check_fork_prefix(
     context: &crate::context::ContextMemory,
     tools: &[lm_bridge::tool::Tool],
 ) {
-    let Some(baseline) = tool_ctx.fork_prefix_baseline.lock().unwrap().take() else {
+    let Some(baseline) = tool_ctx.fork_prefix_baseline.lock_or_recover().take() else {
         return;
     };
     let system_matches = context.system_prompt() == baseline.system_prompt;
@@ -273,7 +274,7 @@ pub(crate) async fn compact_context(
             .await;
     }
     let todo = {
-        let list = run.tool_ctx.todo_list.lock().unwrap();
+        let list = run.tool_ctx.todo_list.lock_or_recover();
         (!list.is_empty()).then(|| list.format())
     };
     let notice = context
@@ -321,10 +322,15 @@ fn stale_todo_reminder(
     use crate::todo::{STALE_REMINDER_STEPS, changes_todo_list, is_stale_reminder};
     use crate::tools::builtin::todo_list::TODO_LIST_TOOL_NAME;
 
-    if tool_ctx.depth > 0 || registry.lock().unwrap().get(TODO_LIST_TOOL_NAME).is_none() {
+    if tool_ctx.depth > 0
+        || registry
+            .lock_or_recover()
+            .get(TODO_LIST_TOOL_NAME)
+            .is_none()
+    {
         return None;
     }
-    let list = tool_ctx.todo_list.lock().unwrap();
+    let list = tool_ctx.todo_list.lock_or_recover();
     if list.open_count() == 0 {
         return None;
     }
@@ -423,15 +429,15 @@ pub async fn run_turn(
             )
             .await?;
             // The announcements went with the old history.
-            tool_disclosure.lock().unwrap().forget_announcements();
-            tool_ctx.agents_md.lock().unwrap().forget_reminders();
+            tool_disclosure.lock_or_recover().forget_announcements();
+            tool_ctx.agents_md.lock_or_recover().forget_reminders();
         }
 
         // Announce any changes to the set of loadable dynamic tools, carrying
         // each tool's one-line description so the model can select the right
         // tool without guessing from its name alone.
         let dynamic_tools: std::collections::BTreeMap<String, String> = {
-            let reg = registry.lock().unwrap();
+            let reg = registry.lock_or_recover();
             reg.dynamic_definitions()
                 .into_iter()
                 .map(|t| (t.name.clone(), t.description.clone()))
@@ -440,17 +446,16 @@ pub async fn run_turn(
         // An agent without `select_tools` (`explore`, `plan`) has nothing to
         // load tools with, so it is told nothing about loadable tools.
         let can_load_tools = registry
-            .lock()
-            .unwrap()
+            .lock_or_recover()
             .get(SELECT_TOOLS_TOOL_NAME)
             .is_some();
         let announcements = if can_load_tools {
             // Registry first, disclosure second: `offered_tools` and
             // `select_tools` lock them in that order.
             let fingerprint = crate::tool_disclosure::ToolDisclosureState::selection_fingerprint(
-                &registry.lock().unwrap(),
+                &registry.lock_or_recover(),
             );
-            let mut disclosure = tool_disclosure.lock().unwrap();
+            let mut disclosure = tool_disclosure.lock_or_recover();
             // Registry changes are observed here even when the model only
             // calls select_tools at announcement boundaries.
             disclosure.reset_failures_if_selection_changed(&fingerprint);
@@ -464,10 +469,10 @@ pub async fn run_turn(
         // Tools `select_tools` loaded, for a model that takes them on a system
         // message.
         if llm.supports_dynamic_tools() {
-            let names = tool_disclosure.lock().unwrap().take_undelivered();
+            let names = tool_disclosure.lock_or_recover().take_undelivered();
             if !names.is_empty() {
                 let definitions: Vec<lm_bridge::tool::Tool> = {
-                    let reg = registry.lock().unwrap();
+                    let reg = registry.lock_or_recover();
                     reg.dynamic_definitions()
                         .into_iter()
                         .filter(|tool| names.contains(&tool.name))
@@ -487,7 +492,7 @@ pub async fn run_turn(
             }
         }
         // Instruction files found under directories the last tools touched.
-        let agents_md_reminder = tool_ctx.agents_md.lock().unwrap().take_reminder();
+        let agents_md_reminder = tool_ctx.agents_md.lock_or_recover().take_reminder();
         if let Some(reminder) = agents_md_reminder {
             context.add_message(Message::user(reminder));
         }
@@ -547,8 +552,8 @@ pub async fn run_turn(
                     cancel,
                 )
                 .await?;
-                tool_disclosure.lock().unwrap().forget_announcements();
-                tool_ctx.agents_md.lock().unwrap().forget_reminders();
+                tool_disclosure.lock_or_recover().forget_announcements();
+                tool_ctx.agents_md.lock_or_recover().forget_reminders();
                 continue;
             }
             Err(e) => return Err(AgentError::Llm(e)),
@@ -576,8 +581,8 @@ pub async fn run_turn(
                 cancel,
             )
             .await?;
-            tool_disclosure.lock().unwrap().forget_announcements();
-            tool_ctx.agents_md.lock().unwrap().forget_reminders();
+            tool_disclosure.lock_or_recover().forget_announcements();
+            tool_ctx.agents_md.lock_or_recover().forget_reminders();
             continue;
         }
 
@@ -742,7 +747,7 @@ pub async fn run_turn(
         // on every step to serve a tool that is almost never called would be a
         // per-step cost paid for nothing.
         if requests_fork(step.tool_calls()) {
-            *tool_ctx.fork_source.lock().unwrap() = Some(ForkSource {
+            *tool_ctx.fork_source.lock_or_recover() = Some(ForkSource {
                 system_prompt: context.system_prompt().to_string(),
                 history: context.fork_snapshot(),
             });
@@ -762,11 +767,11 @@ pub async fn run_turn(
         .await;
         // Cleared unconditionally: a snapshot left behind would silently seed a
         // later fork from a point the model never asked for.
-        *tool_ctx.fork_source.lock().unwrap() = None;
+        *tool_ctx.fork_source.lock_or_recover() = None;
         match batch {
             Ok(outcome) => {
                 {
-                    let mut agents_md = tool_ctx.agents_md.lock().unwrap();
+                    let mut agents_md = tool_ctx.agents_md.lock_or_recover();
                     for call in &tool_calls {
                         let args: serde_json::Value = call
                             .arguments
@@ -852,7 +857,7 @@ fn with_turn_usage(
 /// added to the tree's shared tally. The session's own steps are its turn's.
 fn report_subagent_usage(tool_ctx: &ExecutableToolContext, step: &TokenUsage) {
     if tool_ctx.depth > 0 {
-        tool_ctx.subagent_usage.lock().unwrap().add(step);
+        tool_ctx.subagent_usage.lock_or_recover().add(step);
     }
 }
 
@@ -863,7 +868,7 @@ fn report_subagent_usage(tool_ctx: &ExecutableToolContext, step: &TokenUsage) {
 fn with_subagent_usage(tool_ctx: &ExecutableToolContext, mut usage: TokenUsage) -> TokenUsage {
     if tool_ctx.depth == 0 {
         usage.add(&std::mem::take(
-            &mut *tool_ctx.subagent_usage.lock().unwrap(),
+            &mut *tool_ctx.subagent_usage.lock_or_recover(),
         ));
     }
     usage

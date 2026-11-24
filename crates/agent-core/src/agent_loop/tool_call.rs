@@ -1,3 +1,4 @@
+use crate::sync::LockExt;
 use std::{
     collections::{BTreeMap, HashSet},
     pin::Pin,
@@ -47,7 +48,7 @@ fn keeping_output(
         } = &event
             && *from == id
         {
-            let mut written = written.lock().unwrap();
+            let mut written = written.lock_or_recover();
             for chunk in [stdout_chunk, stderr_chunk].into_iter().flatten() {
                 if written.len() + chunk.len() <= KEPT_OUTPUT_BYTES {
                     written.push_str(chunk);
@@ -108,7 +109,7 @@ pub async fn run_tool_call_batch(
     // Prepare all calls while holding the registry lock, then drop it before
     // any await so the resulting future remains `Send`.
     let prepared: Vec<PreparedToolCall> = {
-        let reg = registry.lock().unwrap();
+        let reg = registry.lock_or_recover();
         tool_calls
             .into_iter()
             .map(|tc| prepare_tool_call(tc, &reg))
@@ -242,9 +243,15 @@ pub async fn run_tool_call_batch(
                 PolicyCheck::Deny => Some(format!(
                     "Permission denied for {name}. Do not retry the exact same call; diagnose and adjust your approach."
                 )),
-                PolicyCheck::Prompt { rule_key, scope } => {
+                PolicyCheck::Prompt {
+                    rule_key,
+                    scope,
+                    reason,
+                } => {
                     fire_permission_hook(ctx, &name, &args, true, None);
-                    let response = permissions.request_approval(&rule_key, &name, &args).await;
+                    let response = permissions
+                        .request_approval(&rule_key, reason, &name, &args)
+                        .await;
                     fire_permission_hook(ctx, &name, &args, false, Some(&response));
                     permissions.record_policy_response(response, scope, &rule_key);
                     match response {
@@ -259,7 +266,9 @@ pub async fn run_tool_call_batch(
                     let approval = tool.approval_rule(&args);
                     if approval != "silent" && !permissions.is_allowed(approval, &args, ctx) {
                         fire_permission_hook(ctx, &name, &args, true, None);
-                        let response = permissions.request_approval(approval, &name, &args).await;
+                        let response = permissions
+                            .request_approval(approval, None, &name, &args)
+                            .await;
                         fire_permission_hook(ctx, &name, &args, false, Some(&response));
                         match response {
                             ApprovalResponse::AllowOnce | ApprovalResponse::AllowSession => None,
@@ -323,7 +332,7 @@ pub async fn run_tool_call_batch(
             });
             let result = tokio::select! {
                 result = tool.execute(args, &ctx, &tool_call_id) => result,
-                _ = cancel.cancelled() => cancelled(&written.lock().unwrap()),
+                _ = cancel.cancelled() => cancelled(&written.lock_or_recover()),
             };
             fire_tool_lifecycle_hook(&ctx, &name, &args_for_hooks, &result);
             let mut result = result;

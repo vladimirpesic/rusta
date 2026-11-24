@@ -4,6 +4,7 @@
 //! loaded names are tracked in `ToolDisclosureState`; the agent loop includes
 //! those definitions in the tool table offered on subsequent turns.
 
+use crate::sync::LockExt;
 use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
@@ -156,18 +157,18 @@ impl ExecutableTool for SelectToolsTool {
         let in_use = cap.map(|_| {
             crate::agent_loop::run_turn::offered_tools(&registry_arc, ctx, &self.disclosure).len()
         });
-        let registry = registry_arc.lock().unwrap();
+        let registry = registry_arc.lock_or_recover();
         // Which of the names the goal state lets through, decided before the
         // disclosure lock: `offered_tools` takes these two locks in that order.
         let goal_offers: std::collections::HashSet<String> = {
-            let goal_manager = ctx.goal_manager.lock().unwrap();
+            let goal_manager = ctx.goal_manager.lock_or_recover();
             names
                 .iter()
                 .filter(|name| goal_manager.should_offer_tool(name))
                 .cloned()
                 .collect()
         };
-        let mut disclosure = self.disclosure.lock().unwrap();
+        let mut disclosure = self.disclosure.lock_or_recover();
         // A registry change resets the failure counters, here and at the
         // announcement boundary in `run_turn`, so they always describe the
         // registry the current names are selected against.
