@@ -26,7 +26,7 @@ fastrand.workspace = true
 futures.workspace = true
 # Must resolve to the same version rmcp depends on, otherwise `Sse` is a distinct
 # type and `LenientHttpClient` cannot implement `StreamableHttpClient`.
-sse-stream = "0.2"
+sse-stream = "0.3"
 
 [dev-dependencies]
 tokio-test.workspace = true
