@@ -41,6 +41,16 @@ const COMPACTION_OVERFLOW_SHRINK_RATIOS: [f64; 3] = [0.7, 0.5, 0.35];
 /// Default for [`ContextMemory::set_compaction_max_attempts`]: model requests
 /// one compaction may make, retries and shrinks included.
 pub const DEFAULT_COMPACTION_MAX_ATTEMPTS: u32 = 5;
+/// The smallest request, in estimated tokens, whose reported count teaches
+/// [`ContextMemory::calibrate`] anything: below it the provider's fixed
+/// framing of messages weighs more than their text.
+const CALIBRATION_MIN_ESTIMATE: u64 = 2_000;
+/// The bounds of the learned ratio: a report outside them says more about
+/// the request (an image counted otherwise, a usage that left something out)
+/// than about how the model counts text.
+const CALIBRATION_BOUNDS: (f64, f64) = (0.5, 3.0);
+/// How far one report moves the learned ratio once there is one.
+const CALIBRATION_WEIGHT: f64 = 0.3;
 
 /// Token-budget configuration for a conversation.
 #[derive(Debug, Clone, Copy)]
@@ -177,6 +187,10 @@ pub struct ContextMemory {
     /// The estimate right after the last compaction. Proactive compaction does
     /// not run again until the context has grown past it.
     last_compacted_tokens: Option<u64>,
+    /// How the model's own count of a request compares with Rusta's estimate
+    /// of it, learned from the replies; `None` until a reply has taught it.
+    /// See [`Self::calibrate`].
+    token_scale: Option<f64>,
 }
 
 impl ContextMemory {
@@ -194,6 +208,7 @@ impl ContextMemory {
             compacted_through_line: 0,
             compaction_max_attempts: DEFAULT_COMPACTION_MAX_ATTEMPTS,
             last_compacted_tokens: None,
+            token_scale: None,
         }
     }
 
@@ -543,6 +558,64 @@ impl ContextMemory {
         self.budget = budget;
     }
 
+    /// Learn how the model counts: a request Rusta estimated at `estimated`
+    /// tokens ([`Self::request_estimate`]) the provider reported as `reported`
+    /// prompt tokens. From then on [`Self::estimate_tokens`] gives the
+    /// estimate as the model would count it, so compaction starts where the
+    /// window really fills rather than where four characters a token says it
+    /// does. The first report sets the ratio and each later one moves it part
+    /// of the way, so that one odd request does not swing it.
+    pub fn calibrate(&mut self, estimated: u64, reported: u64) {
+        if estimated < CALIBRATION_MIN_ESTIMATE || reported == 0 {
+            return;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let observed = reported as f64 / estimated as f64;
+        if !(CALIBRATION_BOUNDS.0..=CALIBRATION_BOUNDS.1).contains(&observed) {
+            return;
+        }
+        self.token_scale = Some(self.token_scale.map_or(observed, |scale| {
+            scale + (observed - scale) * CALIBRATION_WEIGHT
+        }));
+    }
+
+    /// Forget what [`Self::calibrate`] learned: another model counts its own
+    /// way.
+    pub fn forget_calibration(&mut self) {
+        self.token_scale = None;
+    }
+
+    /// The ratio of the model's count to Rusta's estimate, once a reply has
+    /// taught it.
+    #[must_use]
+    pub fn token_scale(&self) -> Option<f64> {
+        self.token_scale
+    }
+
+    /// `estimate`, in Rusta's estimated tokens, as the model would count it.
+    #[must_use]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn as_counted(&self, estimate: u64) -> u64 {
+        self.token_scale
+            .map_or(estimate, |scale| (estimate as f64 * scale).round() as u64)
+    }
+
+    /// Rusta's estimate of a request carrying this conversation and the tool
+    /// table `tools`, before [`Self::calibrate`]'s ratio: what a reply's
+    /// count of that request is compared with.
+    #[must_use]
+    pub fn request_estimate(&self, tools: &[Tool]) -> u64 {
+        self.raw_estimate_tokens()
+            + tools
+                .iter()
+                .map(context_compaction::estimate_tool_tokens)
+                .sum::<u64>()
+    }
+
     /// Replace the system prompt.
     pub fn set_system_prompt(&mut self, prompt: impl Into<String>) {
         self.system_prompt = prompt.into();
@@ -807,9 +880,12 @@ impl ContextMemory {
                 .iter()
                 .map(context_compaction::estimate_tool_tokens)
                 .sum::<u64>();
+        // The budget is in the model's tokens and the estimates in Rusta's:
+        // it is brought onto their scale.
+        let scale = self.token_scale.unwrap_or(1.0);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let budget =
-            ((window.saturating_sub(reserve)) as f64 * COMPACTION_INPUT_SAFETY_RATIO) as u64;
+        let budget = ((window.saturating_sub(reserve)) as f64 * COMPACTION_INPUT_SAFETY_RATIO
+            / scale) as u64;
         let budget = budget.saturating_sub(overhead);
         let mut messages = if budget > 0 && estimate_messages(&history) > budget {
             let kept = keep_recent_within(&history, budget);
@@ -1092,12 +1168,17 @@ impl ContextMemory {
         Ok(removed)
     }
 
-    /// Estimate token count using a simple 4-character heuristic.
-    ///
-    /// This matches the heuristic used by `glm-acp-agent` and is intentionally
-    /// cheap so it can run on every turn. The system prompt is included.
+    /// The tokens the system prompt and the conversation hold, as the model
+    /// counts them once a reply has taught Rusta how it does
+    /// ([`Self::calibrate`]), and by four characters a token before.
     #[must_use]
     pub fn estimate_tokens(&self) -> u64 {
+        self.as_counted(self.raw_estimate_tokens())
+    }
+
+    /// The system prompt and the conversation at four characters a token:
+    /// cheap enough to run on every step.
+    fn raw_estimate_tokens(&self) -> u64 {
         let total_chars: usize = self
             .system_prompt
             .len()
@@ -1223,6 +1304,68 @@ mod tests {
 
     /// The first exchange is the user's first prompt, past the reminders
     /// before it, and the last text the model gave before the next prompt.
+    /// The provider's count of each request teaches how the model counts:
+    /// the first report sets the ratio, later ones move it part of the way,
+    /// and the estimates follow it until another model is attached.
+    #[test]
+    fn the_estimate_follows_how_the_model_counts() {
+        let mut ctx = ContextMemory::new("s".repeat(40_000), 100_000);
+        let raw = ctx.estimate_tokens();
+        assert_eq!(raw, 10_000);
+        assert_eq!(ctx.token_scale(), None);
+
+        ctx.calibrate(10_000, 12_000);
+        assert_eq!(ctx.token_scale(), Some(1.2));
+        assert_eq!(ctx.estimate_tokens(), 12_000);
+        assert_eq!(ctx.as_counted(1_000), 1_200);
+
+        // A later report moves the ratio by a share of the difference.
+        ctx.calibrate(10_000, 22_000);
+        let scale = ctx.token_scale().unwrap();
+        assert!((scale - 1.5).abs() < 1e-9, "{scale}");
+
+        // A small request, a report of nothing and an implausible ratio
+        // teach nothing.
+        for (estimated, reported) in [
+            (1_000, 3_000),
+            (10_000, 0),
+            (10_000, 31_000),
+            (10_000, 4_000),
+        ] {
+            ctx.calibrate(estimated, reported);
+            assert!((ctx.token_scale().unwrap() - 1.5).abs() < 1e-9);
+        }
+
+        ctx.forget_calibration();
+        assert_eq!(ctx.token_scale(), None);
+        assert_eq!(ctx.estimate_tokens(), raw);
+    }
+
+    /// Compaction starts where the window fills by the model's count: a
+    /// conversation under the trigger by Rusta's estimate is over it once
+    /// the model has shown it counts more.
+    #[test]
+    fn compaction_starts_where_the_model_counts_the_window_full() {
+        let mut ctx = ContextMemory::new("system", 10_000);
+        ctx.add_user_message("x".repeat(32_000));
+        assert!(!ctx.needs_proactive_compaction());
+        ctx.calibrate(8_000, 10_000);
+        assert!(ctx.needs_proactive_compaction());
+    }
+
+    /// The tool table is part of what a reply counts, so the estimate it is
+    /// compared with carries it.
+    #[test]
+    fn a_request_estimate_carries_the_tool_table() {
+        let ctx = ContextMemory::new("s".repeat(4_000), 100_000);
+        let tool = Tool::new("probe", "d".repeat(400), serde_json::json!({}));
+        assert_eq!(
+            ctx.request_estimate(std::slice::from_ref(&tool)),
+            1_000 + context_compaction::estimate_tool_tokens(&tool)
+        );
+        assert_eq!(ctx.request_estimate(&[]), 1_000);
+    }
+
     #[test]
     fn the_first_exchange_is_the_first_prompt_and_its_answer() {
         let mut context = ContextMemory::new("sys", 100_000);

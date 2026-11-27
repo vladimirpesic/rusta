@@ -76,7 +76,7 @@ pub struct ContextPart {
 }
 
 /// What the next request holds.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ContextUsage {
     /// The parts in the order the request carries them, each tool source and
     /// each tool's results largest first. Empty parts are left out.
@@ -91,6 +91,10 @@ pub struct ContextUsage {
     /// conversation, without the tool table
     /// ([`crate::context::ContextMemory::estimate_tokens`]).
     pub compaction_measure: u64,
+    /// How the model counted the requests it was sent against Rusta's
+    /// estimate of them ([`crate::context::ContextMemory::calibrate`]). Every
+    /// figure here is scaled by it; `None` until a reply has taught it.
+    pub token_scale: Option<f64>,
 }
 
 impl ContextUsage {

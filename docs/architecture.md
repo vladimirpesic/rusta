@@ -116,8 +116,13 @@ result is answered, and duplicate tool-call ids are made unique.
 Rusta compacts it before the next request instead of waiting for the provider to
 reject one. A model that keeps part of its window free for output compacts
 before the conversation grows into that part: DeepSeek keeps 256K, so it
-compacts at 786,432 tokens of its 1M window. `/context` shows what the next
-request holds, part by part, and how far the conversation is from that point.
+compacts at 786,432 tokens of its 1M window. The conversation is measured as
+the model counts it: Rusta estimates four characters a token, and every reply
+reports how many tokens the request held, so Rusta learns the ratio between the
+two and scales its estimates by it (a request under 2,000 estimated tokens, or
+a ratio outside 0.5–3, teaches nothing; another model starts over). `/context`
+shows what the next request holds, part by part, and how far the conversation
+is from that point.
 
 - **The model writes a handoff summary.** The request carries the real
   conversation, trimmed from the oldest end to fit the window, and asks for the

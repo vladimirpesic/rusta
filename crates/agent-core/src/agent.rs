@@ -790,6 +790,14 @@ impl Agent {
     /// starts a new prompt cache anyway.
     pub fn set_llm(&mut self, llm: Arc<dyn Llm>) {
         let model = llm.model_name().to_string();
+        // Another model counts tokens its own way.
+        if self
+            .llm
+            .as_ref()
+            .is_some_and(|old| old.model_name() != model)
+        {
+            self.context.forget_calibration();
+        }
         self.llm = Some(llm);
         self.set_context_budget(self.context.max_tokens());
         if self.model_pool.is_some() && self.caller_model != model {
@@ -1433,12 +1441,17 @@ impl Agent {
         let (tools, tools_left_out) =
             crate::agent_loop::run_turn::capped_tool_table(&self.registry, &ctx, disclosure);
         let budget = self.context.budget();
+        let mut parts = crate::context_usage::measure(&self.context.build_history(), &tools);
+        for part in &mut parts {
+            part.tokens = self.context.as_counted(part.tokens);
+        }
         crate::context_usage::ContextUsage {
-            parts: crate::context_usage::measure(&self.context.build_history(), &tools),
+            parts,
             tools_left_out,
             window: budget.max_tokens(),
             compaction_at: budget.proactive_threshold(),
             compaction_measure: self.context.estimate_tokens(),
+            token_scale: self.context.token_scale(),
         }
     }
 
@@ -1985,6 +1998,58 @@ mod tests {
             }
             Ok(responses.remove(0))
         }
+    }
+
+    /// Each reply's count of its request teaches the session how its model
+    /// counts, and another model starts over.
+    #[tokio::test]
+    async fn a_reply_teaches_how_the_model_counts() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut agent =
+            Agent::new_with_budget(temp.path().to_path_buf(), "s".repeat(40_000), 100_000)
+                .with_permission_mode(PermissionMode::BypassPermissions);
+        let usage = TokenUsage {
+            input_tokens: 30_000,
+            ..TokenUsage::empty()
+        };
+        let llm = MockLlm::new(vec![StepResult {
+            message: Message::assistant_text("done"),
+            usage,
+            finish_reason: Some(FinishReason::Stop),
+            response_id: None,
+            stop_reason: None,
+        }]);
+        let estimated = agent.context.request_estimate(&[]);
+        agent
+            .prompt(&llm, "go", &CancellationToken::new())
+            .await
+            .unwrap();
+        let scale = agent.context.token_scale().expect("the reply taught it");
+        assert!(
+            scale > 1.0 && scale <= 3.0,
+            "{scale} from an estimate of {estimated}"
+        );
+
+        agent.set_llm(Arc::new(MockLlm::new(Vec::new())));
+        assert_eq!(agent.context.token_scale(), Some(scale), "the same model");
+        struct Other;
+        #[async_trait]
+        impl Llm for Other {
+            fn model_name(&self) -> &str {
+                "other"
+            }
+            async fn chat(
+                &self,
+                _messages: Vec<Message>,
+                _tools: Vec<Tool>,
+                _callbacks: LlmCallbacks,
+                _cancel: &CancellationToken,
+            ) -> Result<StepResult, lm_bridge::errors::LlmError> {
+                unreachable!("never asked")
+            }
+        }
+        agent.set_llm(Arc::new(Other));
+        assert_eq!(agent.context.token_scale(), None);
     }
 
     /// Answers from a script and keeps the system prompt and the tools JSON of

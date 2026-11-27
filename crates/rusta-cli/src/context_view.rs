@@ -43,6 +43,12 @@ pub fn render(usage: &ContextUsage, model: &str) -> String {
         thousands(usage.compaction_at),
         thousands(usage.compaction_measure)
     ));
+    if let Some(scale) = usage.token_scale {
+        out.push_str(&format!(
+            "\nThe estimates are scaled by {scale:.2}, from how {model} counted the requests it \
+             was sent."
+        ));
+    }
     if !usage.tools_left_out.is_empty() {
         let offered: usize = usage
             .parts
@@ -157,6 +163,7 @@ mod tests {
             window: 1_048_576,
             compaction_at: 943_718,
             compaction_measure: 31_200,
+            token_scale: None,
         }
     }
 
@@ -226,6 +233,24 @@ mod tests {
             ),
             "{text}"
         );
+    }
+
+    /// Once the model's replies have taught Rusta how it counts, the report
+    /// says by how much its estimates are scaled.
+    #[test]
+    fn a_learned_scale_is_named() {
+        let mut calibrated = usage(vec![part(PartKind::SystemPrompt, 1, 9_812)], Vec::new());
+        calibrated.token_scale = Some(1.184);
+        let text = render(&calibrated, "deepseek-flash");
+        assert!(
+            text.ends_with(
+                "The estimates are scaled by 1.18, from how deepseek-flash counted the requests \
+                 it was sent."
+            ),
+            "{text}"
+        );
+        let plain = render(&usage(Vec::new(), Vec::new()), "deepseek-flash");
+        assert!(!plain.contains("scaled"), "{plain}");
     }
 
     /// The results of the tools past the first five share a line, and the

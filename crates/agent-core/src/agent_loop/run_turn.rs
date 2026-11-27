@@ -500,6 +500,9 @@ pub async fn run_turn(
             context.add_message(reminder);
         }
 
+        // What the request holds by Rusta's estimate, to learn from the
+        // provider's own count of it how the model counts.
+        let estimated = context.request_estimate(&tools);
         let step = match chat_with_retry(
             llm,
             context.build_history(),
@@ -560,6 +563,7 @@ pub async fn run_turn(
         };
         usage.add(&step.usage);
         report_subagent_usage(tool_ctx, &step.usage);
+        context.calibrate(estimated, step.usage.input_tokens);
 
         if let Some(hook) = &loop_hooks.after_step {
             hook(&step);

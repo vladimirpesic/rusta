@@ -170,7 +170,7 @@ The REPL and the TUI take these commands:
 | `/plan` | Turn plan mode on or off (see [Plan mode](permissions.md#plan-mode)) |
 | `/swarm [on \| off \| <task>]` | Toggle swarm mode, or run one task in it (see [Agent swarm](agents.md#agent-swarm)) |
 | `/tools` | List the tools the model is offered |
-| `/context` | Show what the next request holds, part by part, in estimated tokens and as a share of the context window: the system prompt; the tools by source (built-in, each MCP server); your messages, Rusta's notes, replies, thinking and tool calls; each tool's results; media. It says where compaction starts, and which tools the model's cap leaves out |
+| `/context` | Show what the next request holds, part by part, in estimated tokens (scaled to how the model counted the requests it was sent, once it has replied) and as a share of the context window: the system prompt; the tools by source (built-in, each MCP server); your messages, Rusta's notes, replies, thinking and tool calls; each tool's results; media. It says where compaction starts, and which tools the model's cap leaves out |
 | `/mcp` | List the MCP servers and their state |
 | `/reload` | Read profiles, skills and instruction files again and rebuild the system prompt |
 | `/skill <name> [key=value …]` | Run a skill |
