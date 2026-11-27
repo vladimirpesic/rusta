@@ -192,6 +192,8 @@ pub enum Command {
     Tools,
     /// `/context`: what the next request holds, part by part.
     Context,
+    /// `/usage`: what the session's requests used and cost so far.
+    Usage,
     Plan,
     Skill {
         name: String,
@@ -312,6 +314,7 @@ impl Command {
             }
             "/tools" => Self::Tools,
             "/context" => Self::Context,
+            "/usage" => Self::Usage,
             "/plan" => Self::Plan,
             "/skill" => {
                 if rest.is_empty() {
@@ -443,6 +446,10 @@ pub async fn execute(ctx: &mut CommandContext, cmd: Command) -> Result<String, S
             use agent_core::agent_loop::Llm;
             let usage = ctx.agent.lock().await.context_usage();
             Ok(crate::context_view::render(&usage, ctx.llm.model_name()))
+        }
+        Command::Usage => {
+            let summary = ctx.agent.lock().await.usage_summary();
+            Ok(crate::usage_view::render(&summary))
         }
         Command::Plan => {
             let enabled = ctx.agent.lock().await.toggle_plan_mode();
@@ -748,6 +755,9 @@ async fn switch_model_provider(
     let window = new_provider.context_window();
     let provider_label = new_provider.name().to_string();
     let model_label = new_provider.model_name().to_string();
+    // Priced at the endpoint the provider was just built for, before the
+    // session's settings name the new provider.
+    let prices = crate::pricing::Prices::for_session(&ctx.cli, &provider_label, &ctx.config.prices);
 
     // Server-side tools belong to the vendor that serves them, so the set has to
     // change with the provider. Leaving Moonshot's `$web_search` registered after
@@ -764,6 +774,7 @@ async fn switch_model_provider(
         agent.set_llm(ctx.llm.clone());
         agent.set_context_budget(window);
         crate::register_builtin_tools(&mut agent, &builtins);
+        agent.set_pricer(Some(Arc::new(prices)));
     }
 
     sync_native_tool_clients(ctx, &provider_label).await;
@@ -1068,6 +1079,7 @@ fn help_text() -> String {
   /undo [count]                     — remove the last turn(s); a count past what can be undone is refused
   /tools                            — list registered tools
   /context                          — what the next request holds, part by part, against the context window
+  /usage                            — the session's tokens so far, how much the prompt cache served, and what they cost
   /plan                             — turn plan mode on or off: the agent plans, and you review the plan before it changes anything
   /exit, /quit                      — quit the application
   /help                             — show this help"
@@ -1292,6 +1304,7 @@ mod tests {
     #[test]
     fn test_parse_compact_instruction() {
         assert_eq!(Command::parse("/context"), Command::Context);
+        assert_eq!(Command::parse("/usage"), Command::Usage);
         assert_eq!(Command::parse("/compact"), Command::Compact(None));
         assert_eq!(Command::parse("/compact    "), Command::Compact(None));
         assert_eq!(

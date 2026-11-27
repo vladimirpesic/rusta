@@ -22,6 +22,9 @@ pub type ToolCallDeltaFn = Arc<dyn Fn(&ToolCall) + Send + Sync>;
 pub type RetryFn = Arc<dyn Fn(&RetryNotice) + Send + Sync>;
 /// Type alias for the callback reporting context compaction.
 pub type CompactionFn = Arc<dyn Fn(&CompactionNotice) + Send + Sync>;
+/// Called when the provider's prompt cache keeps missing
+/// ([`crate::cache_watch`]).
+pub type CacheFn = Arc<dyn Fn(&crate::cache_watch::CacheNotice) + Send + Sync>;
 
 /// What prompted a context compaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +138,8 @@ pub struct LlmCallbacks {
     pub on_retry: Option<RetryFn>,
     /// Called when the context is compacted, before and after.
     pub on_compaction: Option<CompactionFn>,
+    /// Called when the provider's prompt cache keeps missing.
+    pub on_cache: Option<CacheFn>,
 }
 
 /// Agent-facing LLM contract.

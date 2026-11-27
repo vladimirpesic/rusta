@@ -209,7 +209,9 @@ cached prefix of every request, so they change only when they must: the date
 travels in reminders, tools keep a fixed order, tools loaded on demand arrive on
 a system message where the model takes them there, `agent_swarm` stays listed
 outside swarm mode, `/reload` replaces tools in place, and a forked sub-agent
-repeats its caller's exact prefix.
+repeats its caller's exact prefix. A watch on the providers' cache figures says
+when a regression breaks this anyway (see
+[Usage and cost](usage.md#usage-and-cost)).
 
 **Progressive tool disclosure.** A large MCP server would crowd the tool table
 and every request with definitions the model rarely needs. Its tools are

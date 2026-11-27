@@ -197,6 +197,16 @@ tool_timeout_ms = 60000
 # tools. Precedence: per-server > RUSTA_MCP_DEFAULT_DEFERRED > here > size rule.
 # default_deferred = true
 
+# A model's prices in US dollars per million tokens, for /usage, by model id.
+# They win over the prices Rusta knows (DeepSeek's, and Z.AI's pay-per-token
+# GLM prices). cached_input is a token read from the prompt cache and
+# cache_write one written to it where that is billed apart; both default to
+# input. See docs/usage.md, "Usage and cost".
+[prices."kimi-k3.1-pro"]
+input = 1.0
+cached_input = 0.25
+output = 4.0
+
 # Models sub-agents may be bound to. Without this section every sub-agent
 # inherits the parent's model, and the delegation tools advertise no `model`
 # parameter at all. `primary` always means "the calling model" and is reserved.

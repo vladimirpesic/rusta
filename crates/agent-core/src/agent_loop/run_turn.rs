@@ -285,6 +285,7 @@ pub(crate) async fn compact_context(
                 todo,
                 instruction: run.instruction,
                 cancel: run.cancel,
+                ledger: Some(&run.tool_ctx.usage_ledger),
             },
             run.target,
         )
@@ -576,7 +577,13 @@ pub async fn run_turn(
         };
         usage.add(&step.usage);
         report_subagent_usage(tool_ctx, &step.usage);
+        tool_ctx.usage_ledger.record(llm.model_name(), &step.usage);
         context.calibrate(estimated, step.usage.input_tokens);
+        if let Some(notice) = context.observe_cache(&step.usage, estimated)
+            && let Some(on_cache) = &callbacks.on_cache
+        {
+            on_cache(&notice);
+        }
 
         if let Some(hook) = &loop_hooks.after_step {
             hook(&step);
@@ -823,6 +830,7 @@ pub async fn run_turn(
                         &callbacks,
                         cancel,
                         retry,
+                        &tool_ctx.usage_ledger,
                     )
                     .await
                     .map(|result| with_turn_usage(tool_ctx, result, usage));
@@ -852,6 +860,7 @@ pub async fn run_turn(
         &callbacks,
         cancel,
         retry,
+        &tool_ctx.usage_ledger,
     )
     .await
     .map(|result| with_turn_usage(tool_ctx, result, usage))
@@ -985,7 +994,9 @@ pub(crate) fn handoff_reminder(reason: StopReason) -> String {
 /// keeps the conversation's prefix — and the provider's prompt cache — and
 /// an endpoint that expects the tools of a history's tool calls to be
 /// declared gets them. Returns the handoff with `stop_reason` set, or
-/// [`AgentError::NoFinalMessage`] when the model wrote nothing.
+/// [`AgentError::NoFinalMessage`] when the model wrote nothing. Each request
+/// is recorded in `ledger`.
+#[allow(clippy::too_many_arguments)]
 async fn handoff(
     llm: &dyn Llm,
     context: &mut ContextMemory,
@@ -994,6 +1005,7 @@ async fn handoff(
     callbacks: &LlmCallbacks,
     cancel: &CancellationToken,
     retry: RetryPolicy,
+    ledger: &crate::usage_ledger::UsageLedger,
 ) -> Result<StepResult, AgentError> {
     context.add_message(Message::user(handoff_reminder(reason)));
     let ask = |context: &ContextMemory| {
@@ -1007,12 +1019,14 @@ async fn handoff(
         )
     };
     let mut step = ask(context).await.map_err(AgentError::Llm)?;
+    ledger.record(llm.model_name(), &step.usage);
     // Reasoning alone is no handoff: the model is asked for it once more.
     if step.message.is_thinking_only() {
         context.add_message(step.message.clone());
         context.add_message(Message::user(THINKING_ONLY_REMINDER));
         let earlier = step.usage;
         step = ask(context).await.map_err(AgentError::Llm)?;
+        ledger.record(llm.model_name(), &step.usage);
         step.usage.add(&earlier);
     }
     let mut message = step.message;

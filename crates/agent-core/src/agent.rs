@@ -790,13 +790,13 @@ impl Agent {
     /// starts a new prompt cache anyway.
     pub fn set_llm(&mut self, llm: Arc<dyn Llm>) {
         let model = llm.model_name().to_string();
-        // Another model counts tokens its own way.
+        // Another model counts tokens its own way, and keeps its own cache.
         if self
             .llm
             .as_ref()
             .is_some_and(|old| old.model_name() != model)
         {
-            self.context.forget_calibration();
+            self.context.forget_model();
         }
         self.llm = Some(llm);
         self.set_context_budget(self.context.max_tokens());
@@ -1121,6 +1121,7 @@ impl Agent {
         // its hand-off; no tool is re-registered with a different description.
         agent.tool_ctx.depth = parent.depth + 1;
         agent.tool_ctx.subagent_usage = Arc::clone(&parent.subagent_usage);
+        agent.tool_ctx.usage_ledger = Arc::clone(&parent.usage_ledger);
         agent.tool_ctx.subagent_tool_events = parent.subagent_tool_events.clone();
         agent.tool_ctx.max_subagent_depth = parent.max_subagent_depth;
         agent.vision_fallback = parent.vision_fallback.clone();
@@ -1453,6 +1454,18 @@ impl Agent {
             compaction_measure: self.context.estimate_tokens(),
             token_scale: self.context.token_scale(),
         }
+    }
+
+    /// What the session's requests used and cost so far, its sub-agents'
+    /// included (`/usage`).
+    #[must_use]
+    pub fn usage_summary(&self) -> crate::usage_ledger::UsageSummary {
+        self.tool_ctx.usage_ledger.summary()
+    }
+
+    /// Price the session's requests with `pricer` from now on.
+    pub fn set_pricer(&self, pricer: Option<Arc<dyn crate::usage_ledger::Pricer>>) {
+        self.tool_ctx.usage_ledger.set_pricer(pricer);
     }
 
     /// Access the shared tool execution context (used by slash commands
@@ -2050,6 +2063,53 @@ mod tests {
         }
         agent.set_llm(Arc::new(Other));
         assert_eq!(agent.context.token_scale(), None);
+    }
+
+    /// Every request lands in the session's ledger, and requests that keep
+    /// missing the provider's cache are told of once, through the callbacks.
+    #[tokio::test]
+    async fn requests_are_recorded_and_a_cache_that_keeps_missing_is_told() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut agent = Agent::new_with_budget(temp.path().to_path_buf(), "sys", 1_000_000)
+            .with_permission_mode(PermissionMode::BypassPermissions);
+        let steps = (0..4u64)
+            .map(|i| StepResult {
+                message: Message::assistant_text("ok"),
+                usage: TokenUsage {
+                    input_tokens: 40_000 + 100 * i,
+                    output_tokens: 10,
+                    input_cache_read: Some(0),
+                    ..TokenUsage::empty()
+                },
+                finish_reason: Some(FinishReason::Stop),
+                response_id: None,
+                stop_reason: None,
+            })
+            .collect();
+        let llm = MockLlm::new(steps);
+        let notices = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&notices);
+        let callbacks = LlmCallbacks {
+            on_cache: Some(Arc::new(move |notice: &crate::cache_watch::CacheNotice| {
+                seen.lock().unwrap().push(notice.clone());
+            })),
+            ..Default::default()
+        };
+        let cancel = CancellationToken::new();
+        for i in 0..4 {
+            agent
+                .prompt_with_callbacks(&llm, format!("step {i}"), callbacks.clone(), &cancel)
+                .await
+                .unwrap();
+        }
+        let summary = agent.usage_summary();
+        assert_eq!(summary.requests, 4);
+        assert_eq!(summary.usage.input_tokens, 160_600);
+        assert_eq!(summary.usage.output_tokens, 40);
+        assert_eq!(summary.unpriced, 4, "no pricer is set");
+        let notices = notices.lock().unwrap();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(notices[0].requests, 3);
     }
 
     /// Answers from a script and keeps the system prompt and the tools JSON of

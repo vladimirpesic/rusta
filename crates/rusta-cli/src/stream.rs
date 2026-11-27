@@ -6,6 +6,7 @@ use agent_core::agent_loop::llm::{CompactionNotice, CompactionTrigger, LlmCallba
 use agent_core::agent_loop::types::{
     StopReason, SubagentToolEventSender, ToolEvent, ToolEventSender, ToolStatus,
 };
+use agent_core::cache_watch::CacheNotice;
 
 use crate::terminal_sanitize::TerminalStreams;
 
@@ -23,6 +24,7 @@ pub fn headless_callbacks() -> (LlmCallbacks, ToolEventSender) {
     let tool_printer = printer.clone();
     let retry_printer = printer.clone();
     let compaction_printer = printer.clone();
+    let cache_printer = printer.clone();
 
     let callbacks = LlmCallbacks {
         on_text_delta: Some(Arc::new(move |delta: &str| {
@@ -41,6 +43,9 @@ pub fn headless_callbacks() -> (LlmCallbacks, ToolEventSender) {
             compaction_printer
                 .lock_or_recover()
                 .print_compaction(notice);
+        })),
+        on_cache: Some(Arc::new(move |notice: &CacheNotice| {
+            cache_printer.lock_or_recover().print_cache(notice);
         })),
     };
 
@@ -62,6 +67,7 @@ pub fn repl_callbacks() -> (LlmCallbacks, ToolEventSender) {
     let tool_printer = printer.clone();
     let retry_printer = printer.clone();
     let compaction_printer = printer.clone();
+    let cache_printer = printer.clone();
 
     let callbacks = LlmCallbacks {
         on_text_delta: Some(Arc::new(move |delta: &str| {
@@ -80,6 +86,9 @@ pub fn repl_callbacks() -> (LlmCallbacks, ToolEventSender) {
             compaction_printer
                 .lock_or_recover()
                 .print_compaction(notice);
+        })),
+        on_cache: Some(Arc::new(move |notice: &CacheNotice| {
+            cache_printer.lock_or_recover().print_cache(notice);
         })),
     };
 
@@ -100,6 +109,7 @@ pub fn json_callbacks() -> (LlmCallbacks, ToolEventSender) {
     let tool_printer = printer.clone();
     let retry_printer = printer.clone();
     let compaction_printer = printer.clone();
+    let cache_printer = printer.clone();
 
     let callbacks = LlmCallbacks {
         on_text_delta: Some(Arc::new(move |delta: &str| {
@@ -135,6 +145,15 @@ pub fn json_callbacks() -> (LlmCallbacks, ToolEventSender) {
             compaction_printer
                 .lock_or_recover()
                 .emit(JsonEvent::compaction(notice));
+        })),
+        on_cache: Some(Arc::new(move |notice: &CacheNotice| {
+            cache_printer
+                .lock_or_recover()
+                .emit(JsonEvent::CacheMissing {
+                    requests: notice.requests,
+                    read_share: notice.read_share,
+                    prompt_tokens: notice.prompt_tokens,
+                });
         })),
     };
 
@@ -369,6 +388,13 @@ enum JsonEvent {
         max_attempts: Option<u32>,
         delay_ms: u64,
         error: String,
+    },
+    /// The provider's prompt cache missed `requests` requests in a row: the
+    /// last read `read_share` (0 to 1) of its `prompt_tokens` from the cache.
+    CacheMissing {
+        requests: u32,
+        read_share: f64,
+        prompt_tokens: u64,
     },
     /// Context compaction: `started`, then `summarized`, `evicted` or
     /// `unchanged`. Token counts are estimates.
@@ -637,6 +663,20 @@ impl HeadlessPrinter {
         self.sink.err(&format!("{line}\n"));
     }
 
+    /// Report a prompt cache that keeps missing on stderr, like compaction.
+    fn print_cache(&mut self, notice: &CacheNotice) {
+        self.end_model_run();
+        if self.text_needs_newline || self.in_think {
+            self.sink.out("\n");
+            self.text_needs_newline = false;
+            self.in_think = false;
+        }
+        let line = self
+            .streams
+            .stderr_line(&format!("[cache] {}", notice.describe()));
+        self.sink.err(&format!("{line}\n"));
+    }
+
     fn print_tool_event(&mut self, event: ToolEvent) {
         print_tool_event(&mut self.streams, self.sink.as_mut(), event);
     }
@@ -744,6 +784,17 @@ impl ReplPrinter {
         let line = self
             .streams
             .stdout_line(&format!("[compaction] {}", notice.describe()));
+        self.sink.out(&format!("\n{line}\n"));
+        self.label_printed = false;
+        self.think_started = false;
+        self.text_needs_newline = false;
+    }
+
+    fn print_cache(&mut self, notice: &CacheNotice) {
+        self.end_model_run();
+        let line = self
+            .streams
+            .stdout_line(&format!("[cache] {}", notice.describe()));
         self.sink.out(&format!("\n{line}\n"));
         self.label_printed = false;
         self.think_started = false;

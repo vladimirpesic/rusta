@@ -369,6 +369,10 @@ pub struct ExecutableToolContext {
     /// sub-agent step adds its usage, and each turn of the session's agent
     /// takes what has gathered into its own ([`run_turn`](fn@crate::agent_loop::run_turn)).
     pub subagent_usage: Arc<Mutex<lm_bridge::usage::TokenUsage>>,
+    /// Every request of the session's tree of agents, with its tokens and,
+    /// where a price is known, its cost: what `/usage` shows. Shared by the
+    /// whole tree.
+    pub usage_ledger: Arc<crate::usage_ledger::UsageLedger>,
     /// Where this agent's sub-agents report their tool events, if anywhere.
     pub subagent_tool_events: Option<SubagentToolEventSender>,
     /// The deepest level still allowed to spawn. An agent at or beyond it has
@@ -472,6 +476,7 @@ impl Default for ExecutableToolContext {
             fork_prefix_baseline: Arc::default(),
             depth: 0,
             subagent_usage: Arc::default(),
+            usage_ledger: Arc::default(),
             subagent_tool_events: None,
             max_subagent_depth: DEFAULT_MAX_SUBAGENT_DEPTH,
             tool_output: crate::tool_output::ToolOutputPolicy::default(),

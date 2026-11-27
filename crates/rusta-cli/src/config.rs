@@ -83,6 +83,10 @@ pub struct Config {
     /// the parent, which is the behaviour without this section.
     #[serde(default)]
     pub subagent: crate::subagent_pool::SubagentConfig,
+    /// Models' prices in US dollars per million tokens, for `/usage`, by
+    /// model id; they win over the prices Rusta knows ([`crate::pricing`]).
+    #[serde(default)]
+    pub prices: std::collections::BTreeMap<String, crate::pricing::ModelPrice>,
     /// URL template for the built-in web_search tool.
     pub search_url: Option<String>,
     /// Additional paths outside cwd that tools are allowed to access.
@@ -350,6 +354,12 @@ impl Config {
                 anyhow::anyhow!("config {}: invalid [[hooks]] entry: {e}", path.display())
             })?;
         }
+        if let Some((model, _)) = layer.prices.iter().find(|(_, price)| !price.is_valid()) {
+            anyhow::bail!(
+                "config {}: [prices.\"{model}\"] has a price that is negative or not a number",
+                path.display()
+            );
+        }
         if let Some(permissions) = &layer.permissions {
             let mut names = std::collections::HashSet::new();
             for name in permissions
@@ -456,6 +466,7 @@ impl Config {
         // The pool replaces wholesale rather than merging entry by entry: a
         // project that defines its own routing means *that* routing, and half of
         // it inherited from the user config would be neither.
+        self.prices.extend(higher.prices);
         if !higher.subagent.is_empty() {
             self.subagent = higher.subagent;
         }

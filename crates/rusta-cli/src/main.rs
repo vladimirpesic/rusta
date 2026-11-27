@@ -38,6 +38,7 @@ mod interactive;
 mod kimi;
 mod native_web;
 mod onboarding;
+mod pricing;
 mod probe;
 mod project_context;
 mod provider_defaults;
@@ -55,6 +56,7 @@ mod terminal_sanitize;
 mod trust;
 #[cfg(feature = "tui")]
 mod tui;
+mod usage_view;
 mod user_interaction;
 mod vision_fallback;
 mod vision_mcp;
@@ -323,11 +325,13 @@ async fn main() -> anyhow::Result<()> {
         _ => {}
     }
     let builtin_tools = provider.builtin_tools();
+    let prices = pricing::Prices::for_session(&cli, provider.name(), &config.prices);
     let llm_options = commands::LlmOptions::from_cli(&cli);
     let llm = Arc::new(llm_options.build_llm(provider));
 
     let mut agent = Agent::new_with_budget(cli.cwd.clone(), &system_prompt, llm.context_window());
     agent = agent.with_llm(llm.clone());
+    agent.set_pricer(Some(Arc::new(prices)));
     agent = agent.with_profile_registry(profile_registry.clone());
     // Sub-agents get the session's prompt with their role, and one that gets
     // the session's MCP tools gets the guidance for them.

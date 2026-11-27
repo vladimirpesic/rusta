@@ -134,6 +134,8 @@ pub struct CompactionInputs<'a> {
     /// compactions pass `None`.
     pub instruction: Option<String>,
     pub cancel: &'a CancellationToken,
+    /// Where the summary requests are recorded with the session's others.
+    pub ledger: Option<&'a crate::usage_ledger::UsageLedger>,
 }
 
 /// Why a multi-turn undo did not run: an undo count that is not fully
@@ -191,6 +193,9 @@ pub struct ContextMemory {
     /// of it, learned from the replies; `None` until a reply has taught it.
     /// See [`Self::calibrate`].
     token_scale: Option<f64>,
+    /// Whether the provider's prompt cache serves this conversation's
+    /// requests ([`crate::cache_watch`]).
+    cache_watch: crate::cache_watch::CacheWatch,
 }
 
 impl ContextMemory {
@@ -209,6 +214,7 @@ impl ContextMemory {
             compaction_max_attempts: DEFAULT_COMPACTION_MAX_ATTEMPTS,
             last_compacted_tokens: None,
             token_scale: None,
+            cache_watch: crate::cache_watch::CacheWatch::default(),
         }
     }
 
@@ -579,10 +585,24 @@ impl ContextMemory {
         }));
     }
 
-    /// Forget what [`Self::calibrate`] learned: another model counts its own
-    /// way.
-    pub fn forget_calibration(&mut self) {
+    /// Forget what the replies of the model taught ([`Self::calibrate`],
+    /// [`Self::observe_cache`]): another model counts tokens its own way and
+    /// keeps its own cache.
+    pub fn forget_model(&mut self) {
         self.token_scale = None;
+        self.cache_watch.reset();
+    }
+
+    /// Judge whether the provider's prompt cache served a request of this
+    /// conversation that reported `usage`, sent at Rusta's estimate
+    /// `estimated` ([`Self::request_estimate`]): the notice when it keeps
+    /// missing ([`crate::cache_watch`]).
+    pub fn observe_cache(
+        &mut self,
+        usage: &lm_bridge::usage::TokenUsage,
+        estimated: u64,
+    ) -> Option<crate::cache_watch::CacheNotice> {
+        self.cache_watch.observe(usage, estimated)
     }
 
     /// The ratio of the model's count to Rusta's estimate, once a reply has
@@ -918,6 +938,9 @@ impl ContextMemory {
                 .await;
             match result {
                 Ok(step) => {
+                    if let Some(ledger) = inputs.ledger {
+                        ledger.record(llm.model_name(), &step.usage);
+                    }
                     let text = step.message.text_content().trim().to_string();
                     let cut_off = step.finish_reason == Some(FinishReason::Length);
                     if !text.is_empty() && !cut_off {
@@ -1336,7 +1359,7 @@ mod tests {
             assert!((ctx.token_scale().unwrap() - 1.5).abs() < 1e-9);
         }
 
-        ctx.forget_calibration();
+        ctx.forget_model();
         assert_eq!(ctx.token_scale(), None);
         assert_eq!(ctx.estimate_tokens(), raw);
     }
@@ -1539,6 +1562,7 @@ mod tests {
             todo: todo.map(str::to_string),
             instruction: None,
             cancel,
+            ledger: None,
         }
     }
 

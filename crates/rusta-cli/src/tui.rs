@@ -137,6 +137,8 @@ enum StreamItem {
     Retry(String),
     /// A compaction started (`true`) or finished (`false`), described.
     Compaction(bool, String),
+    /// The provider's prompt cache keeps missing, described.
+    Cache(String),
 }
 
 pub struct App {
@@ -919,6 +921,7 @@ impl App {
         let stream_tx = self.stream_tx.clone();
         let retry_tx = self.stream_tx.clone();
         let compaction_tx = self.stream_tx.clone();
+        let cache_tx = self.stream_tx.clone();
         let tool_event_tx_for_delta = self.tool_event_tx.clone();
         let callbacks = LlmCallbacks {
             on_text_delta: Some(Arc::new(move |delta: &str| {
@@ -931,6 +934,11 @@ impl App {
                 let started = matches!(notice, CompactionNotice::Started { .. });
                 let _ = compaction_tx.send(StreamItem::Compaction(started, notice.describe()));
             })),
+            on_cache: Some(Arc::new(
+                move |notice: &agent_core::cache_watch::CacheNotice| {
+                    let _ = cache_tx.send(StreamItem::Cache(notice.describe()));
+                },
+            )),
             on_tool_call_delta: Some(Arc::new(move |tc: &ToolCall| {
                 let _ = tool_event_tx_for_delta.send(ToolEvent::Call {
                     id: tc.id.clone(),
@@ -975,6 +983,13 @@ impl App {
                 } else {
                     "Thinking...".into()
                 };
+                self.scroll_to_bottom();
+            }
+            StreamItem::Cache(description) => {
+                self.messages.push(ChatMessage {
+                    role: ChatRole::System,
+                    text: format!("[cache] {description}"),
+                });
                 self.scroll_to_bottom();
             }
         }

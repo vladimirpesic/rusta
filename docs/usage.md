@@ -10,6 +10,7 @@ headless when given a prompt and opens the REPL otherwise.
 - [The terminal UI](#the-terminal-ui)
 - [Slash commands](#slash-commands)
 - [Sessions](#sessions)
+- [Usage and cost](#usage-and-cost)
 - [Subcommands](#subcommands)
 
 ## Setup
@@ -97,6 +98,7 @@ Output piped to a file or another program stays byte-exact.
 | `tool_call` | the complete call: `arguments` and `status` (`pending` as it runs, `failed` when refused, or the result's own status for a repeat of a call in the same step, which shares its result) |
 | `tool_result` | each call's result |
 | `retry`, `compaction`, `stop` | when they happen |
+| `cache_missing` | when the provider's prompt cache has missed three requests in a row (`requests`, the last one's `read_share` and `prompt_tokens`); see `/usage` |
 | `response_id`, `usage` | at the end of the prompt |
 | `approval_request` | a call that needs approval (`tool`, `arguments`, `reason`), without `--yes` |
 | `question` | a question the model asks you |
@@ -170,6 +172,7 @@ The REPL and the TUI take these commands:
 | `/plan` | Turn plan mode on or off (see [Plan mode](permissions.md#plan-mode)) |
 | `/swarm [on \| off \| <task>]` | Toggle swarm mode, or run one task in it (see [Agent swarm](agents.md#agent-swarm)) |
 | `/tools` | List the tools the model is offered |
+| `/usage` | Show what the session's model requests used so far, its sub-agents' included: input tokens and how many the prompt cache served and took, output tokens, and the cost where the prices are known (see [Usage and cost](#usage-and-cost)) |
 | `/context` | Show what the next request holds, part by part, in estimated tokens (scaled to how the model counted the requests it was sent, once it has replied) and as a share of the context window: the system prompt; the tools by source (built-in, each MCP server); your messages, Rusta's notes, replies, thinking and tool calls; each tool's results; media. It says where compaction starts, and which tools the model's cap leaves out |
 | `/mcp` | List the MCP servers and their state |
 | `/reload` | Read profiles, skills and instruction files again and rebuild the system prompt |
@@ -240,6 +243,35 @@ REPL or the TUI, made from its first exchange:
 
 A title set with `/title`, or a fork's `fork of …`, is never replaced.
 `auto_session_title = false` turns titling off, and headless runs make none.
+
+## Usage and cost
+
+`/usage` counts every model request of the session since this process opened
+it: the session's own steps, its sub-agents', the handoffs and the summaries
+compaction writes. It shows the input tokens and how many the provider read from
+its prompt cache, the output tokens, and the cost:
+
+- **Prices Rusta knows** are the ones published for pay-per-token APIs, on the
+  endpoint they are published for: DeepSeek's (`deepseek-flash`,
+  `deepseek-v4-pro`), at its peak rate on weekdays from 01:00 to 04:00 and from
+  06:00 to 10:00 UTC and at half of it otherwise, and Z.AI's for the GLM models
+  on `https://api.z.ai/api/paas/v4`. DeepSeek charges the off-peak rate on
+  Chinese public holidays too, which Rusta does not know.
+- **A Coding Plan** is billed by subscription: its requests have no price per
+  token, and `/usage` says the cost is not known.
+- **Other models,** such as Kimi's pay-per-token K3 series, are priced by
+  `[prices]` in the config (see [Configuration](configuration.md)), which also
+  wins over a price Rusta knows. A request with no known price is counted apart.
+
+**When the cache stops working.** A conversation's requests repeat its
+beginning, which the provider serves from its prompt cache at a small part of
+the input price. When a request reads far less from the cache than the request
+before it put there, three times in a row, Rusta says so once (`[cache] …` in the
+REPL, the TUI and on stderr in headless mode, `cache_missing` with
+`--stream-json`), until the cache serves a request again. Requests it cannot
+judge are passed over: small ones (under 16,384 tokens), the first after a pause
+of five minutes or more, and one smaller than the one before, as after a
+compaction.
 
 ## Subcommands
 
