@@ -2396,6 +2396,64 @@ mod tests {
         );
     }
 
+    /// A model that ends its turn before the language server has answered
+    /// for a file it changed is held at the end for the answer: an error
+    /// keeps the turn going one more step, a clean file lets it end. Real
+    /// time: each check outlasts the 3-second wait by 0.7 s.
+    #[tokio::test]
+    async fn an_error_found_at_the_end_of_a_turn_keeps_it_going() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("main.rs");
+        let answer = |text: &str| StepResult {
+            message: Message::assistant_text(text),
+            usage: TokenUsage::empty(),
+            finish_reason: Some(FinishReason::Stop),
+            response_id: None,
+            stop_reason: None,
+        };
+        let run = |diagnostics: serde_json::Value, steps: Vec<StepResult>| {
+            let temp = temp.path().to_path_buf();
+            async move {
+                let scripted = ScriptedLlm::new(steps);
+                let mut agent =
+                    Agent::new(temp, "sys").with_permission_mode(PermissionMode::BypassPermissions);
+                agent.register_tool(Arc::new(FakeDiagnostics::new(
+                    std::time::Duration::from_millis(3_700),
+                    diagnostics,
+                )));
+                agent.set_diagnostics_tool(Some("mcp__lsp__get_diagnostics".to_string()));
+                let last = agent
+                    .prompt(scripted.as_ref(), "write it", &CancellationToken::new())
+                    .await
+                    .unwrap();
+                let requests = scripted.messages.lock().unwrap().clone();
+                (last.message.text_content(), requests)
+            }
+        };
+
+        let (last, requests) = run(
+            one_error(),
+            vec![edit_step(&path), answer("done"), answer("fixed")],
+        )
+        .await;
+        assert_eq!(last, "fixed");
+        assert_eq!(requests.len(), 3);
+        let note = requests[2].last().unwrap().text_content();
+        assert!(
+            note.contains("The language server answered after the results of your latest changes")
+                && note.contains("main.rs:1:13: cannot find value `broken` [rustc E0425]"),
+            "{note}"
+        );
+
+        let (last, requests) = run(
+            serde_json::json!({ "diagnostics": [] }),
+            vec![edit_step(&path), answer("done")],
+        )
+        .await;
+        assert_eq!(last, "done");
+        assert_eq!(requests.len(), 2);
+    }
+
     /// Answers from a script and keeps the system prompt and the tools JSON of
     /// every request, so a test can assert what the model was actually sent.
     struct ScriptedLlm {

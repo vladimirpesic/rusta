@@ -11,8 +11,11 @@
 //!
 //! The check waits [`EDIT_CHECK_WAIT`] at most. A language server that takes
 //! longer — one starting, one analysing a file for the first time — answers
-//! with the next step instead; a check still running when the next turn
-//! starts, or when the file is changed again, is dropped. Errors only, never
+//! with the next step instead. When the model ends its turn while a check
+//! still runs, the end waits for it, [`TURN_END_WAIT`] at most, and an error
+//! it finds keeps the turn going one more step: otherwise the turn would end
+//! with the file broken and nobody told. A check still running when the next
+//! turn starts, or when the file is changed again, is dropped. Errors only, never
 //! warnings, and never an answer the server gave for an older text of the file
 //! (`stale`). The tool is called only where the agent could call it without
 //! asking: it reads only, and no rule or answer of the session refuses it or
@@ -33,6 +36,8 @@ use crate::tools::ToolRegistry;
 
 /// The longest a call's result waits for the check of the file it changed.
 pub const EDIT_CHECK_WAIT: Duration = Duration::from_secs(3);
+/// The longest the end of a turn waits for the checks still running.
+pub const TURN_END_WAIT: Duration = Duration::from_secs(15);
 /// How long a check lets a server that pushes its diagnostics take, where
 /// the tool takes the bound.
 const PUSH_WAIT_MS: u64 = 10_000;
@@ -74,6 +79,11 @@ impl EditChecks {
         if let Some(check) = self.pending.remove(path) {
             check.abort();
         }
+    }
+
+    /// Every check still running, taken out.
+    fn take_all(&mut self) -> Vec<(PathBuf, JoinHandle<Answer>)> {
+        self.pending.drain().collect()
     }
 
     /// The checks that have finished, taken out of those running.
@@ -248,6 +258,51 @@ pub async fn check_changed(
     said
 }
 
+/// At the end of a turn, the checks still running, waited for
+/// [`TURN_END_WAIT`] at most, or until `cancel`: their note, when one found
+/// errors, which is worth one more step of the turn. A check that only says
+/// errors are gone is told with them, and is not worth a step alone.
+pub async fn errors_at_turn_end(
+    ctx: &ExecutableToolContext,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Option<String> {
+    let pending = ctx.edit_checks.lock_or_recover().take_all();
+    if pending.is_empty() {
+        return None;
+    }
+    let deadline = tokio::time::Instant::now() + TURN_END_WAIT;
+    let mut said = Vec::new();
+    let mut errors_found = false;
+    for (path, mut check) in pending {
+        let answer = tokio::select! {
+            finished = tokio::time::timeout_at(deadline, &mut check) => {
+                finished.ok().and_then(Result::ok).flatten()
+            }
+            () = cancel.cancelled() => None,
+        };
+        if !check.is_finished() {
+            check.abort();
+        }
+        errors_found |= answer.as_ref().is_some_and(|errors| !errors.is_empty());
+        let words = ctx
+            .edit_checks
+            .lock_or_recover()
+            .words(&path, &shown(&path, &ctx.cwd), answer);
+        said.extend(words);
+    }
+    errors_found.then(|| note(&said))
+}
+
+/// The note that carries `said`, the words of checks that answered after
+/// their calls' results went out.
+fn note(said: &[String]) -> String {
+    format!(
+        "<system-reminder>\nThe language server answered after the results of your latest \
+         changes:\n{}\n</system-reminder>",
+        said.join("\n\n")
+    )
+}
+
 /// The words of the checks that finished since their calls' results went
 /// out, as a note for the next request; `None` when none has anything to say.
 pub async fn later_words(ctx: &ExecutableToolContext) -> Option<String> {
@@ -261,13 +316,7 @@ pub async fn later_words(ctx: &ExecutableToolContext) -> Option<String> {
             .words(&path, &shown(&path, &ctx.cwd), answer);
         said.extend(words);
     }
-    (!said.is_empty()).then(|| {
-        format!(
-            "<system-reminder>\nThe language server answered after the results of your \
-             latest changes:\n{}\n</system-reminder>",
-            said.join("\n\n")
-        )
-    })
+    (!said.is_empty()).then(|| note(&said))
 }
 
 #[cfg(test)]

@@ -402,6 +402,9 @@ pub async fn run_turn(
     // Whether this turn already asked for the answer after a reply of
     // reasoning alone; it asks once.
     let mut asked_for_an_answer = false;
+    // Steps the turn went on for errors the language server found after the
+    // model meant to end it.
+    let mut turn_end_checks = 0;
 
     for turn in 0..max_turns {
         if cancel.is_cancelled() {
@@ -696,6 +699,17 @@ pub async fn run_turn(
                 if drain_agent_tasks_on_stop
                     && drain_background_agents(tool_ctx, context, cancel).await?
                 {
+                    continue;
+                }
+                // The language server has yet to answer for a file this turn
+                // changed: an error it finds keeps the turn going, as the
+                // model would otherwise end it with the file broken.
+                if turn_end_checks < MAX_TURN_END_CHECKS
+                    && let Some(errors) =
+                        crate::edit_checks::errors_at_turn_end(tool_ctx, cancel).await
+                {
+                    turn_end_checks += 1;
+                    context.add_message(Message::user(errors));
                     continue;
                 }
                 // The turn really ends here, so Stop hooks run now: at most
@@ -1042,6 +1056,10 @@ async fn file_news(tool_ctx: &ExecutableToolContext) -> Option<String> {
         .ok()
         .flatten()
 }
+
+/// The most steps one turn goes on for the language server's errors in
+/// files the model changed before it meant to end it.
+const MAX_TURN_END_CHECKS: u32 = 3;
 
 /// The reminder that asks a stopped model for its handoff.
 pub(crate) fn handoff_reminder(reason: StopReason) -> String {

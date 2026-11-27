@@ -65,12 +65,14 @@ adding or renaming a tool fails that test until this table is updated.
   errors the agent was told of is said to have none once they are gone; a file
   without errors adds nothing. The check waits three seconds at most: a language
   server that takes longer, as one does when it starts or first reads a file,
-  answers with the next step instead, and a check still running when the file
-  changes again or the next turn starts is dropped. An answer the server gave for
-  an older text of the file is not passed on. The check runs only where
-  `get_diagnostics` could run without asking, and `diagnostics_after_edit =
-  false` (`--diagnostics-after-edit=false`, `RUSTA_DIAGNOSTICS_AFTER_EDIT=0`)
-  turns it off.
+  answers with the next step instead. When the agent ends its turn while a check
+  still runs, the end waits for it, 15 seconds at most, and errors it finds keep
+  the turn going one more step, up to three times a turn. A check still running
+  when the file changes again or the next turn starts is dropped. An answer the
+  server gave for an older text of the file is not passed on. The check runs
+  only where `get_diagnostics` could run without asking, and
+  `diagnostics_after_edit = false` (`--diagnostics-after-edit=false`,
+  `RUSTA_DIAGNOSTICS_AFTER_EDIT=0`) turns it off.
 - **`glob`** lists files only, most recently modified first, 100 per page
   (`limit`, `0` for no count limit), and names the `offset` that continues a page
   cut short by the count or by the output budget. It honours `.gitignore` and
