@@ -1,7 +1,7 @@
 //! Devscriptor MCP integration: discovery, auto-configuration, and system-prompt
 //! guidance.
 //!
-//! Devscriptor exposes a 75-tool code-intelligence MCP server: search and
+//! Devscriptor exposes a 76-tool code-intelligence MCP server: search and
 //! analysis over a persistent SQLite graph, a five-tool Context Graph, LSP-backed
 //! navigation, six language-server lifecycle tools, and five architecture tools.
 //!
@@ -491,7 +491,7 @@ pub fn guidance(server: &str, table: ToolTable) -> String {
     format!(
         r#"# Devscriptor code intelligence
 
-A Devscriptor MCP server named `{server}` is connected: 75 tools over an
+A Devscriptor MCP server named `{server}` is connected: 76 tools over an
 index of the workspace that follows your edits. {loading}
 
 Find code with Devscriptor before you reach for `grep`, `glob` or file reads,
@@ -1108,7 +1108,7 @@ mod tests {
             "a question in words goes to the hybrid search"
         );
         assert!(
-            text.contains("75 tools"),
+            text.contains("76 tools"),
             "the advertised count must be right"
         );
     }

@@ -176,7 +176,7 @@ so a session inside a monorepo package reads the repository-wide index instead
 of creating an empty one. `$DEVSCRIPTOR_DB` overrides the choice. An explicit
 `[[mcp_servers]]` entry named `devscriptor` always wins over auto-detection.
 
-Devscriptor has 75 tools, so they are deferred, but its six most-used ones are
+Devscriptor has 76 tools, so they are deferred, but its six most-used ones are
 preloaded: `semantic_search`, `search_functions`, `search_classes`,
 `get_file_context`, `get_entity_details` and `get_references`. The model
 therefore holds what it needs to find code from its first request, and loads the

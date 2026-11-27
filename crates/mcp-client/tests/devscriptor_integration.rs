@@ -1,14 +1,14 @@
 //! Live Devscriptor MCP integration test.
 //!
 //! Spawns the real Devscriptor MCP server through Rusta's own connection
-//! manager and asserts the full 75-tool contract: discovery, name qualification,
+//! manager and asserts the full 76-tool contract: discovery, name qualification,
 //! description propagation (needed for tool-disclosure announcements), and
 //! schema shape (needed for Kimi/GLM tool serialization).
 //!
 //! `#[ignore]` so it does not run during normal `cargo test`. Run it with the
 //! path to a *full-featured* `devscriptor` binary (the `devscriptor-cli` default
 //! features include `lsp` + `mcp`; the `devscriptor-mcp-standalone` development
-//! binary does NOT and serves only the 32 core tools):
+//! binary does NOT and serves only the 33 core tools):
 //!
 //! ```bash
 //! DEVSCRIPTOR_BIN=/path/to/devscriptor \
@@ -23,7 +23,7 @@ use mcp_client::{
     manager::{McpConnectionManager, McpEvent, McpStatus},
 };
 
-const EXPECTED_TOOL_COUNT: usize = 75;
+const EXPECTED_TOOL_COUNT: usize = 76;
 
 /// A representative tool from each of the three Devscriptor families.
 const CORE_TOOL: &str = "scan_codebase";
@@ -31,7 +31,7 @@ const LSP_TOOL: &str = "get_hover";
 const ARCH_TOOL: &str = "lsp_arch_setup";
 const WATCHER_TOOL: &str = "start_watching";
 
-/// The five Context Graph tools (a subset of the 32 core tools).
+/// The five Context Graph tools (a subset of the 33 core tools).
 const CONTEXT_GRAPH_TOOLS: [&str; 5] = [
     "add_context_note",
     "search_context",
@@ -96,7 +96,7 @@ async fn connect(
 
 #[tokio::test]
 #[ignore = "requires a full-featured devscriptor binary via DEVSCRIPTOR_BIN"]
-async fn devscriptor_exposes_all_75_tools_with_usable_definitions() {
+async fn devscriptor_exposes_all_76_tools_with_usable_definitions() {
     let Ok(bin) = std::env::var("DEVSCRIPTOR_BIN") else {
         eprintln!("DEVSCRIPTOR_BIN not set; skipping");
         return;
@@ -105,13 +105,13 @@ async fn devscriptor_exposes_all_75_tools_with_usable_definitions() {
     let workspace = tempfile::tempdir().unwrap();
     let (manager, server) = connect(&bin, workspace.path()).await;
 
-    // 1. All 75 tools are discovered (list_all_tools follows any pagination).
+    // 1. All 76 tools are discovered (list_all_tools follows any pagination).
     let names = server.tool_names().await;
     assert_eq!(
         names.len(),
         EXPECTED_TOOL_COUNT,
         "expected {EXPECTED_TOOL_COUNT} tools, got {}. A binary built without the \
-         `lsp` feature serves only the 32 core tools. Discovered: {names:?}",
+         `lsp` feature serves only the 33 core tools. Discovered: {names:?}",
         names.len()
     );
 

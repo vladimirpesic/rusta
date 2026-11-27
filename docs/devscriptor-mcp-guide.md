@@ -2,7 +2,7 @@
 
 A practical, provider-agnostic guide to wiring any AI coding agent or assistant
 (Claude Code, Claude Desktop, Cursor, Cline, Continue, Zed, Rusta, or a custom
-harness) to the **Devscriptor MCP server** so that all **75 tools** are used
+harness) to the **Devscriptor MCP server** so that all **76 tools** are used
 correctly, efficiently, and without hallucination.
 
 It describes Devscriptor 1.0.0 and newer, which keeps its index current by
@@ -16,7 +16,7 @@ Context Graph notes match a search (`context_notes`).
 
 - [Optimizing AI Coding Agents for Devscriptor MCP](#optimizing-ai-coding-agents-for-devscriptor-mcp)
   - [Table of contents](#table-of-contents)
-  - [1. What you get: the 75 tools](#1-what-you-get-the-75-tools)
+  - [1. What you get: the 76 tools](#1-what-you-get-the-76-tools)
   - [2. Step 1 — Use the right binary](#2-step-1--use-the-right-binary)
   - [3. Step 2 — Verify the server before trusting it](#3-step-2--verify-the-server-before-trusting-it)
     - [3a. Tool count](#3a-tool-count)
@@ -27,7 +27,7 @@ Context Graph notes match a search (`context_notes`).
     - [Rusta](#rusta)
     - [Generic / custom harness](#generic--custom-harness)
   - [5. Step 4 — Timeouts that actually work](#5-step-4--timeouts-that-actually-work)
-  - [6. Step 5 — Handling 75 tools without hallucination](#6-step-5--handling-75-tools-without-hallucination)
+  - [6. Step 5 — Handling 76 tools without hallucination](#6-step-5--handling-76-tools-without-hallucination)
   - [7. Step 6 — The system prompt (copy-paste)](#7-step-6--the-system-prompt-copy-paste)
   - [8. Step 7 — Approval / permission policy](#8-step-7--approval--permission-policy)
   - [9. Workflow recipes](#9-workflow-recipes)
@@ -44,21 +44,21 @@ Context Graph notes match a search (`context_notes`).
 
 ---
 
-## 1. What you get: the 75 tools
+## 1. What you get: the 76 tools
 
 | Family | Count | Needs | Purpose |
 | --- | ---: | --- | --- |
-| **Core** | 32 | A `scan_codebase` first | Scan, search, analyze, context graph, watcher |
+| **Core** | 33 | A `scan_codebase` first | Scan, search, analyze, change impact, context graph, watcher |
 | **LSP** | 38 | An installed language server (started on demand) | Hover, definition, references, rename, diagnostics… |
 | **Architecture** | 5 | — | Detect / check / install language servers |
-| **Total** | **75** | | |
+| **Total** | **76** | | |
 
-The 32 core tools break down as **24 scan/search/analyze/file** + **5 Context
+The 33 core tools break down as **25 scan/search/analyze/file** + **5 Context
 Graph** + **3 watcher**.
 
 > **Common misconception.** The Context Graph is **5 MCP tools**
 > (`add_context_note`, `search_context`, `get_related_context`, `prune_context`,
-> `get_context_statistics`), already counted inside the 32 core tools — *not* a
+> `get_context_statistics`), already counted inside the 33 core tools — *not* a
 > separate 9-tool surface. The number **9** refers to the nine *note types*
 > (`adr`, `standard`, `optimization`, `failure`, `practice`, `reflection`,
 > `general`, `file_description`, `modification`).
@@ -72,14 +72,14 @@ tools are behind a **compile-time** feature gate (`#[cfg(feature = "lsp")]`).
 
 | What you run | Tools served |
 | --- | ---: |
-| `devscriptor mcp` — the CLI, built with `devscriptor-cli` **default** features (`lsp` + `mcp`) | **75** ✅ |
-| `devscriptor-mcp-standalone`, built from the `devscriptor-mcp` crate (its defaults **omit** `lsp`) | **32** ❌ |
-| Any build with `--no-default-features` | 32 or fewer ❌ |
+| `devscriptor mcp` — the CLI, built with `devscriptor-cli` **default** features (`lsp` + `mcp`) | **76** ✅ |
+| `devscriptor-mcp-standalone`, built from the `devscriptor-mcp` crate (its defaults **omit** `lsp`) | **33** ❌ |
+| Any build with `--no-default-features` | 33 or fewer ❌ |
 
 Rules of thumb:
 
 - **Do not** pass `--features` when building for release. `devscriptor-cli`'s
-  defaults already produce the full 75-tool universal binary.
+  defaults already produce the full 76-tool universal binary.
 - Build the full binary with:
 
   ```bash
@@ -90,7 +90,7 @@ Rules of thumb:
 - The only command for any MCP client: **`devscriptor` with `args: ["mcp"]`**.
   Devscriptor ships one executable answering to one name.
 
-A 32-tool server silently omits every LSP and Architecture tool. Your agent will
+A 33-tool server silently omits every LSP and Architecture tool. Your agent will
 "work" and simply never navigate code. Always verify (next step).
 
 ---
@@ -135,11 +135,11 @@ p.kill()
 Expected:
 
 ```bash
-TOTAL: 75
+TOTAL: 76
 LSP: True | ARCH: True | WATCH: True
 ```
 
-If you see `TOTAL: 32`, re-read [Step 1](#2-step-1--use-the-right-binary).
+If you see `TOTAL: 33`, re-read [Step 1](#2-step-1--use-the-right-binary).
 
 ### 3b. stdout must be pure JSON-RPC
 
@@ -230,8 +230,8 @@ So the agent reads the index you built, not the server's shared default.
 Rusta preloads Devscriptor's six most-used tools: `semantic_search`,
 `search_functions`, `search_classes`, `get_file_context`, `get_entity_details`
 and `get_references`. The model holds them from its first request, and loads the
-other 69 with `select_tools`
-([§6](#6-step-5--handling-75-tools-without-hallucination)). Its system prompt
+other 70 with `select_tools`
+([§6](#6-step-5--handling-76-tools-without-hallucination)). Its system prompt
 carries the workflow of [§7](#7-step-6--the-system-prompt-copy-paste) and says which
 tools are already held, and the first prompt of each conversation comes with a
 short reminder to start with them.
@@ -267,7 +267,7 @@ tool_timeout_ms = 180000
 ### Generic / custom harness
 
 - Transport: **stdio** (JSON-RPC). There is no network port.
-- Discovery: call `tools/list`. Devscriptor returns all 75 tools in **one page**
+- Discovery: call `tools/list`. Devscriptor returns all 76 tools in **one page**
   (`nextCursor: null`). Still, prefer your SDK's cursor-following variant
   (e.g. rmcp's `list_all_tools()`) so you are correct if that ever changes.
 - Every tool carries a non-empty `description`, and every `inputSchema` is a
@@ -308,9 +308,9 @@ get_analysis_progress(job_id, wait=true, timeout=30)   # poll until complete
 
 ---
 
-## 6. Step 5 — Handling 75 tools without hallucination
+## 6. Step 5 — Handling 76 tools without hallucination
 
-Injecting 75 full JSON schemas into every request is the main cause of
+Injecting 76 full JSON schemas into every request is the main cause of
 wrong-tool selection, invented tool names, and context bloat. Hiding all of them
 behind a loading step fails the other way: a model reaches for the tools it
 already holds. Over 24 coding tasks with three models and every Devscriptor tool
@@ -340,7 +340,7 @@ mcp__devscriptor__get_hover — Get hover info (type signature/docs) for a symbo
 and calls `select_tools({"names": [...]})` before invoking them. Two rules make
 this reliable:
 
-- **Always include the description.** A bare list of 75 names forces the model to
+- **Always include the description.** A bare list of 76 names forces the model to
   guess from the identifier alone — that is precisely where ambiguity and
   invented names come from. Its lead, up to the end of the first sentence or
   clause, is enough to pick a tool by; the rest comes with the loaded definition.
@@ -382,7 +382,7 @@ everything else there, and a model weighs what comes with its task. Told in the
 task itself to find the code with Devscriptor, three models called it in 80% to
 92% of 300 tasks. On eight of those tasks (24 runs), they called it in 5 runs
 with the workflow in the system prompt alone and every tool loaded on demand, in
-19 with the main tools of [§6](#6-step-5--handling-75-tools-without-hallucination)
+19 with the main tools of [§6](#6-step-5--handling-76-tools-without-hallucination)
 in the tool table and the reminder below, and in 23 when told in the task. So
 also put a short reminder beside the first prompt of each conversation, and
 again after the conversation is compacted, for example:
@@ -398,7 +398,7 @@ what its results point to.
 ```markdown
 # Devscriptor code intelligence
 
-A Devscriptor MCP server is connected: 75 tools over an index of the workspace
+A Devscriptor MCP server is connected: 76 tools over an index of the workspace
 that follows your edits. If a tool must be loaded before you call it, load the
 ones below first.
 
@@ -460,7 +460,7 @@ empty search result with no `notice` means no match: rephrase, or ask
 ## 8. Step 7 — Approval / permission policy
 
 Most agents infer an approval rule from a tool's name and default unknown MCP
-tools to "ask the user." With 75 tools that produces an approval prompt on nearly
+tools to "ask the user." With 76 tools that produces an approval prompt on nearly
 every call. Classify them instead:
 
 **Auto-allow (read-only, or writes only to Devscriptor's own SQLite graph):**
@@ -659,7 +659,7 @@ costs a call on every task, most of them with nothing to recall; Devscriptor
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Only 32 tools; no `get_hover` | Running `devscriptor-mcp-standalone`, or a build without the `lsp` feature | Use `devscriptor mcp` from a default-feature `devscriptor-cli` build |
+| Only 33 tools; no `get_hover` | Running `devscriptor-mcp-standalone`, or a build without the `lsp` feature | Use `devscriptor mcp` from a default-feature `devscriptor-cli` build |
 | `serde error expected value at line 1 column 1`, `transport closed` | Server wrote a log/banner to **stdout** | Route logs to stderr (`.with_writer(std::io::stderr)`); verify per [§3b](#3b-stdout-must-be-pure-json-rpc) |
 | Model says "I don't have those tools" | Agent started its first turn before MCP discovery finished | Wait for servers to connect **and** tools to register before the first turn |
 | `the <language> language server (<id>) for .ext files is not installed: …` | Its server is not installed | `lsp_arch_setup(auto_install=true)`, as the message says |
@@ -679,13 +679,13 @@ costs a call on every task, most of them with nothing to recall; Devscriptor
 
 ## 13. Integration checklist
 
-- [ ] `tools/list` returns **75** tools, including `get_hover`, `lsp_arch_setup`, `start_watching`.
+- [ ] `tools/list` returns **76** tools, including `get_hover`, `lsp_arch_setup`, `start_watching`.
 - [ ] The server starts on a machine with **no language servers installed** (core + Architecture tools must remain usable so the agent can install them).
 - [ ] Server stdout is byte-for-byte pure JSON-RPC; all logs go to stderr.
 - [ ] Client follows pagination cursors (or tolerates a single page).
 - [ ] Per-tool timeout ≥ 180 s, startup timeout ≈ 60 s.
 - [ ] Agent waits for tool registration before its first turn.
-- [ ] The main tools of [§6](#6-step-5--handling-75-tools-without-hallucination) are in the tool table from the first request, and the rest are disclosed **with descriptions**, not as 75 raw schemas.
+- [ ] The main tools of [§6](#6-step-5--handling-76-tools-without-hallucination) are in the tool table from the first request, and the rest are disclosed **with descriptions**, not as 76 raw schemas.
 - [ ] The Devscriptor system-prompt block ([§7](#7-step-6--the-system-prompt-copy-paste)) is installed, and a short reminder to start with Devscriptor comes with the first prompt of each conversation.
 - [ ] Approval policy distinguishes read-only from mutating tools ([§8](#8-step-7--approval--permission-policy)).
 - [ ] Parameters come from the live schema, not from prose docs ([§10](#10-parameter-reference-and-gotchas)).
@@ -698,7 +698,7 @@ costs a call on every task, most of them with nothing to recall; Devscriptor
 
 ## Related documentation
 
-- Devscriptor: `docs/mcp.md` (all 75 tools), `docs/context-graph.md`,
+- Devscriptor: `docs/mcp.md` (all 76 tools), `docs/context-graph.md`,
   `docs/lsp.md`, `docs/installation.md`.
 - Rusta's implementation: `crates/mcp-client/` (discovery, arg remap),
   `crates/agent-core/src/tool_disclosure.rs` (announcements),
