@@ -18,14 +18,13 @@ pub struct CompletionBudget {
     disabled: bool,
 }
 
-/// The variables a budget is read from, the alias last.
-const BUDGET_VARS: [&str; 2] = ["KIMI_MODEL_MAX_COMPLETION_TOKENS", "KIMI_MODEL_MAX_TOKENS"];
+/// The variable a budget is read from.
+const BUDGET_VAR: &str = "RUSTA_MAX_COMPLETION_TOKENS";
 
 impl CompletionBudget {
-    /// Build a budget from the environment variables
-    /// `KIMI_MODEL_MAX_COMPLETION_TOKENS` and its alias `KIMI_MODEL_MAX_TOKENS`,
-    /// falling back to an explicit config value. A variable of 0 or below
-    /// opts out of any cap.
+    /// Build a budget from the environment variable
+    /// `RUSTA_MAX_COMPLETION_TOKENS`, falling back to an explicit config
+    /// value. A variable of 0 or below opts out of any cap.
     #[must_use]
     pub fn resolve(max_output_size: Option<u64>) -> Self {
         Self::resolve_with(max_output_size, |name| std::env::var(name).ok())
@@ -37,26 +36,19 @@ impl CompletionBudget {
         max_output_size: Option<u64>,
         env: impl Fn(&str) -> Option<String>,
     ) -> Self {
-        for name in BUDGET_VARS {
-            match parse_env_budget(env(name).as_deref()) {
-                Some(EnvBudgetValue::Disabled) => {
-                    return Self {
-                        hard_cap: None,
-                        disabled: true,
-                    };
-                }
-                Some(EnvBudgetValue::Present(n)) => {
-                    return Self {
-                        hard_cap: Some(n),
-                        disabled: false,
-                    };
-                }
-                None => {}
-            }
-        }
-        Self {
-            hard_cap: max_output_size.filter(|&s| s > 0),
-            disabled: false,
+        match parse_env_budget(env(BUDGET_VAR).as_deref()) {
+            Some(EnvBudgetValue::Disabled) => Self {
+                hard_cap: None,
+                disabled: true,
+            },
+            Some(EnvBudgetValue::Present(n)) => Self {
+                hard_cap: Some(n),
+                disabled: false,
+            },
+            None => Self {
+                hard_cap: max_output_size.filter(|&s| s > 0),
+                disabled: false,
+            },
         }
     }
 
@@ -234,9 +226,8 @@ mod tests {
     #[test]
     fn a_non_positive_variable_sends_no_cap() {
         for vars in [
-            &[("KIMI_MODEL_MAX_COMPLETION_TOKENS", "0")][..],
-            &[("KIMI_MODEL_MAX_COMPLETION_TOKENS", "-1")],
-            &[("KIMI_MODEL_MAX_TOKENS", "0")],
+            &[("RUSTA_MAX_COMPLETION_TOKENS", "0")][..],
+            &[("RUSTA_MAX_COMPLETION_TOKENS", "-1")],
         ] {
             let budget = CompletionBudget::resolve_with(None, env(vars));
             let kimi_default = Some(258_144);
@@ -253,26 +244,22 @@ mod tests {
         }
     }
 
-    /// The full name wins over the alias; an empty or malformed
-    /// one says nothing, so the next source applies.
+    /// The variable wins over the config value; an empty or malformed one
+    /// says nothing, so the config value applies.
     #[test]
-    fn budget_variables_are_read_in_order() {
-        let budget = CompletionBudget::resolve_with(
-            None,
-            env(&[
-                ("KIMI_MODEL_MAX_COMPLETION_TOKENS", "4096"),
-                ("KIMI_MODEL_MAX_TOKENS", "0"),
-            ]),
-        );
-        assert_eq!(budget.cap(0, 0), Some(4_096));
+    fn the_budget_variable_wins_unless_it_says_nothing() {
         let budget = CompletionBudget::resolve_with(
             Some(9_000),
-            env(&[
-                ("KIMI_MODEL_MAX_COMPLETION_TOKENS", ""),
-                ("KIMI_MODEL_MAX_TOKENS", "lots"),
-            ]),
+            env(&[("RUSTA_MAX_COMPLETION_TOKENS", "4096")]),
         );
-        assert_eq!(budget.cap(0, 0), Some(9_000));
+        assert_eq!(budget.cap(0, 0), Some(4_096));
+        for vars in [
+            &[("RUSTA_MAX_COMPLETION_TOKENS", "")][..],
+            &[("RUSTA_MAX_COMPLETION_TOKENS", "lots")],
+        ] {
+            let budget = CompletionBudget::resolve_with(Some(9_000), env(vars));
+            assert_eq!(budget.cap(0, 0), Some(9_000), "{vars:?}");
+        }
     }
 
     #[test]

@@ -410,11 +410,11 @@ impl ProviderLlm {
 
         let mut options = GenerateOptions {
             stream: true,
-            temperature: self.temperature.or_else(env_temperature),
-            top_p: self.top_p.or_else(env_top_p),
+            temperature: self.temperature,
+            top_p: self.top_p,
             thinking: self.thinking.clone(),
             prompt_cache_key: self.prompt_cache_key.clone(),
-            reasoning_effort: self.reasoning_effort.clone().or_else(env_thinking_effort),
+            reasoning_effort: self.reasoning_effort.clone(),
             thinking_keep: self.thinking_keep.or_else(env_thinking_keep),
             max_tokens: max_tokens_override.or(self.max_tokens),
             prompt_cache_ttl: self.prompt_cache_ttl,
@@ -502,27 +502,7 @@ fn downgrade_unsupported_media(messages: Vec<Message>) -> Vec<Message> {
         .collect()
 }
 
-fn env_temperature() -> Option<f32> {
-    std::env::var("KIMI_MODEL_TEMPERATURE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .filter(|&v| (0.0..=2.0).contains(&v))
-}
-
-fn env_top_p() -> Option<f32> {
-    std::env::var("KIMI_MODEL_TOP_P")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .filter(|&v| (0.0..=1.0).contains(&v))
-}
-
-fn env_thinking_effort() -> Option<String> {
-    std::env::var("KIMI_MODEL_THINKING_EFFORT")
-        .ok()
-        .filter(|s| !s.is_empty())
-}
-
-/// Parses a `KIMI_MODEL_THINKING_KEEP` value.
+/// Parses a `RUSTA_THINKING_KEEP` value.
 ///
 /// `None` for an unrecognized value, so a typo falls through to the model's
 /// default rather than silently switching Preserved Thinking off — which is
@@ -533,7 +513,7 @@ fn parse_thinking_keep(raw: &str) -> Option<bool> {
         "0" | "false" | "no" | "off" | "none" => Some(false),
         other => {
             tracing::warn!(
-                "Ignoring KIMI_MODEL_THINKING_KEEP={other:?}: expected on/off, \
+                "Ignoring RUSTA_THINKING_KEEP={other:?}: expected on/off, \
                  true/false, yes/no, all/none, or 1/0"
             );
             None
@@ -541,9 +521,9 @@ fn parse_thinking_keep(raw: &str) -> Option<bool> {
     }
 }
 
-/// Reads `KIMI_MODEL_THINKING_KEEP`. `None` when unset or unrecognized.
+/// Reads `RUSTA_THINKING_KEEP`. `None` when unset or unrecognized.
 pub fn env_thinking_keep() -> Option<bool> {
-    parse_thinking_keep(&std::env::var("KIMI_MODEL_THINKING_KEEP").ok()?)
+    parse_thinking_keep(&std::env::var("RUSTA_THINKING_KEEP").ok()?)
 }
 
 #[cfg(test)]

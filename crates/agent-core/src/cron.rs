@@ -54,8 +54,7 @@ pub fn plan_mode_denial(tool_name: &str) -> String {
     )
 }
 
-/// The kill-switch refusal, naming Rusta's variable (`KIMI_DISABLE_CRON` is
-/// honored too, as an alias).
+/// The kill-switch refusal, naming the variable that set it.
 pub fn disabled_message() -> String {
     "Cron scheduling is disabled (RUSTA_DISABLE_CRON=1).".to_string()
 }
@@ -88,8 +87,7 @@ pub fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-/// Whether cron is turned off for this process: `RUSTA_DISABLE_CRON=1`,
-/// with `KIMI_DISABLE_CRON` honored as an alias.
+/// Whether cron is turned off for this process: `RUSTA_DISABLE_CRON=1`.
 pub fn cron_disabled() -> bool {
     cron_disabled_with(|name| std::env::var(name).ok())
 }
@@ -97,9 +95,7 @@ pub fn cron_disabled() -> bool {
 /// [`cron_disabled`], reading variables through `env`, injected so tests need
 /// not mutate the process.
 fn cron_disabled_with(env: impl Fn(&str) -> Option<String>) -> bool {
-    ["RUSTA_DISABLE_CRON", "KIMI_DISABLE_CRON"]
-        .into_iter()
-        .any(|name| env(name).is_some_and(|value| flag_on(&value)))
+    env("RUSTA_DISABLE_CRON").is_some_and(|value| flag_on(&value))
 }
 
 /// Whether `value` turns a flag on, as Rusta's other boolean variables
@@ -239,8 +235,7 @@ impl CronManager {
         }
     }
 
-    /// Whether the kill switch is set (`RUSTA_DISABLE_CRON` /
-    /// `KIMI_DISABLE_CRON`).
+    /// Whether the kill switch is set (`RUSTA_DISABLE_CRON`).
     pub fn is_disabled(&self) -> bool {
         cron_disabled()
     }
@@ -1429,9 +1424,10 @@ mod tests {
         };
         assert!(!cron_disabled_with(|_| None));
         for value in ["1", "true", "YES", " on\n"] {
-            for name in ["RUSTA_DISABLE_CRON", "KIMI_DISABLE_CRON"] {
-                assert!(cron_disabled_with(only(name, value)), "{name}={value:?}");
-            }
+            assert!(
+                cron_disabled_with(only("RUSTA_DISABLE_CRON", value)),
+                "{value:?}"
+            );
         }
         for value in ["", "0", "false", "off", "2"] {
             assert!(

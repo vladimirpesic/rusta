@@ -270,8 +270,7 @@ envelope ahead of your next message. A fire never lands mid-turn.
   on resume. `/new` empties the schedule; a session forked with `rusta fork`
   starts with no tasks (the source session keeps running its own) and is told so,
   and that it may schedule its own.
-- **Turning it off:** `RUSTA_DISABLE_CRON` (or its alias `KIMI_DISABLE_CRON`),
-  any truthy value.
+- **Turning it off:** `RUSTA_DISABLE_CRON`, any truthy value.
 
 ## Todo list, goals and skills
 

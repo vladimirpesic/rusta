@@ -149,7 +149,7 @@ pub struct Cli {
     /// Preserved Thinking: keep reasoning content from earlier turns (Kimi / GLM).
     ///
     /// Bare `--thinking-keep` enables it; `--thinking-keep=false` disables it.
-    /// When absent, `KIMI_MODEL_THINKING_KEEP`, then the config file, then the
+    /// When absent, `RUSTA_THINKING_KEEP`, then the config file, then the
     /// model's own default decide. Kimi-K2.6-and-newer default to enabled; GLM
     /// defers to the endpoint (Z.AI's Coding Plan endpoint preserves by default,
     /// the standard API endpoint does not). Models whose schema lacks the field

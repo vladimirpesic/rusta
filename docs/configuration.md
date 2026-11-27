@@ -305,7 +305,7 @@ config type.
 | `RUSTA_MAX_ATTEMPTS_PER_STEP` | Attempts for a single model call before its error is surfaced. `1` disables retrying; `0` takes the default of 10 |
 | `RUSTA_INFINITE_RETRY` | Retry failing model calls without limit (`--infinite-retry`, config `infinite_retry`). Rides out outages, overload and spent quota windows; a context overrun, a malformed request, a content-filter refusal or a local configuration error still ends the call |
 | `RUSTA_BACKGROUND_MAX_RUNNING_TASKS` | Maximum concurrently running background tasks |
-| `RUSTA_DISABLE_CRON` | Disable scheduled prompts (`cron_create`/`cron_list`/`cron_delete` do nothing). `KIMI_DISABLE_CRON` is honoured as an alias; any truthy value (`1`, `true`, `yes`, `on`) turns cron off |
+| `RUSTA_DISABLE_CRON` | Disable scheduled prompts (`cron_create`/`cron_list`/`cron_delete` do nothing). Any truthy value (`1`, `true`, `yes`, `on`) turns cron off |
 | `RUSTA_SUBAGENT_TIMEOUT_MS` | How long a delegated sub-agent may run before it is cancelled, in the foreground or the background. `0` removes the deadline; defaults to two hours |
 | `RUSTA_SWARM_TIMEOUT_MS` | How long each `agent_swarm` member may run before it is cancelled and reports `timed_out`. `0` removes the deadline; defaults to two hours |
 | `RUSTA_SWARM_MAX_CONCURRENCY` | How many `agent_swarm` members run at once (a positive integer). Unset runs them all together |
@@ -330,12 +330,14 @@ config type.
 | `RUSTA_MAX_SUBAGENT_DEPTH` | How deep sub-agent delegation may nest. `0` forbids it. Defaults to 1: sub-agents do not spawn sub-agents of their own |
 | `RUSTA_MAX_TURNS` | Maximum model round-trips (steps) in one turn before it stops with a handoff. Defaults to 100. Raise it for long autonomous tasks |
 | `RUSTA_MAX_TOKENS` | Maximum tokens to generate |
+| `RUSTA_MAX_COMPLETION_TOKENS` | Completion budget for every request. 0 or negative: send no cap at all, not even the provider's default for an uncapped request (an explicit `max_tokens` still applies) |
 | `RUSTA_TOOL_OUTPUT_MAX_CHARS` | Budget for one tool result, in characters, before it is cut to a head and a tail and the full text saved to a spill file. Defaults to 50000; `0` disables the cap |
 | `RUSTA_READ_MAX_CHARS` | Ceiling on the `max_chars` one `read_file` call may ask for. Defaults to 500000; `0` removes it |
 | `RUSTA_COMPACTION_MAX_ATTEMPTS` | Model requests one context compaction may make before it falls back to evicting old messages. Defaults to 5 |
-| `RUSTA_TEMPERATURE` | Sampling temperature |
-| `RUSTA_TOP_P` | Nucleus-sampling top-p |
+| `RUSTA_TEMPERATURE` | Sampling temperature. Kimi fixes it for every model it serves, so the Kimi provider does not send it; the other providers do |
+| `RUSTA_TOP_P` | Nucleus-sampling top-p. Not sent to Kimi either, for the same reason |
 | `RUSTA_THINKING` | Enable reasoning/thinking mode |
+| `RUSTA_THINKING_KEEP` | Preserved Thinking, under `--thinking-keep` and over the config's `thinking_keep`: `on`/`off`, `true`/`false`, `yes`/`no`, `all`/`none`, `1`/`0`. Unset or unrecognized defers to the model default |
 | `RUSTA_REASONING_EFFORT` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, mapped onto the model's own ladder: GLM-5.2 and newer (GLM-5.3 and GLM-5.4 fold the seven rungs onto `low`/`high`/`max`), DeepSeek's models, and the Kimi models that list effort levels. On Kimi and DeepSeek `none` turns thinking off, or runs the lowest effort on a model that cannot turn it off. See [Providers](providers.md) |
 | `RUSTA_PROMPT_CACHE_TTL` | `5m` or `1h`: how long Kimi's platform keeps a written prompt-cache entry for its K3 series. Unset, an interactive session asks for `1h` and a headless run takes the platform's `5m` |
 
@@ -353,20 +355,6 @@ config type.
 No process Rusta starts sees the key variables above. The same holds for
 `RUSTA_API_KEY`, `RUSTA_CUSTOM_HEADERS` and the variable named by `api_key_env`.
 See [Keys stay with Rusta](permissions.md#keys-stay-with-rusta).
-
-### Kimi tuning
-
-These are read by the agent loop regardless of provider, and are the
-lowest-precedence source for the value they control.
-
-| Variable | Description |
-| --- | --- |
-| `KIMI_MODEL_MAX_COMPLETION_TOKENS` | Completion budget. 0 or negative: send no cap at all, not even the provider's default for an uncapped request (an explicit `max_tokens` still applies) |
-| `KIMI_MODEL_MAX_TOKENS` | Alias of the above, read when it is unset |
-| `KIMI_MODEL_TEMPERATURE` | Temperature, accepted in `0.0..=2.0`. Kimi fixes it for every model it serves, so the Kimi provider does not send it; the other providers do |
-| `KIMI_MODEL_TOP_P` | Top-p override. Not sent to Kimi either, for the same reason |
-| `KIMI_MODEL_THINKING_EFFORT` | Thinking effort override. Feeds `reasoning_effort` |
-| `KIMI_MODEL_THINKING_KEEP` | Preserved Thinking. `on`/`off`, `true`/`false`, `yes`/`no`, `all`/`none`, `1`/`0`. Unset or unrecognized defers to the model default |
 
 ### Devscriptor
 

@@ -459,5 +459,5 @@ differently, and Rusta translates:
 - **DeepSeek** needs prior `reasoning_content` echoed back on every request that
   carries tools, so it is always replayed there.
 
-Precedence is `--thinking-keep` > `KIMI_MODEL_THINKING_KEEP` > `thinking_keep` in
+Precedence is `--thinking-keep` > `RUSTA_THINKING_KEEP` > `thinking_keep` in
 the config file > the model's own default.
