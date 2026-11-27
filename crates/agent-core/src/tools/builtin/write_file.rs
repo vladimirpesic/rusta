@@ -102,7 +102,7 @@ impl ExecutableTool for WriteFileTool {
                     );
                     ctx.stale_guard
                         .lock_or_recover()
-                        .record(path.clone(), stamp);
+                        .record_text(path.clone(), stamp, content);
                 }
                 ExecutableToolResult::text(format!("Wrote {}", path.display()))
             }

@@ -30,6 +30,7 @@ image.workspace = true
 fastrand.workspace = true
 dirs.workspace = true
 strsim.workspace = true
+similar.workspace = true
 dom_smoothie.workspace = true
 dom_query.workspace = true
 tempfile.workspace = true

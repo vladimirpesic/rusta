@@ -155,7 +155,7 @@ impl ExecutableTool for EditFileTool {
                 crate::stale_guard::FileStamp::from_parts(&metadata, Some(edited.text.as_bytes()));
             ctx.stale_guard
                 .lock_or_recover()
-                .record(path.clone(), stamp);
+                .record_text(path.clone(), stamp, &edited.text);
         }
         ExecutableToolResult::text(edited.summary(&path))
     }

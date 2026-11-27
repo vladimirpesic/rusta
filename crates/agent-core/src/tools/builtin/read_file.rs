@@ -33,7 +33,7 @@ use super::ReadMediaTool;
 use crate::agent_loop::types::{
     ExecutableTool, ExecutableToolContext, ExecutableToolResult, ToolAccesses,
 };
-use crate::stale_guard::{DIGEST_SIZE_LIMIT, FileStamp};
+use crate::stale_guard::{DIGEST_SIZE_LIMIT, FileStamp, SNAPSHOT_MAX_BYTES};
 use crate::tool_output::ToolOutputPolicy;
 
 /// Characters one call returns when it does not set `max_chars`. The
@@ -159,7 +159,12 @@ impl ExecutableTool for ReadFileTool {
                 // shown. The record is made even for a partial read
                 // (`offset`/`limit`) — the guard answers "has this file moved
                 // since you looked", not "have you seen every line of it".
-                ctx.stale_guard.lock_or_recover().record(path, read.stamp);
+                let mut guard = ctx.stale_guard.lock_or_recover();
+                match &read.whole {
+                    Some(whole) => guard.record_text(path, read.stamp, whole),
+                    None => guard.record(path, read.stamp),
+                }
+                drop(guard);
                 ExecutableToolResult::text(read.text)
             }
             Ok(Err(e)) => ExecutableToolResult::error(e.message(&path)),
@@ -280,10 +285,12 @@ fn to_usize(n: u64) -> usize {
 }
 
 /// A successful read: the text for the model, and the stamp for the stale
-/// guard.
+/// guard, with the file's whole text when it is UTF-8 and small enough for the
+/// guard to keep ([`crate::stale_guard::SNAPSHOT_MAX_BYTES`]).
 struct FileRead {
     text: String,
     stamp: FileStamp,
+    whole: Option<String>,
 }
 
 /// Why a read produced no text.
@@ -956,10 +963,16 @@ fn read_text_file(path: &Path, request: &ReadRequest) -> Result<FileRead, ReadEr
 
     let len = metadata.len();
     let mut transcoded_lossy = false;
+    let mut whole = None;
     let (mut source, stamp) = match encoding {
         Encoding::Utf8 if len <= DIGEST_SIZE_LIMIT => {
             let bytes = read_all(&mut file, len)?;
             let stamp = FileStamp::from_parts(&metadata, Some(&bytes));
+            if bytes.len() <= SNAPSHOT_MAX_BYTES {
+                whole = std::str::from_utf8(&bytes[bom.min(bytes.len())..])
+                    .ok()
+                    .map(str::to_string);
+            }
             (Source::Memory { bytes, start: bom }, stamp)
         }
         // Too large to digest anyway: stream it instead of holding it.
@@ -1004,6 +1017,7 @@ fn read_text_file(path: &Path, request: &ReadRequest) -> Result<FileRead, ReadEr
     Ok(FileRead {
         text: render(&page, request, encoding),
         stamp,
+        whole,
     })
 }
 

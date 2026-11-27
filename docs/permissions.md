@@ -283,6 +283,24 @@ replaced, and a later overwrite needs a read first.
   resumed session may overwrite the files it read before, unless they changed
   since.
 
+**Changes the agent did not make** are told to it before its next request: a
+file it read or wrote that you edited, a formatter rewrote, a command or another
+agent changed. The note asks it to build on the change rather than undo it:
+
+- **What it shows:** each change with two lines around it, numbered as the file
+  is now, as `read_file` numbers lines, within 4,000 characters a file and
+  12,000 a note. The file then counts as read, so the agent may overwrite it.
+- **When it cannot show the change** — a file over 256 KiB, one that is not
+  UTF-8 text, one read before a resume, or one past the note's room — the file
+  is named, and stays unread until the agent reads it again, so an overwrite
+  waits for that read.
+- **Deleted files** are said to be gone. A file only touched, its contents the
+  same, is no news.
+- **Quiet after a while:** a file told of in three notes running, such as a log
+  being written, and one whose change could not be shown, are not told of again
+  until the agent reads them again. The session's own records and spill files
+  are not watched.
+
 `edit_file` replaces text as `read_file` shows it:
 
 - **Exactly one match.** `old_string` must occur once, or the edit is refused

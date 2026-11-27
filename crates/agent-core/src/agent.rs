@@ -2173,6 +2173,73 @@ mod tests {
         assert!(tool_results[0].text_content().contains("hello world"));
     }
 
+    /// A file the agent read that changes before its next request is told of
+    /// in that request, with the changed lines as they are now; the next
+    /// request does not tell it again.
+    #[tokio::test]
+    async fn a_file_that_changed_since_it_was_read_is_told_of() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("notes.txt");
+        tokio::fs::write(&file_path, "alpha\nbeta\ngamma\n")
+            .await
+            .unwrap();
+        let step = |message: Message, finish| StepResult {
+            message,
+            usage: TokenUsage::empty(),
+            finish_reason: Some(finish),
+            response_id: None,
+            stop_reason: None,
+        };
+        let llm = ScriptedLlm::new(vec![
+            step(
+                Message::assistant_tool_calls(vec![
+                    ToolCall::new("tc-1", "read_file")
+                        .with_arguments(serde_json::json!({ "path": file_path }).to_string()),
+                ]),
+                FinishReason::ToolCalls,
+            ),
+            step(Message::assistant_text("read it"), FinishReason::Stop),
+            step(Message::assistant_text("noted"), FinishReason::Stop),
+            step(Message::assistant_text("again"), FinishReason::Stop),
+        ]);
+        let mut agent = Agent::new(temp.path().to_path_buf(), "sys")
+            .with_permission_mode(PermissionMode::BypassPermissions);
+        let cancel = CancellationToken::new();
+        agent
+            .prompt(llm.as_ref(), "read it", &cancel)
+            .await
+            .unwrap();
+
+        tokio::fs::write(&file_path, "alpha\nBETA\ngamma\n")
+            .await
+            .unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&file_path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        agent.prompt(llm.as_ref(), "go on", &cancel).await.unwrap();
+        agent.prompt(llm.as_ref(), "and on", &cancel).await.unwrap();
+
+        let told = |request: &[Message]| {
+            request
+                .iter()
+                .any(|m| m.text_content().contains("notes.txt changed. Around each change it now reads:\n1\talpha\n2\tBETA\n3\tgamma"))
+        };
+        let messages = llm.messages.lock().unwrap();
+        assert_eq!(messages.len(), 4);
+        assert!(!told(&messages[1]), "nothing changed yet");
+        assert!(told(&messages[2]), "{:?}", messages[2].last());
+        // Told once: the later request carries that note, and no second one.
+        let notes = messages[3]
+            .iter()
+            .filter(|m| m.text_content().contains("Files you have read changed"))
+            .count();
+        assert_eq!(notes, 1);
+    }
+
     /// A search carries the prompt its turn answers, as the user wrote it;
     /// the next turn's search carries the next prompt, and the context of a
     /// turn not yet begun carries none.

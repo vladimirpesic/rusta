@@ -499,6 +499,11 @@ pub async fn run_turn(
         if let Some(reminder) = stale_todo_reminder(context, &registry, tool_ctx) {
             context.add_message(reminder);
         }
+        // Files this agent saw that changed since: it builds on the change
+        // rather than on what it saw.
+        if let Some(news) = file_news(tool_ctx).await {
+            context.add_message(Message::user(news));
+        }
 
         // What the request holds by Rusta's estimate, to learn from the
         // provider's own count of it how the model counts.
@@ -881,6 +886,24 @@ fn with_subagent_usage(tool_ctx: &ExecutableToolContext, mut usage: TokenUsage) 
 /// What a model that answered with reasoning alone is told, once a turn.
 pub(crate) const THINKING_ONLY_REMINDER: &str = "<system-reminder>\nYour previous response had \
      no visible output. Continue and produce a user-visible response.\n</system-reminder>";
+
+/// What became of the files `tool_ctx`'s agent saw since it saw them
+/// ([`crate::stale_guard::StaleGuard::news`]), its paths shown from its working
+/// directory. The session's own records and spill files are not watched.
+async fn file_news(tool_ctx: &ExecutableToolContext) -> Option<String> {
+    let canonical =
+        |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let cwd = canonical(&tool_ctx.cwd);
+    let skip: Vec<std::path::PathBuf> = std::iter::once(&tool_ctx.tool_output.spill_dir)
+        .chain(&tool_ctx.readable_paths)
+        .map(|path| canonical(path))
+        .collect();
+    let guard = Arc::clone(&tool_ctx.stale_guard);
+    tokio::task::spawn_blocking(move || guard.lock_or_recover().news(&cwd, &skip))
+        .await
+        .ok()
+        .flatten()
+}
 
 /// The reminder that asks a stopped model for its handoff.
 pub(crate) fn handoff_reminder(reason: StopReason) -> String {

@@ -63,8 +63,9 @@ A prompt starts a turn, and a turn is a loop of model steps:
 
 Between steps the loop adds what the model should know: steered input from the
 TUI, a reminder for a todo list that fell behind, instruction files under
-directories the tools touched, announcements of loadable tools, and the
-completion of background tasks.
+directories the tools touched, announcements of loadable tools, the files it
+read that changed since (see [Write safety](permissions.md#write-safety)), and
+the completion of background tasks.
 
 ## The system prompt
 
