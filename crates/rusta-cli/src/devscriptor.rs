@@ -53,6 +53,10 @@ const DB_FILE_NAME: &str = "devscriptor.db";
 /// `mcp__devscriptor__<tool>` prefix in the system prompt depend on it.
 pub const SERVER_NAME: &str = "devscriptor";
 
+/// Devscriptor's tool that gives a file's diagnostics, with which the files
+/// the agent writes or edits are checked ([`agent_core::edit_checks`]).
+pub const DIAGNOSTICS_TOOL: &str = "get_diagnostics";
+
 /// The first start may load the embedding model from disk.
 const STARTUP_TIMEOUT_MS: u64 = 60_000;
 

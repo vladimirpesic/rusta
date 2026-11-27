@@ -1122,6 +1122,7 @@ impl Agent {
         agent.tool_ctx.depth = parent.depth + 1;
         agent.tool_ctx.subagent_usage = Arc::clone(&parent.subagent_usage);
         agent.tool_ctx.usage_ledger = Arc::clone(&parent.usage_ledger);
+        agent.tool_ctx.diagnostics_tool = parent.diagnostics_tool.clone();
         agent.tool_ctx.subagent_tool_events = parent.subagent_tool_events.clone();
         agent.tool_ctx.max_subagent_depth = parent.max_subagent_depth;
         agent.vision_fallback = parent.vision_fallback.clone();
@@ -1461,6 +1462,13 @@ impl Agent {
     #[must_use]
     pub fn usage_summary(&self) -> crate::usage_ledger::UsageSummary {
         self.tool_ctx.usage_ledger.summary()
+    }
+
+    /// Check the files `write_file` and `edit_file` change with the
+    /// diagnostics tool named `tool` ([`crate::edit_checks`]); `None` checks
+    /// nothing. Sub-agents spawned from now on inherit it.
+    pub fn set_diagnostics_tool(&mut self, tool: Option<String>) {
+        self.tool_ctx.diagnostics_tool = tool;
     }
 
     /// Price the session's requests with `pricer` from now on.
@@ -2110,6 +2118,232 @@ mod tests {
         let notices = notices.lock().unwrap();
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert_eq!(notices[0].requests, 3);
+    }
+
+    /// A language server's diagnostics tool, as Devscriptor offers it: it
+    /// answers after `delay` with `answer`, counting its calls.
+    struct FakeDiagnostics {
+        definition: Tool,
+        delay: std::time::Duration,
+        answer: serde_json::Value,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl FakeDiagnostics {
+        fn new(delay: std::time::Duration, answer: serde_json::Value) -> Self {
+            Self {
+                definition: Tool::new(
+                    "mcp__lsp__get_diagnostics",
+                    "Diagnostics for a file",
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "file_path": {"type": "string"},
+                            "severity": {"type": "string"},
+                            "wait_ms": {"type": "integer"}
+                        },
+                        "required": ["file_path"]
+                    }),
+                ),
+                delay,
+                answer,
+                calls: Arc::default(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl crate::agent_loop::types::ExecutableTool for FakeDiagnostics {
+        fn tool_definition(&self) -> &Tool {
+            &self.definition
+        }
+
+        fn accesses(&self, _input: &serde_json::Value) -> crate::ToolAccesses {
+            crate::ToolAccesses::none()
+        }
+
+        fn approval_rule(&self, _input: &serde_json::Value) -> &str {
+            "silent"
+        }
+
+        fn is_read_only(&self) -> bool {
+            true
+        }
+
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            _ctx: &ExecutableToolContext,
+            _tool_call_id: &str,
+        ) -> crate::ExecutableToolResult {
+            assert_eq!(input["severity"], "error");
+            assert_eq!(input["wait_ms"], 10_000);
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            crate::ExecutableToolResult::text(self.answer.to_string())
+        }
+    }
+
+    fn edit_step(path: &std::path::Path) -> StepResult {
+        StepResult {
+            message: Message::assistant_tool_calls(vec![
+                ToolCall::new("tc-edit", "write_file").with_arguments(
+                    serde_json::json!({ "path": path, "content": "fn main() { broken }\n" })
+                        .to_string(),
+                ),
+            ]),
+            usage: TokenUsage::empty(),
+            finish_reason: Some(FinishReason::ToolCalls),
+            response_id: None,
+            stop_reason: None,
+        }
+    }
+
+    fn one_error() -> serde_json::Value {
+        serde_json::json!({ "diagnostics": [{
+            "range": { "start": { "line": 0, "character": 12 } },
+            "severity": "error", "message": "cannot find value `broken`",
+            "source": "rustc", "code": "E0425"
+        }]})
+    }
+
+    /// A file the agent writes is checked by the language server, and its
+    /// errors ride the call's result.
+    #[tokio::test]
+    async fn the_errors_of_a_written_file_ride_its_result() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("main.rs");
+        let llm = ScriptedLlm::new(vec![
+            edit_step(&path),
+            StepResult {
+                message: Message::assistant_text("done"),
+                usage: TokenUsage::empty(),
+                finish_reason: Some(FinishReason::Stop),
+                response_id: None,
+                stop_reason: None,
+            },
+        ]);
+        let mut agent = Agent::new(temp.path().to_path_buf(), "sys")
+            .with_permission_mode(PermissionMode::BypassPermissions);
+        let diagnostics = FakeDiagnostics::new(std::time::Duration::ZERO, one_error());
+        let calls = Arc::clone(&diagnostics.calls);
+        agent.register_tool(Arc::new(diagnostics));
+        agent.set_diagnostics_tool(Some("mcp__lsp__get_diagnostics".to_string()));
+        agent
+            .prompt(llm.as_ref(), "write it", &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let result = agent
+            .history()
+            .into_iter()
+            .find(|m| m.role == lm_bridge::message::Role::Tool)
+            .unwrap()
+            .text_content();
+        assert!(
+            result.ends_with(
+                "\n\nThe language server reports 1 error in main.rs as it is now:\n\
+                 main.rs:1:13: cannot find value `broken` [rustc E0425]"
+            ),
+            "{result}"
+        );
+
+        // A session without the tool, or with it refused, checks nothing.
+        let mut agent = Agent::new(temp.path().to_path_buf(), "sys")
+            .with_permission_mode(PermissionMode::BypassPermissions)
+            .with_permission_rules(vec![crate::permissions::PolicyRule {
+                name: None,
+                tool: Some("mcp__lsp__*".to_string()),
+                path: None,
+                command: None,
+                action: crate::permissions::PolicyAction::Deny,
+                scope: crate::permissions::PolicyScope::Once,
+                origin: None,
+            }]);
+        let diagnostics = FakeDiagnostics::new(std::time::Duration::ZERO, one_error());
+        let calls = Arc::clone(&diagnostics.calls);
+        agent.register_tool(Arc::new(diagnostics));
+        agent.set_diagnostics_tool(Some("mcp__lsp__get_diagnostics".to_string()));
+        let llm = ScriptedLlm::new(vec![edit_step(&path)]);
+        agent
+            .prompt(llm.as_ref(), "write it", &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// A language server slower than the wait answers with the next request
+    /// instead. Real time: the check outlasts the 3-second wait by 0.7 s, and
+    /// the next step comes 0.8 s after it.
+    #[tokio::test]
+    async fn a_slow_check_answers_with_the_next_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("main.rs");
+        struct Slow(Arc<ScriptedLlm>);
+        #[async_trait]
+        impl Llm for Slow {
+            fn model_name(&self) -> &str {
+                "slow"
+            }
+            async fn chat(
+                &self,
+                messages: Vec<Message>,
+                tools: Vec<Tool>,
+                callbacks: LlmCallbacks,
+                cancel: &CancellationToken,
+            ) -> Result<StepResult, lm_bridge::errors::LlmError> {
+                tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+                self.0.chat(messages, tools, callbacks, cancel).await
+            }
+        }
+        let scripted = ScriptedLlm::new(vec![
+            edit_step(&path),
+            StepResult {
+                message: Message::assistant_tool_calls(vec![
+                    ToolCall::new("tc-list", "todo_list").with_arguments(r#"{"todos": []}"#),
+                ]),
+                usage: TokenUsage::empty(),
+                finish_reason: Some(FinishReason::ToolCalls),
+                response_id: None,
+                stop_reason: None,
+            },
+            StepResult {
+                message: Message::assistant_text("done"),
+                usage: TokenUsage::empty(),
+                finish_reason: Some(FinishReason::Stop),
+                response_id: None,
+                stop_reason: None,
+            },
+        ]);
+        let llm = Slow(Arc::clone(&scripted));
+        let mut agent = Agent::new(temp.path().to_path_buf(), "sys")
+            .with_permission_mode(PermissionMode::BypassPermissions);
+        agent.register_tool(Arc::new(FakeDiagnostics::new(
+            std::time::Duration::from_millis(3_700),
+            one_error(),
+        )));
+        agent.set_diagnostics_tool(Some("mcp__lsp__get_diagnostics".to_string()));
+        agent
+            .prompt(&llm, "write it", &CancellationToken::new())
+            .await
+            .unwrap();
+        let messages = scripted.messages.lock().unwrap();
+        let told = |request: &[Message]| {
+            request.iter().any(|m| {
+                m.text_content()
+                    .contains("main.rs:1:13: cannot find value `broken` [rustc E0425]")
+            })
+        };
+        assert!(
+            !told(&messages[1]),
+            "the check was not done with the result"
+        );
+        assert!(told(&messages[2]), "{:?}", messages[2].last());
+        assert!(
+            messages[2].iter().any(|m| m
+                .text_content()
+                .contains("The language server answered after the results of your latest changes")),
+        );
     }
 
     /// Answers from a script and keeps the system prompt and the tools JSON of

@@ -13,6 +13,7 @@ pub mod context_projector;
 pub mod context_usage;
 pub mod cron;
 pub mod dangerous_command;
+pub mod edit_checks;
 pub mod errors;
 pub mod git_context;
 pub mod goal;

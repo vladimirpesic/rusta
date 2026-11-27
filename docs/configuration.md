@@ -134,6 +134,10 @@ dangerous_command_guard = true
 # a long run of one call. false turns both off; a duplicate within one step still
 # runs once.
 repeat_breaker = true
+# Check each file write_file or edit_file changes with Devscriptor's language
+# servers, and give the agent its errors with the call's result (see
+# docs/tools.md). false turns it off.
+diagnostics_after_edit = true
 # Title an untitled session after a completed turn in the REPL or the TUI, from its
 # first exchange. false leaves sessions untitled until /title.
 auto_session_title = true
@@ -307,6 +311,7 @@ config type.
 | `RUSTA_SWARM_MAX_CONCURRENCY` | How many `agent_swarm` members run at once (a positive integer). Unset runs them all together |
 | `RUSTA_DANGEROUS_COMMAND_GUARD` | `0`/`false` stops `bash` from asking before dangerous commands (`rm -rf`, `shutdown`, `dd` to a device, …) in the `default` and `accept_edits` modes, and turns off the built-in guardrails. Defaults to on; bypass mode (`--yes`) never asks about dangerous commands |
 | `RUSTA_REPEAT_BREAKER` | `0`/`false` turns off the repeat breaker: no reminders for a tool call repeated across steps, and no forced stop. Defaults to on |
+| `RUSTA_DIAGNOSTICS_AFTER_EDIT` | `0`/`false` turns off the language server's check of the files `write_file` and `edit_file` change (see [Tools](tools.md#files)). Defaults to on |
 | `RUSTA_TRUST_WORKSPACE` | `1`/`true` applies this run's `.rusta.toml` settings that need trust without asking or remembering; `0`/`false` leaves them out even in a trusted folder (`--trust-workspace[=false]`). Unset: a trusted folder applies them, and an interactive session asks |
 | `RUSTA_MCP_STARTUP_TIMEOUT_MS` | Global MCP startup budget, overriding `[mcp]`. A per-server value still wins |
 | `RUSTA_MCP_TOOL_TIMEOUT_MS` | Global MCP per-tool-call budget, on the same terms |

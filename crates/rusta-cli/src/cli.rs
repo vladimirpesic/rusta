@@ -265,6 +265,21 @@ pub struct Cli {
     )]
     pub repeat_breaker: Option<bool>,
 
+    /// Check each file `write_file` or `edit_file` changes with Devscriptor's
+    /// language servers, and give the agent its errors with the call's result.
+    /// On by default where Devscriptor is configured;
+    /// `--diagnostics-after-edit=false` (or `RUSTA_DIAGNOSTICS_AFTER_EDIT=0`)
+    /// turns it off.
+    #[arg(
+        long,
+        env = "RUSTA_DIAGNOSTICS_AFTER_EDIT",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    pub diagnostics_after_edit: Option<bool>,
+
     /// Ask before dangerous shell commands (`rm -rf`, `shutdown`, `dd` to a
     /// device) in the default and accept-edits modes; bypass mode (`--yes`)
     /// never asks. On by default. `--dangerous-command-guard=false` (or

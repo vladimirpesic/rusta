@@ -544,6 +544,22 @@ async fn main() -> anyhow::Result<()> {
              its tools are offered as mcp__{part}__<tool>"
         );
     }
+    // The files the agent writes or edits are checked by Devscriptor's
+    // language servers, where the session has Devscriptor.
+    if cli
+        .diagnostics_after_edit
+        .or(config.diagnostics_after_edit)
+        .unwrap_or(true)
+        && let Some(server) = mcp_manager.get(devscriptor::SERVER_NAME)
+    {
+        agent
+            .lock()
+            .await
+            .set_diagnostics_tool(Some(mcp_client::tool_name::qualified_tool_name(
+                server.server_part(),
+                devscriptor::DIAGNOSTICS_TOOL,
+            )));
+    }
     if let Some(fallback) =
         vision_fallback::for_provider(&cli, llm.provider_name(), &config, &mcp_manager, timeouts)
     {

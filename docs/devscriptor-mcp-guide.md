@@ -236,6 +236,10 @@ carries the workflow of [§7](#7-step-6--the-system-prompt-copy-paste) and says 
 tools are already held, and the first prompt of each conversation comes with a
 short reminder to start with them.
 
+Each file the agent changes with `write_file` or `edit_file` is checked with
+`get_diagnostics`, and its errors come with the call's result (see
+[Tools](tools.md#files)); `diagnostics_after_edit = false` turns that off.
+
 Devscriptor runs one process per workspace. The injected `devscriptor mcp`
 relays to the workspace's `devscriptor serve`, one per workspace and database, and
 starts it when none runs; it stops 10 minutes after its last session. The Rusta

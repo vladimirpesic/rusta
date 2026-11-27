@@ -384,6 +384,10 @@ pub async fn run_turn(
         context.add_user_message(p);
     }
 
+    // A check of a file changed in an earlier turn would answer for a text
+    // that may be gone.
+    tool_ctx.edit_checks.lock_or_recover().drop_pending();
+
     let mut recovery = Some(OverflowRecovery::Compact);
     // What every step of the turn used: the turn's result reports the whole
     // turn, which is what a front-end shows and a goal's token budget counts.
@@ -512,6 +516,11 @@ pub async fn run_turn(
         // rather than on what it saw.
         if let Some(news) = file_news(tool_ctx).await {
             context.add_message(Message::user(news));
+        }
+        // The language server's word on files changed in the steps before,
+        // that came after their results went out.
+        if let Some(words) = crate::edit_checks::later_words(tool_ctx).await {
+            context.add_message(Message::user(words));
         }
 
         // What the request holds by Rusta's estimate, to learn from the
@@ -810,7 +819,20 @@ pub async fn run_turn(
                         );
                     }
                 }
-                for msg in outcome.messages {
+                // The language server's word on the files written or edited
+                // rides their calls' results.
+                let changed = changed_files(&tool_calls, &outcome.failed, tool_ctx);
+                let mut checked = if changed.is_empty() {
+                    std::collections::HashMap::new()
+                } else {
+                    crate::edit_checks::check_changed(tool_ctx, &registry, permissions, changed)
+                        .await
+                };
+                for mut msg in outcome.messages {
+                    if let Some(words) = msg.tool_call_id.as_ref().and_then(|id| checked.remove(id))
+                    {
+                        append_text(&mut msg, &words);
+                    }
                     context.add_message_with_blob(msg).await?;
                 }
                 // The step is on disk before the next request: a process
@@ -903,6 +925,49 @@ fn with_subagent_usage(tool_ctx: &ExecutableToolContext, mut usage: TokenUsage) 
 /// What a model that answered with reasoning alone is told, once a turn.
 pub(crate) const THINKING_ONLY_REMINDER: &str = "<system-reminder>\nYour previous response had \
      no visible output. Continue and produce a user-visible response.\n</system-reminder>";
+
+/// Add `words` to a tool result's text, after a blank line.
+fn append_text(message: &mut Message, words: &str) {
+    let last_text = message
+        .content
+        .iter_mut()
+        .rev()
+        .find_map(|part| match part {
+            lm_bridge::message::ContentPart::Text { text } => Some(text),
+            _ => None,
+        });
+    match last_text {
+        Some(text) => {
+            text.push_str("\n\n");
+            text.push_str(words);
+        }
+        None => message
+            .content
+            .push(lm_bridge::message::ContentPart::text(words)),
+    }
+}
+
+/// The files the successful `write_file` and `edit_file` calls among `calls`
+/// changed, each with its call's id, as the tools resolve their paths.
+fn changed_files(
+    calls: &[lm_bridge::message::ToolCall],
+    failed: &std::collections::HashSet<String>,
+    tool_ctx: &ExecutableToolContext,
+) -> Vec<(String, std::path::PathBuf)> {
+    calls
+        .iter()
+        .filter(|call| matches!(call.name.as_str(), "write_file" | "edit_file"))
+        .filter(|call| !failed.contains(&call.id))
+        .filter_map(|call| {
+            let args: serde_json::Value = serde_json::from_str(call.arguments.as_deref()?).ok()?;
+            let path = args.get("path")?.as_str()?;
+            let path = tool_ctx
+                .resolve_allowed_path(std::path::Path::new(path))
+                .ok()?;
+            Some((call.id.clone(), path))
+        })
+        .collect()
+}
 
 /// The most tokens the files brought back after a compaction may take
 /// together, whatever room it made.

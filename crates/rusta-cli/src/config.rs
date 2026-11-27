@@ -124,6 +124,10 @@ pub struct Config {
     /// and a stop with a handoff after a long run of one call. Defaults to
     /// true.
     pub repeat_breaker: Option<bool>,
+    /// Check a file `write_file` or `edit_file` changed with Devscriptor's
+    /// language servers, and give the agent its errors with the call's result.
+    /// Defaults to true.
+    pub diagnostics_after_edit: Option<bool>,
     /// Title an untitled session after a completed turn in the REPL or the
     /// TUI, from its first exchange.
     /// Defaults to true.
@@ -443,6 +447,10 @@ impl Config {
             higher.swarm_max_concurrency,
         );
         overlay_opt(&mut self.repeat_breaker, higher.repeat_breaker);
+        overlay_opt(
+            &mut self.diagnostics_after_edit,
+            higher.diagnostics_after_edit,
+        );
         overlay_opt(&mut self.auto_session_title, higher.auto_session_title);
         overlay_opt(
             &mut self.dangerous_command_guard,

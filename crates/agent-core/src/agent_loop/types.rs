@@ -369,6 +369,14 @@ pub struct ExecutableToolContext {
     /// sub-agent step adds its usage, and each turn of the session's agent
     /// takes what has gathered into its own ([`run_turn`](fn@crate::agent_loop::run_turn)).
     pub subagent_usage: Arc<Mutex<lm_bridge::usage::TokenUsage>>,
+    /// The tool the agent's `write_file` and `edit_file` results are checked
+    /// with: the qualified name of a language server's diagnostics tool, such
+    /// as Devscriptor's `get_diagnostics` ([`crate::edit_checks`]). `None`
+    /// checks nothing. Sub-agents inherit it.
+    pub diagnostics_tool: Option<String>,
+    /// This agent's checks of the files it changed: those still running, and
+    /// the files it was told have errors. Fresh per agent.
+    pub edit_checks: Arc<Mutex<crate::edit_checks::EditChecks>>,
     /// Every request of the session's tree of agents, with its tokens and,
     /// where a price is known, its cost: what `/usage` shows. Shared by the
     /// whole tree.
@@ -477,6 +485,8 @@ impl Default for ExecutableToolContext {
             depth: 0,
             subagent_usage: Arc::default(),
             usage_ledger: Arc::default(),
+            diagnostics_tool: None,
+            edit_checks: Arc::default(),
             subagent_tool_events: None,
             max_subagent_depth: DEFAULT_MAX_SUBAGENT_DEPTH,
             tool_output: crate::tool_output::ToolOutputPolicy::default(),
