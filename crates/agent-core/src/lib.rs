@@ -23,6 +23,7 @@ pub use lm_bridge::private_fs;
 pub mod process_group;
 pub mod profile;
 pub mod prompt;
+pub mod read_only_command;
 pub mod records;
 pub mod replace_file;
 pub mod session_lock;

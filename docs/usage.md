@@ -109,7 +109,8 @@ counts, and it reports cache reads and writes as `input_cache_read` and
 `input_cache_creation`.
 
 An `approval_request` is answered with one line on stdin: `y` allow once, `a`
-allow for the session, `n` deny, `s` deny for the session, `c` cancel. The
+allow for the session, `n` deny, `s` deny for the session, `c` cancel (what a
+session answer covers is in [Permission modes](permissions.md#permission-modes)). The
 commands `bash` runs get none of that input: a command's stdin is the call's
 `stdin`, or empty. A `question` is answered with one line. A failed prompt
 prints an `error` event on stderr.

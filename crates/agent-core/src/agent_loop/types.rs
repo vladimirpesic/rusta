@@ -587,10 +587,21 @@ impl ExecutableToolContext {
         &self,
         path: &std::path::Path,
     ) -> Result<std::path::PathBuf, String> {
+        self.resolve_allowed_path_from(&self.cwd, path)
+    }
+
+    /// [`resolve_allowed_path`](Self::resolve_allowed_path) for a relative
+    /// `path` taken from `cwd` rather than this agent's working directory: a
+    /// command's, which may run elsewhere in the workspace.
+    pub fn resolve_allowed_path_from(
+        &self,
+        cwd: &std::path::Path,
+        path: &std::path::Path,
+    ) -> Result<std::path::PathBuf, String> {
         let abs = if path.is_absolute() {
             path.to_path_buf()
         } else {
-            self.cwd.join(path)
+            cwd.join(path)
         };
 
         let canonical = canonicalize_or_resolve(&abs)

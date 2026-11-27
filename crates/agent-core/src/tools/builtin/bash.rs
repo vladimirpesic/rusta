@@ -9,8 +9,8 @@ use serde_json::json;
 use tokio::io::BufReader;
 
 use crate::agent_loop::types::{
-    ExecutableTool, ExecutableToolContext, ExecutableToolResult, ToolAccesses, ToolEvent,
-    ToolStatus,
+    ExecutableTool, ExecutableToolContext, ExecutableToolResult, ToolAccess, ToolAccesses,
+    ToolEvent, ToolStatus,
 };
 use crate::lossy_lines::LossyLines;
 
@@ -71,6 +71,15 @@ impl ExecutableTool for BashTool {
 
     fn accesses(&self, input: &serde_json::Value) -> ToolAccesses {
         let cwd = resolve_cwd(input, &std::path::PathBuf::from("."));
+        // A command that only reads runs beside other reads, as `grep` does.
+        // Its paths are judged when it is approved; here only what it does.
+        let adds_environment = input
+            .get("env")
+            .is_some_and(|env| !env.is_null() && env.as_object().is_none_or(|e| !e.is_empty()));
+        let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        if !adds_environment && crate::read_only_command::reads_only(command, &cwd, &|_, _| true) {
+            return ToolAccesses::new(vec![ToolAccess::Read(cwd)]);
+        }
         ToolAccesses::read_write_tree(cwd)
     }
 

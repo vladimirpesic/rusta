@@ -209,7 +209,10 @@ tool in the table is sent with every request, so only those are.
 
 **The user's machine is not the model's to run freely.** Every call passes the
 permission engine; secrets and history-rewriting git commands ask even in
-bypass mode; dangerous shell commands ask outside it; no command, hook or MCP
+bypass mode; dangerous shell commands ask outside it; a command runs unasked
+outside bypass only when Rusta can tell that it reads and nothing else, inside
+the workspace; an answer for the session covers that command or that tool, no
+wider; no command, hook or MCP
 server sees the variables Rusta reads its keys from; a cloned repository's
 config cannot start servers or redirect requests until its folder is trusted,
 and cannot declare hooks at all; `fetch` refuses private and metadata

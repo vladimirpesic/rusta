@@ -264,7 +264,8 @@ pub async fn run_tool_call_batch(
                 }
                 PolicyCheck::NoMatch => {
                     let approval = tool.approval_rule(&args);
-                    if approval != "silent" && !permissions.is_allowed(approval, &args, ctx) {
+                    if approval != "silent" && !permissions.is_allowed(&name, approval, &args, ctx)
+                    {
                         fire_permission_hook(ctx, &name, &args, true, None);
                         let response = permissions
                             .request_approval(approval, None, &name, &args)
@@ -1137,7 +1138,8 @@ mod tests {
             PermissionMode::Default,
             Arc::new(CountingApprovals(Arc::clone(&asked))),
         );
-        let args = serde_json::to_string(&json!({ "command": "echo hi" })).unwrap();
+        let command = json!({ "command": "touch hi" });
+        let args = serde_json::to_string(&command).unwrap();
         let calls = vec![ToolCall::new("tc-1", "bash").with_arguments(&args)];
         let mut dedup = ToolCallDeduplicator::new();
         let outcome = run_tool_call_batch(
@@ -1160,7 +1162,7 @@ mod tests {
             "the user was asked to approve a call the hook had blocked"
         );
         assert!(
-            !permissions.is_allowed("run_command", &json!({}), &ctx),
+            !permissions.is_allowed("bash", "run_command", &command, &ctx),
             "no session rule was recorded for the blocked call"
         );
         // Permission hooks are spawned; give a wrongly spawned one time to run.

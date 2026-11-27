@@ -720,19 +720,30 @@ impl PermissionEngine {
         }
     }
 
-    pub fn is_allowed(&self, rule: &str, _input: &Value, _ctx: &ExecutableToolContext) -> bool {
+    /// Whether a call of `tool_name` under its approval `rule` runs without
+    /// asking: by the permission mode, by an answer the session gave for it
+    /// ([`session_key`]), or, for `bash`, because the command only reads
+    /// inside the workspace ([`reads_only_call`]).
+    pub fn is_allowed(
+        &self,
+        tool_name: &str,
+        rule: &str,
+        input: &Value,
+        ctx: &ExecutableToolContext,
+    ) -> bool {
         // Every plan waits for the user's review, in every permission mode:
         // no earlier answer approves the next plan.
         if rule == PLAN_REVIEW_RULE {
             return false;
         }
+        let key = session_key(rule, tool_name, input);
 
         let plan_mode = self.plan_mode.load(Ordering::SeqCst);
         // Nothing is edited before the user has reviewed a plan: plan mode
         // asks before each edit in every mode, bypass included. Only the
-        // user's own "yes to all" for edits lets them through.
+        // user's own "yes for the session" to edits lets them through.
         if plan_mode && is_edit_rule(rule) {
-            return self.session_allow.lock_or_recover().contains(rule);
+            return self.session_allow.lock_or_recover().contains(&key);
         }
 
         // BypassPermissions is an explicit opt-out of gating: commands run
@@ -742,25 +753,32 @@ impl PermissionEngine {
             return true;
         }
 
+        // A command that only reads asks nothing, in plan mode too, unless
+        // the user refused it for the session.
+        if tool_name == "bash"
+            && rule == "run_command"
+            && !self.session_deny.lock_or_recover().contains(&key)
+            && reads_only_call(input, ctx)
+        {
+            return true;
+        }
+
         if plan_mode && is_write_or_execute_rule(rule) {
             // Plan mode forces explicit approval for every command in the
             // interactive Default/AcceptEdits modes.
-            return self.session_allow.lock_or_recover().contains(rule);
+            return self.session_allow.lock_or_recover().contains(&key);
         }
 
         match self.mode {
             PermissionMode::AcceptEdits if is_edit_rule(rule) => true,
             _ => {
-                if self.session_deny.lock_or_recover().contains(rule) {
+                if self.session_deny.lock_or_recover().contains(&key) {
                     return false;
-                }
-                if self.session_allow.lock_or_recover().contains(rule) {
-                    return true;
                 }
                 // Default and AcceptEdits for non-edit rules require a hook response.
                 // We cannot await here, so callers that need interactive approval
                 // must call `request_approval` before `is_allowed`.
-                false
+                self.session_allow.lock_or_recover().contains(&key)
             }
         }
     }
@@ -788,10 +806,12 @@ impl PermissionEngine {
             ApprovalResponse::AllowSession => {
                 self.session_allow
                     .lock_or_recover()
-                    .insert(rule.to_string());
+                    .insert(session_key(rule, tool_name, input));
             }
             ApprovalResponse::DenySession => {
-                self.session_deny.lock_or_recover().insert(rule.to_string());
+                self.session_deny
+                    .lock_or_recover()
+                    .insert(session_key(rule, tool_name, input));
             }
             _ => {}
         }
@@ -804,6 +824,63 @@ impl Default for PermissionEngine {
     fn default() -> Self {
         Self::new(PermissionMode::Default)
     }
+}
+
+/// What an answer for the session covers: the key it is remembered under.
+///
+/// - **A `bash` command** is remembered as itself, with where it runs, what
+///   it reads on stdin and the environment it adds: allowing one command for
+///   the session allows no other.
+/// - **A tool that shares its approval rule with others,** an MCP tool that
+///   runs commands or writes, is remembered by its own name: an answer for it
+///   answers neither `bash` nor the file tools, nor another server's tools.
+/// - **`write_file` and `edit_file`** share theirs: a "yes for the session" to
+///   an edit is a yes to every edit, as `accept_edits` gives.
+/// - **Anything else** keeps its rule: a configured rule, a built-in
+///   guardrail, a kind of dangerous command.
+fn session_key(rule: &str, tool_name: &str, input: &Value) -> String {
+    match (rule, tool_name) {
+        ("run_command", "bash") => {
+            let field = |name: &str| input.get(name).cloned().unwrap_or(Value::Null);
+            let call = Value::Array(vec![
+                field("command"),
+                field("cwd"),
+                field("stdin"),
+                field("env"),
+            ]);
+            format!("{rule}:{call}")
+        }
+        ("write_file", "write_file" | "edit_file") => rule.to_string(),
+        ("run_command" | "write_file", _) => format!("{rule}:{tool_name}"),
+        _ => rule.to_string(),
+    }
+}
+
+/// Whether a `bash` call runs a command that only reads inside the workspace
+/// ([`crate::read_only_command`]), from a working directory inside it, and in
+/// the session's own environment: a call that adds to it is asked about.
+fn reads_only_call(input: &Value, ctx: &ExecutableToolContext) -> bool {
+    let adds_environment = match input.get("env") {
+        None | Some(Value::Null) => false,
+        Some(Value::Object(env)) => !env.is_empty(),
+        Some(_) => true,
+    };
+    let Some(command) = input.get("command").and_then(Value::as_str) else {
+        return false;
+    };
+    if adds_environment {
+        return false;
+    }
+    let cwd = input
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map_or_else(|| ctx.cwd.clone(), std::path::PathBuf::from);
+    let Ok(cwd) = ctx.resolve_allowed_path(&cwd) else {
+        return false;
+    };
+    crate::read_only_command::reads_only(command, &cwd, &|from, path| {
+        ctx.resolve_allowed_path_from(from, path).is_ok()
+    })
 }
 
 fn is_edit_rule(rule: &str) -> bool {
@@ -839,59 +916,213 @@ mod tests {
     #[tokio::test]
     async fn test_bypass_permissions_allows_all() {
         let engine = PermissionEngine::new(PermissionMode::BypassPermissions);
-        assert!(engine.is_allowed("write_file", &Value::Null, &ctx()));
-        assert!(engine.is_allowed("bash", &Value::Null, &ctx()));
+        assert!(engine.is_allowed("write_file", "write_file", &Value::Null, &ctx()));
+        assert!(engine.is_allowed("bash", "run_command", &Value::Null, &ctx()));
     }
 
     #[tokio::test]
     async fn test_accept_edits_auto_allows_writes() {
         let engine = PermissionEngine::new(PermissionMode::AcceptEdits);
-        assert!(engine.is_allowed("write_file", &Value::Null, &ctx()));
-        assert!(!engine.is_allowed("bash", &Value::Null, &ctx()));
+        assert!(engine.is_allowed("write_file", "write_file", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("bash", "run_command", &Value::Null, &ctx()));
     }
 
     #[tokio::test]
     async fn test_default_mode_calls_hook() {
         let engine = PermissionEngine::with_hook(PermissionMode::Default, Arc::new(AllowOnceHook));
-        assert!(!engine.is_allowed("bash", &Value::Null, &ctx()));
+        let input = bash("cargo test");
+        assert!(!engine.is_allowed("bash", "run_command", &input, &ctx()));
         let response = engine
-            .request_approval("bash", None, "bash", &Value::Null)
+            .request_approval("run_command", None, "bash", &input)
             .await;
         assert_eq!(response, ApprovalResponse::AllowOnce);
         // AllowOnce is not cached.
-        assert!(!engine.is_allowed("bash", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("bash", "run_command", &input, &ctx()));
+    }
+
+    struct AllowSessionHook;
+
+    #[async_trait]
+    impl ApprovalHook for AllowSessionHook {
+        async fn request_approval(&self, _request: ApprovalRequest) -> ApprovalResponse {
+            ApprovalResponse::AllowSession
+        }
     }
 
     #[tokio::test]
     async fn test_allow_session_caches() {
-        struct AllowSessionHook;
-
-        #[async_trait]
-        impl ApprovalHook for AllowSessionHook {
-            async fn request_approval(&self, _request: ApprovalRequest) -> ApprovalResponse {
-                ApprovalResponse::AllowSession
-            }
-        }
-
         let engine =
             PermissionEngine::with_hook(PermissionMode::Default, Arc::new(AllowSessionHook));
-        assert!(!engine.is_allowed("bash", &Value::Null, &ctx()));
+        let input = bash("cargo test");
+        assert!(!engine.is_allowed("bash", "run_command", &input, &ctx()));
         let response = engine
-            .request_approval("bash", None, "bash", &Value::Null)
+            .request_approval("run_command", None, "bash", &input)
             .await;
         assert_eq!(response, ApprovalResponse::AllowSession);
-        assert!(engine.is_allowed("bash", &Value::Null, &ctx()));
+        assert!(engine.is_allowed("bash", "run_command", &input, &ctx()));
     }
 
     #[tokio::test]
     async fn test_deny_session_caches() {
         let engine =
             PermissionEngine::with_hook(PermissionMode::Default, Arc::new(DenySessionHook));
+        let input = bash("cargo test");
         let response = engine
-            .request_approval("bash", None, "bash", &Value::Null)
+            .request_approval("run_command", None, "bash", &input)
             .await;
         assert_eq!(response, ApprovalResponse::DenySession);
-        assert!(!engine.is_allowed("bash", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("bash", "run_command", &input, &ctx()));
+    }
+
+    /// A command allowed for the session is that command, run where it was,
+    /// with what it was given: no other command, and not the same one with
+    /// another working directory, stdin or environment.
+    #[tokio::test]
+    async fn a_command_allowed_for_the_session_allows_no_other() {
+        let engine =
+            PermissionEngine::with_hook(PermissionMode::Default, Arc::new(AllowSessionHook));
+        let allowed = bash("cargo test");
+        engine
+            .request_approval("run_command", None, "bash", &allowed)
+            .await;
+        assert!(engine.is_allowed("bash", "run_command", &allowed, &ctx()));
+        for other in [
+            bash("cargo build"),
+            bash("cargo test && rm -rf target"),
+            serde_json::json!({ "command": "cargo test", "cwd": "sub" }),
+            serde_json::json!({ "command": "cargo test", "stdin": "y" }),
+            serde_json::json!({ "command": "cargo test", "env": { "RUSTFLAGS": "-C x" } }),
+        ] {
+            assert!(
+                !engine.is_allowed("bash", "run_command", &other, &ctx()),
+                "{other}"
+            );
+        }
+    }
+
+    /// A command refused for the session is that command alone.
+    #[tokio::test]
+    async fn a_command_refused_for_the_session_refuses_no_other() {
+        let engine =
+            PermissionEngine::with_hook(PermissionMode::Default, Arc::new(DenySessionHook));
+        engine
+            .request_approval("run_command", None, "bash", &bash("make deploy"))
+            .await;
+        let mut engine = engine;
+        engine.set_hook(Arc::new(AllowSessionHook));
+        engine
+            .request_approval("run_command", None, "bash", &bash("make test"))
+            .await;
+        assert!(engine.is_allowed("bash", "run_command", &bash("make test"), &ctx()));
+        assert!(!engine.is_allowed("bash", "run_command", &bash("make deploy"), &ctx()));
+    }
+
+    /// An MCP tool that runs commands or writes shares the built-in rule, but
+    /// an answer for it is its own: it allows neither `bash`, nor the file
+    /// tools, nor another MCP tool, and theirs do not allow it.
+    #[tokio::test]
+    async fn an_mcp_tool_allowed_for_the_session_allows_only_itself() {
+        let engine =
+            PermissionEngine::with_hook(PermissionMode::Default, Arc::new(AllowSessionHook));
+        engine
+            .request_approval("run_command", None, "mcp__ci__run_tests", &Value::Null)
+            .await;
+        engine
+            .request_approval("write_file", None, "mcp__docs__write_page", &Value::Null)
+            .await;
+        assert!(engine.is_allowed("mcp__ci__run_tests", "run_command", &Value::Null, &ctx()));
+        assert!(engine.is_allowed("mcp__docs__write_page", "write_file", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("bash", "run_command", &bash("cargo build"), &ctx()));
+        assert!(!engine.is_allowed("mcp__ci__deploy", "run_command", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("write_file", "write_file", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("mcp__docs__drop_page", "write_file", &Value::Null, &ctx()));
+
+        let engine =
+            PermissionEngine::with_hook(PermissionMode::Default, Arc::new(AllowSessionHook));
+        engine
+            .request_approval("write_file", None, "edit_file", &Value::Null)
+            .await;
+        // A yes to an edit is a yes to every edit, not to an MCP tool's write.
+        assert!(engine.is_allowed("write_file", "write_file", &Value::Null, &ctx()));
+        assert!(engine.is_allowed("edit_file", "write_file", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("mcp__docs__write_page", "write_file", &Value::Null, &ctx()));
+    }
+
+    /// A command that only reads inside the workspace runs unasked, in plan
+    /// mode too; one that reads outside, or that the user refused for the
+    /// session, or that adds to the environment, is asked about.
+    #[tokio::test]
+    async fn a_command_that_only_reads_runs_unasked() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "x\n").unwrap();
+        let ctx = ExecutableToolContext {
+            cwd: dir.path().to_path_buf(),
+            ..ctx()
+        };
+        let plan_mode = Arc::new(AtomicBool::new(false));
+        let mut engine =
+            PermissionEngine::with_hook(PermissionMode::Default, Arc::new(DenySessionHook));
+        engine.set_plan_mode(Arc::clone(&plan_mode));
+
+        let reads = bash("grep -n x notes.txt | head -5");
+        assert!(engine.is_allowed("bash", "run_command", &reads, &ctx));
+        plan_mode.store(true, Ordering::SeqCst);
+        assert!(engine.is_allowed("bash", "run_command", &reads, &ctx));
+        plan_mode.store(false, Ordering::SeqCst);
+
+        for asked in [
+            bash("cat /etc/hostname"),
+            bash("cat ../notes.txt"),
+            bash("rm notes.txt"),
+            serde_json::json!({ "command": "cat notes.txt", "env": { "LD_PRELOAD": "x.so" } }),
+            serde_json::json!({ "command": "cat notes.txt", "env": "x" }),
+            serde_json::json!({ "command": "ls", "cwd": "/" }),
+        ] {
+            assert!(
+                !engine.is_allowed("bash", "run_command", &asked, &ctx),
+                "{asked}"
+            );
+        }
+        let with_empty_env = serde_json::json!({ "command": "ls", "env": {}, "cwd": "." });
+        assert!(engine.is_allowed("bash", "run_command", &with_empty_env, &ctx));
+
+        // Refused for the session, it stays refused.
+        engine
+            .request_approval("run_command", None, "bash", &reads)
+            .await;
+        assert!(!engine.is_allowed("bash", "run_command", &reads, &ctx));
+        // An MCP tool is never judged as a command, whatever its input.
+        assert!(!engine.is_allowed("mcp__x__run", "run_command", &bash("ls"), &ctx));
+    }
+
+    /// A path is judged as the file tools judge it, links followed: a link
+    /// inside the workspace that leads out of it is not read unasked.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_workspace_is_not_read_unasked() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret"), "s\n").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret"), dir.path().join("link")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("out")).unwrap();
+        std::fs::write(dir.path().join("own"), "o\n").unwrap();
+        let ctx = ExecutableToolContext {
+            cwd: dir.path().to_path_buf(),
+            ..ctx()
+        };
+        let engine = PermissionEngine::new(PermissionMode::Default);
+        assert!(engine.is_allowed("bash", "run_command", &bash("cat own"), &ctx));
+        for command in [
+            "cat link",
+            "cat out/secret",
+            "ls out",
+            "cd out && cat secret",
+        ] {
+            assert!(
+                !engine.is_allowed("bash", "run_command", &bash(command), &ctx),
+                "{command}"
+            );
+        }
     }
 
     /// Bypass runs commands unasked in plan mode, as the shell follows the
@@ -903,14 +1134,14 @@ mod tests {
         let mut engine = PermissionEngine::new(PermissionMode::BypassPermissions);
         engine.set_plan_mode(Arc::clone(&plan_mode));
 
-        assert!(!engine.is_allowed("write_file", &Value::Null, &ctx()));
-        assert!(!engine.is_allowed("edit_file", &Value::Null, &ctx()));
-        assert!(engine.is_allowed("run_command", &Value::Null, &ctx()));
-        assert!(engine.is_allowed("read_file", &Value::Null, &ctx()));
-        assert!(!engine.is_allowed("exit_plan_mode", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("write_file", "write_file", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("edit_file", "write_file", &Value::Null, &ctx()));
+        assert!(engine.is_allowed("bash", "run_command", &Value::Null, &ctx()));
+        assert!(engine.is_allowed("read_file", "read_file", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("exit_plan_mode", "exit_plan_mode", &Value::Null, &ctx()));
 
         plan_mode.store(false, Ordering::SeqCst);
-        assert!(engine.is_allowed("write_file", &Value::Null, &ctx()));
+        assert!(engine.is_allowed("write_file", "write_file", &Value::Null, &ctx()));
     }
 
     #[test]
@@ -921,16 +1152,16 @@ mod tests {
         let mut engine = PermissionEngine::new(PermissionMode::Default);
         engine.set_plan_mode(Arc::clone(&plan_mode));
 
-        assert!(!engine.is_allowed("write_file", &Value::Null, &ctx()));
-        assert!(!engine.is_allowed("run_command", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("write_file", "write_file", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("bash", "run_command", &bash("cargo test"), &ctx()));
 
-        // The user's "yes to all" for edits lifts the gate.
+        // The user's "yes for the session" to edits lifts the gate.
         engine
             .session_allow
             .lock()
             .unwrap()
             .insert("write_file".to_string());
-        assert!(engine.is_allowed("write_file", &Value::Null, &ctx()));
+        assert!(engine.is_allowed("write_file", "write_file", &Value::Null, &ctx()));
     }
 
     /// **The over-grant.** A rule written to allow one command must not be
@@ -1386,19 +1617,19 @@ mod tests {
 
         let engine =
             PermissionEngine::with_hook(PermissionMode::BypassPermissions, Arc::new(AllowOnce));
-        assert!(!engine.is_allowed("exit_plan_mode", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("exit_plan_mode", PLAN_REVIEW_RULE, &Value::Null, &ctx()));
         let response = engine
             .request_approval("exit_plan_mode", None, "exit_plan_mode", &Value::Null)
             .await;
         assert_eq!(response, ApprovalResponse::AllowOnce);
-        assert!(!engine.is_allowed("exit_plan_mode", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("exit_plan_mode", PLAN_REVIEW_RULE, &Value::Null, &ctx()));
 
         let engine =
             PermissionEngine::with_hook(PermissionMode::BypassPermissions, Arc::new(AllowSession));
         engine
             .request_approval("exit_plan_mode", None, "exit_plan_mode", &Value::Null)
             .await;
-        assert!(!engine.is_allowed("exit_plan_mode", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("exit_plan_mode", PLAN_REVIEW_RULE, &Value::Null, &ctx()));
         assert!(engine.session_allow.lock().unwrap().is_empty());
 
         // A rule's session-wide allow is kept under its name: one named
@@ -1417,7 +1648,7 @@ mod tests {
             engine.check_policy("exit_plan_mode", &Value::Null, &ctx()),
             PolicyCheck::NoMatch
         );
-        assert!(!engine.is_allowed("exit_plan_mode", &Value::Null, &ctx()));
+        assert!(!engine.is_allowed("exit_plan_mode", PLAN_REVIEW_RULE, &Value::Null, &ctx()));
         let mut engine = PermissionEngine::new(PermissionMode::Default);
         engine.add_rules(vec![PolicyRule {
             name: None,
@@ -1560,7 +1791,7 @@ mod tests {
             "the other rule of the same name still asks"
         );
         assert!(
-            !engine.is_allowed("write_file", &serde_json::json!({}), &ctx()),
+            !engine.is_allowed("edit_file", "write_file", &serde_json::json!({}), &ctx()),
             "a rule's answer is not the write_file approval"
         );
 

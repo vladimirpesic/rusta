@@ -6,6 +6,7 @@ the write guard, and the trust a project's own config needs.
 
 - [Permission modes](#permission-modes)
 - [Rules](#rules)
+- [Commands that only read](#commands-that-only-read)
 - [Dangerous commands](#dangerous-commands)
 - [Built-in guardrails](#built-in-guardrails)
 - [Plan mode](#plan-mode)
@@ -17,8 +18,8 @@ the write guard, and the trust a project's own config needs.
 
 | Mode | Behaviour |
 | --- | --- |
-| `default` | Reads run without asking; edits, commands and MCP calls that change something are asked about |
-| `accept_edits` | File edits run without asking; commands are still asked about |
+| `default` | Reads run without asking, and so do [commands that only read](#commands-that-only-read); edits, other commands and MCP calls that change something are asked about |
+| `accept_edits` | File edits run without asking; commands that do more than read are still asked about |
 | `bypass_permissions` | Nothing is asked about, except the guardrails below and a plan review |
 
 Set the mode with `--permission-mode` (`RUSTA_PERMISSION_MODE`,
@@ -26,7 +27,20 @@ Set the mode with `--permission-mode` (`RUSTA_PERMISSION_MODE`,
 `/auto` (`accept_edits`) and `/yolo` (`bypass_permissions`).
 
 An approval prompt takes `y` (allow once), `a` (allow for the session), `n`
-(deny), `s` (deny for the session) or `c` (cancel). A run with nobody to answer —
+(deny), `s` (deny for the session) or `c` (cancel). An answer for the session
+covers that call and no wider:
+
+- **A `bash` command:** that command, run in the same `cwd`, with the same
+  `stdin` and `env`. Allowing `cargo test` does not allow `cargo build`, nor
+  `cargo test && rm -rf target`.
+- **An MCP tool:** that tool alone. An MCP tool that runs commands or writes
+  files is asked about like `bash` or the file tools, but an answer for it
+  answers neither them nor another MCP tool.
+- **`write_file` and `edit_file`:** every edit, as `accept_edits` gives.
+- **A rule, a guardrail or a dangerous command:** what it covers, as said in
+  their sections below.
+
+A run with nobody to answer —
 a headless `-p … --yes` run, a background sub-agent — refuses what would be asked
 at once, and tells the model that nobody could approve the call rather than that
 you refused it.
@@ -66,9 +80,56 @@ kept across restarts.
 A rule's `name` is for you: a `prompt` rule's approval request names it and the
 file it comes from (`asked by rule "ask-first" in project config
 /repo/.rusta.toml`). An answer is remembered for the rule that asked and no
-other: a "yes to all" for one rule never answers for another rule, whatever the
+other: a "yes for the session" to one rule never answers for another rule, whatever the
 names, nor for a built-in guardrail or a tool's own approval. Two rules of one
 file may not share a name; Rusta refuses such a config file.
+
+## Commands that only read
+
+A `bash` command that can only read files inside the workspace runs without
+asking, in every mode and in plan mode too, as `read_file` and `grep` do. It
+also runs beside other reads instead of waiting for them. Anything Rusta cannot
+judge with certainty is asked about as before:
+
+- **Plain syntax.** Words, single quotes, double quotes without expansions,
+  comments, `|`, `||`, `&&`, `;` and newlines. Outside single quotes a `$`, a
+  backquote or a backslash makes it an ordinary command, and so does, outside
+  any quotes, a glob (`*.rs`), braces, a `~` that would expand, a subshell, a
+  background job, a here document or a variable assignment. Output may only
+  be discarded (`2>/dev/null`, `>/dev/null`, `2>&1`), and input may be read
+  from a file (`< file`).
+- **Programs known to read:** `ls`, `cat`, `head`, `tail`, `wc`, `nl`, `cut`,
+  `tr`, `sort`, `uniq`, `diff`, `cmp`, `comm`, `stat`, `du`, `df`, `file`,
+  `tree`, `find`, `fd`, `grep`, `rg`, `sed`, `od`, `hexdump`, `xxd`,
+  `strings`, the checksum programs, `echo`, `printf`, `pwd`, `cd` and a few
+  more, each by its bare name. Options that write, run a program or follow
+  links make the command an ordinary one: `sort -o`, `find -exec`,
+  `find -delete`, `rg --pre`, `grep -R`, `diff -r`, `tree -o`, `uniq IN OUT`.
+  `sed` counts only when its script prints (`sed -n '10,20p'`,
+  `sed -n '/fn main/,/^}/p'`), never with `-i`, a script file, or a command
+  that substitutes, reads or writes a file, or runs one.
+- **Git's reading subcommands:** `status`, `log`, `show`, `diff`, `blame`,
+  `grep`, `ls-files`, `rev-parse`, `describe`, branch and tag listings,
+  `remote -v`, `stash list`, `worktree list` and the like, without
+  `--output` or `--ext-diff`. They count only in a repository whose config sets
+  nothing that runs a program or reads another work tree (an fsmonitor, a diff
+  driver, a filter such as Git LFS's, a pager, an include, `core.worktree`),
+  has no `post-index-change` hook, and has no submodules checked out.
+- **Paths inside the workspace.** Each argument and option value is a path
+  that must resolve inside the working directory or an allowed path, links
+  followed, as the file tools' paths must. The exceptions are what a program
+  takes as something else: a search pattern (unless it names an existing
+  file), a `sed` script, or the text `echo` prints. After a `cd`, each path
+  must stay inside both from the new directory and from the old one, since the
+  `cd` may fail.
+- **The session's environment.** A call that sets `env` is asked about. So is
+  every command while `PATH` holds a relative directory, where a file in the
+  workspace could stand in for a program. On Windows a path that starts at a
+  root, names a drive or holds a backslash makes the command an ordinary one,
+  since Git Bash reads such paths its own way.
+
+Your rules come first, so a `deny` or `prompt` rule still applies to such a
+command, and a command you refused for the session stays refused.
 
 ## Dangerous commands
 
@@ -89,8 +150,8 @@ nested shells (`sh -c '…'`, `eval`) and the commands that run another:
 - **Exempt:** `rm -rf` whose operands are all literal paths under `/tmp` or
   `/temp`.
 - **Rules and answers:** your own rules are checked first, so an `allow` rule can
-  let a specific command through. Answering "yes to all" allows that kind of
-  command for the session: `rm -rf`, but not `shutdown`.
+  let a specific command through. Allowing one for the session allows that
+  kind of command: `rm -rf`, but not `shutdown`.
 - **Turning it off:** `dangerous_command_guard = false` (or
   `RUSTA_DANGEROUS_COMMAND_GUARD=0`), which turns off the built-in guardrails
   below too.
@@ -124,7 +185,7 @@ run still cannot write a secret or rewrite history unasked:
 
 The prompt says which guardrail asks and what it found (`destructive git
 command: git push (built-in guardrail)`). Each guardrail's answer is its own:
-"yes to all" for the secrets guardrail does not answer for the git one, and no
+a "yes for the session" to the secrets guardrail does not answer for the git one, and no
 configured rule can answer for either. Your own rules are checked first, so an
 `allow` rule lets a specific case through; `dangerous_command_guard = false`
 turns both off. The REPL and the TUI ask in every mode, `--yes` included, when a
@@ -178,13 +239,14 @@ how instead.
 
 - **While it is on:** every edit waits for your approval, in every permission
   mode and whatever `allow` rules say; `bash` asks too, unless
-  `bypass_permissions` or an `allow` rule lets the command run; `cron_create` and
+  `bypass_permissions` or an `allow` rule lets the command run, or the command
+  [only reads](#commands-that-only-read); `cron_create` and
   `cron_delete` are refused. The model is reminded with each prompt, and a
   question about the code still gets a plain answer.
 - **The review:** the agent presents the plan with `exit_plan_mode`, and you see
   the plan itself. `y` approves it and ends plan mode; `n` rejects it and plan
   mode stays on, so the agent revises it. Every plan is reviewed, in every
-  permission mode, `--yes` included: an earlier "yes to all" or an `allow` rule
+  permission mode, `--yes` included: an earlier "yes for the session" or an `allow` rule
   does not approve the next one, though a `deny` rule refuses them all. With
   `--stream-json` the review is an `approval_request` for `exit_plan_mode`, with
   the plan in `arguments.plan`.

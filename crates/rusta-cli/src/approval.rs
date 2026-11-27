@@ -81,7 +81,7 @@ fn prompt_text(request: &ApprovalRequest, clean: impl Fn(&str) -> String) -> Str
         .reason()
         .map_or_else(String::new, |reason| format!(" — {reason}"));
     format!(
-        "\n[approve] {asker}{}({}){reason} [y=yes/n=no/a=yes to all/s=deny all/c=cancel]? ",
+        "\n[approve] {asker}{}({}){reason} [y=yes/n=no/a=yes for the session/s=no for the session/c=cancel]? ",
         request.tool_name, args
     )
 }
