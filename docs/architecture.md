@@ -137,6 +137,12 @@ is from that point.
   so the model resumes the latest request rather than reading the summary as an
   answer. `read_file` and `grep` can open the records file and its blob
   directory, although they lie outside the allowed paths.
+- **The files it was working with come back** after that reminder, as they are
+  now, so the model need not read them again: the ones it read or wrote last, up
+  to five, each within 10,000 tokens, together within half the room the
+  compaction made, half the room left below where compaction starts, and 30,000
+  tokens. Files that do not fit are named instead. Only files of up to 256 KiB of
+  UTF-8 text, whose text Rusta kept when the agent saw them, can come back.
 - **If no summary can be had** after `compaction_max_attempts` model requests
   (default 5; retries and shrinks count), the oldest messages are removed
   instead. The first and the latest message you wrote are always kept, and a

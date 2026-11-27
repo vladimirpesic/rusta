@@ -77,6 +77,14 @@ const NEWS_HEADER: &str = "Files you have read changed on disk since: the user e
      formatter or a command rewrote them, or another agent did. Take the changes as intended: \
      build on them, and do not undo them unless asked. Line numbers are as the files are now.";
 const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
+/// The most files [`StaleGuard::carried_files`] brings back after a
+/// compaction, and the most it names besides.
+const CARRIED_FILES: usize = 5;
+const CARRIED_NAMES: usize = 10;
+/// The most tokens one file brought back may take.
+pub const CARRIED_FILE_MAX_TOKENS: u64 = 10_000;
+/// A line of a file brought back longer than this is cut.
+const CARRIED_LINE_MAX_CHARS: usize = 2_000;
 
 /// What a file looked like when the agent last saw it.
 ///
@@ -475,6 +483,93 @@ impl StaleGuard {
         ))
     }
 
+    /// The files this agent saw most recently, as they are now, for the
+    /// conversation a compaction left: its summary says what was done, and
+    /// these spare the agent reading again the files it was working with.
+    ///
+    /// Up to [`CARRIED_FILES`] files whose text the guard keeps, newest first,
+    /// each within [`CARRIED_FILE_MAX_TOKENS`] and all within `room`, as
+    /// `count` measures text in the model's tokens; one that does not fit is
+    /// named instead, up to [`CARRIED_NAMES`]. Each file brought back counts as
+    /// read as it is now. Files under `skip` are left out, and so is a file
+    /// that is gone, empty, too large or no longer UTF-8 text.
+    pub fn carried_files(
+        &mut self,
+        cwd: &Path,
+        skip: &[PathBuf],
+        room: u64,
+        count: &dyn Fn(&str) -> u64,
+    ) -> Option<String> {
+        let recent: Vec<PathBuf> = self
+            .snapshot_order
+            .iter()
+            .rev()
+            .filter(|path| !skip.iter().any(|root| path.starts_with(root)))
+            .cloned()
+            .collect();
+        let mut carried = Vec::new();
+        let mut named = Vec::new();
+        let mut used = 0u64;
+        for path in recent {
+            if carried.len() == CARRIED_FILES && named.len() == CARRIED_NAMES {
+                break;
+            }
+            let Some((stamp, text)) = Self::text_now(&path) else {
+                continue;
+            };
+            let block = format!(
+                "<file path=\"{}\">\n{}\n</file>",
+                shown(&path, cwd),
+                numbered_lines(&text)
+            );
+            let tokens = count(&block);
+            if carried.len() < CARRIED_FILES
+                && tokens <= CARRIED_FILE_MAX_TOKENS
+                && used + tokens <= room
+            {
+                used += tokens;
+                carried.push(block);
+                self.record_text(path, stamp, &text);
+            } else if named.len() < CARRIED_NAMES {
+                named.push(shown(&path, cwd));
+            }
+        }
+        if carried.is_empty() {
+            return None;
+        }
+        let mut note = format!(
+            "<system-reminder>\nThe files you were working with before the compaction, as they \
+             are now, so that you need not read them again:\n\n{}",
+            carried.join("\n\n")
+        );
+        if !named.is_empty() {
+            note.push_str(&format!(
+                "\n\nYou had also read {}; read them again if you need them.",
+                named.join(", ")
+            ));
+        }
+        note.push_str("\n</system-reminder>");
+        Some(note)
+    }
+
+    /// The stamp and text of the file at `path` now, if it is a UTF-8 text
+    /// file small enough to keep and not empty.
+    fn text_now(path: &Path) -> Option<(FileStamp, String)> {
+        let metadata = std::fs::metadata(path).ok()?;
+        if !metadata.is_file() || metadata.len() > SNAPSHOT_MAX_BYTES as u64 {
+            return None;
+        }
+        let bytes = std::fs::read(path).ok()?;
+        let text = std::str::from_utf8(bytes.strip_prefix(UTF8_BOM).unwrap_or(&bytes)).ok()?;
+        if text.is_empty() {
+            return None;
+        }
+        Some((
+            FileStamp::from_parts(&metadata, Some(&bytes)),
+            text.to_string(),
+        ))
+    }
+
     /// What became of `path` since the agent saw it; `None` when its contents
     /// are what it saw, or it cannot be looked at now. A file whose length and
     /// modification time moved and whose contents did not is re-stamped.
@@ -561,6 +656,24 @@ fn shown(path: &Path, cwd: &Path) -> String {
     path.strip_prefix(cwd).unwrap_or(path).display().to_string()
 }
 
+/// `text`'s lines numbered as `read_file` numbers them (`<number><TAB><text>`),
+/// each cut at [`CARRIED_LINE_MAX_CHARS`].
+fn numbered_lines(text: &str) -> String {
+    text.lines()
+        .enumerate()
+        .map(|(index, line)| format!("{}\t{}", index + 1, cut_line(line, CARRIED_LINE_MAX_CHARS)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `line`, cut after `max` characters with an ellipsis.
+fn cut_line(line: &str, max: usize) -> String {
+    match line.char_indices().nth(max) {
+        Some((at, _)) => format!("{}…", &line[..at]),
+        None => line.to_string(),
+    }
+}
+
 /// The lines around each change from `before` to `now`, numbered as they
 /// are in `now`, as `read_file` numbers them (`<number><TAB><text>`); a gap
 /// between changes is a line of `...`.
@@ -584,11 +697,11 @@ fn changed_lines(before: &str, now: &str) -> String {
             continue;
         }
         for (index, line) in lines.iter().enumerate().take(end).skip(start) {
-            let line = match line.char_indices().nth(NEWS_LINE_MAX_CHARS) {
-                Some((at, _)) => format!("{}…", &line[..at]),
-                None => (*line).to_string(),
-            };
-            out.push(format!("{}\t{line}", index + 1));
+            out.push(format!(
+                "{}\t{}",
+                index + 1,
+                cut_line(line, NEWS_LINE_MAX_CHARS)
+            ));
         }
     }
     out.join("\n")
@@ -970,6 +1083,86 @@ mod tests {
                 .values()
                 .map(|text| text.len())
                 .sum::<usize>()
+        );
+    }
+
+    /// After a compaction the files seen last come back as they are now,
+    /// newest first, numbered; past the room or the count they are named.
+    #[test]
+    fn the_files_seen_last_are_carried_over_a_compaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut guard = StaleGuard::new();
+        for name in ["a.rs", "b.rs", "c.rs"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, format!("// {name}\nfn main() {{}}\n")).unwrap();
+            see(&mut guard, &path);
+        }
+        // b.rs changed since it was seen: it comes back as it is now.
+        rewrite(&dir.path().join("b.rs"), "// b.rs, edited\n");
+        let count = |text: &str| crate::context_compaction::estimate_tokens(text);
+
+        let note = guard
+            .carried_files(dir.path(), &[], 10_000, &count)
+            .expect("files come back");
+        let c = note
+            .find("<file path=\"c.rs\">\n1\t// c.rs\n2\tfn main() {}\n</file>")
+            .unwrap();
+        let b = note
+            .find("<file path=\"b.rs\">\n1\t// b.rs, edited\n</file>")
+            .unwrap();
+        let a = note.find("<file path=\"a.rs\">").unwrap();
+        assert!(c < b && b < a, "newest first: {note}");
+        assert!(!note.contains("You had also read"), "{note}");
+        // Carried, b.rs counts as seen as it is now: no news of it.
+        assert_eq!(guard.news(dir.path(), &[]), None);
+
+        // Room for one file only: the others are named.
+        let one = count("<file path=\"c.rs\">\n1\t// c.rs\n2\tfn main() {}\n</file>");
+        let note = guard.carried_files(dir.path(), &[], one, &count).unwrap();
+        assert!(note.contains("<file path=\"a.rs\">"), "{note}");
+        assert!(note.contains("You had also read b.rs, c.rs;"), "{note}");
+
+        // Nothing fits: nothing is carried.
+        assert_eq!(guard.carried_files(dir.path(), &[], 1, &count), None);
+        // Skipped places are left out.
+        assert_eq!(
+            guard.carried_files(dir.path(), &[dir.path().to_path_buf()], 10_000, &count),
+            None
+        );
+    }
+
+    /// A file larger than one file's share is named, not carried, and a file
+    /// gone or emptied is left out.
+    #[test]
+    fn a_large_gone_or_empty_file_is_not_carried() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut guard = StaleGuard::new();
+        let large = dir.path().join("large.txt");
+        std::fs::write(&large, "word\n".repeat(50_000)).unwrap();
+        see(&mut guard, &large);
+        let gone = dir.path().join("gone.txt");
+        std::fs::write(&gone, "x\n").unwrap();
+        see(&mut guard, &gone);
+        std::fs::remove_file(&gone).unwrap();
+        let empty = dir.path().join("empty.txt");
+        std::fs::write(&empty, "x\n").unwrap();
+        see(&mut guard, &empty);
+        std::fs::write(&empty, "").unwrap();
+        let small = dir.path().join("small.txt");
+        std::fs::write(&small, "kept\n").unwrap();
+        see(&mut guard, &small);
+        let count = |text: &str| crate::context_compaction::estimate_tokens(text);
+        let note = guard
+            .carried_files(dir.path(), &[], 1_000_000, &count)
+            .unwrap();
+        assert!(
+            note.contains("<file path=\"small.txt\">\n1\tkept\n</file>"),
+            "{note}"
+        );
+        assert!(note.contains("You had also read large.txt;"), "{note}");
+        assert!(
+            !note.contains("gone.txt") && !note.contains("empty.txt"),
+            "{note}"
         );
     }
 

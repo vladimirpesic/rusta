@@ -290,6 +290,14 @@ pub(crate) async fn compact_context(
         )
         .await?;
     tracing::info!("context compaction: {}", notice.describe());
+    if let CompactionNotice::Summarized {
+        tokens_before,
+        tokens_after,
+    } = notice
+        && let Some(files) = carried_files(context, run.tool_ctx, tokens_before, tokens_after).await
+    {
+        context.add_message(Message::user(files));
+    }
     notify(&notice);
     if let Some(hooks) = &run.tool_ctx.user_hooks {
         let mut fields = serde_json::Map::new();
@@ -887,17 +895,73 @@ fn with_subagent_usage(tool_ctx: &ExecutableToolContext, mut usage: TokenUsage) 
 pub(crate) const THINKING_ONLY_REMINDER: &str = "<system-reminder>\nYour previous response had \
      no visible output. Continue and produce a user-visible response.\n</system-reminder>";
 
+/// The most tokens the files brought back after a compaction may take
+/// together, whatever room it made.
+const CARRIED_FILES_MAX_TOKENS: u64 = 30_000;
+
+/// The files `tool_ctx`'s agent worked with most recently, as they are now,
+/// for the conversation a compaction that went from `tokens_before` to
+/// `tokens_after` left ([`crate::stale_guard::StaleGuard::carried_files`]):
+/// they take at most half the room it made, and half the room left below
+/// where compaction starts, so that they never bring the next one on, and
+/// never more than [`CARRIED_FILES_MAX_TOKENS`].
+async fn carried_files(
+    context: &ContextMemory,
+    tool_ctx: &ExecutableToolContext,
+    tokens_before: u64,
+    tokens_after: u64,
+) -> Option<String> {
+    let made = tokens_before.saturating_sub(tokens_after) / 2;
+    let left = context
+        .budget()
+        .proactive_threshold()
+        .saturating_sub(tokens_after)
+        / 2;
+    let room = made.min(left).min(CARRIED_FILES_MAX_TOKENS);
+    if room == 0 {
+        return None;
+    }
+    let (cwd, skip) = watched_places(tool_ctx);
+    let guard = Arc::clone(&tool_ctx.stale_guard);
+    let scale = context.token_scale().unwrap_or(1.0);
+    tokio::task::spawn_blocking(move || {
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
+        let count = |text: &str| {
+            (crate::context_compaction::estimate_tokens(text) as f64 * scale).round() as u64
+        };
+        guard
+            .lock_or_recover()
+            .carried_files(&cwd, &skip, room, &count)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// The agent's working directory, as its file notes show paths from it, and
+/// the places whose files are the session's own (its records and spill
+/// files), which they leave out.
+fn watched_places(
+    tool_ctx: &ExecutableToolContext,
+) -> (std::path::PathBuf, Vec<std::path::PathBuf>) {
+    let canonical =
+        |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let skip = std::iter::once(&tool_ctx.tool_output.spill_dir)
+        .chain(&tool_ctx.readable_paths)
+        .map(|path| canonical(path))
+        .collect();
+    (canonical(&tool_ctx.cwd), skip)
+}
+
 /// What became of the files `tool_ctx`'s agent saw since it saw them
 /// ([`crate::stale_guard::StaleGuard::news`]), its paths shown from its working
 /// directory. The session's own records and spill files are not watched.
 async fn file_news(tool_ctx: &ExecutableToolContext) -> Option<String> {
-    let canonical =
-        |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let cwd = canonical(&tool_ctx.cwd);
-    let skip: Vec<std::path::PathBuf> = std::iter::once(&tool_ctx.tool_output.spill_dir)
-        .chain(&tool_ctx.readable_paths)
-        .map(|path| canonical(path))
-        .collect();
+    let (cwd, skip) = watched_places(tool_ctx);
     let guard = Arc::clone(&tool_ctx.stale_guard);
     tokio::task::spawn_blocking(move || guard.lock_or_recover().news(&cwd, &skip))
         .await

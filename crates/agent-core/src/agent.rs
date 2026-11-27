@@ -2240,6 +2240,73 @@ mod tests {
         assert_eq!(notes, 1);
     }
 
+    /// After a compaction the conversation carries the file the agent read,
+    /// as it is now, after the summary, so it need not read it again.
+    #[tokio::test]
+    async fn a_compaction_brings_back_the_files_read_last() {
+        let temp = tempfile::tempdir().unwrap();
+        let file_path = temp.path().join("parser.rs");
+        tokio::fs::write(&file_path, "fn parse() {}\n")
+            .await
+            .unwrap();
+        let mut agent = Agent::new_with_budget(temp.path().to_path_buf(), "sys", 200_000)
+            .with_permission_mode(PermissionMode::BypassPermissions);
+        let llm = MockLlm::new(vec![
+            StepResult {
+                message: Message::assistant_tool_calls(vec![
+                    ToolCall::new("tc-1", "read_file")
+                        .with_arguments(serde_json::json!({ "path": file_path }).to_string()),
+                ]),
+                usage: TokenUsage::empty(),
+                finish_reason: Some(FinishReason::ToolCalls),
+                response_id: None,
+                stop_reason: None,
+            },
+            StepResult {
+                message: Message::assistant_text("read"),
+                usage: TokenUsage::empty(),
+                finish_reason: Some(FinishReason::Stop),
+                response_id: None,
+                stop_reason: None,
+            },
+        ]);
+        let cancel = CancellationToken::new();
+        agent
+            .prompt(&llm, "read the parser", &cancel)
+            .await
+            .unwrap();
+        // Bulk that the compaction frees.
+        agent.resume(
+            agent
+                .history()
+                .into_iter()
+                .skip(1)
+                .chain((0..40).map(|i| Message::user(format!("note {i}: {}", "x".repeat(2_000)))))
+                .collect(),
+        );
+        let summarizer = RecordingLlm {
+            requests: std::sync::Mutex::new(Vec::new()),
+            summaries: std::sync::Mutex::new(Vec::new()),
+        };
+        let notice = agent
+            .compact_context(&summarizer, &cancel, None)
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                notice,
+                crate::agent_loop::llm::CompactionNotice::Summarized { .. }
+            ),
+            "{notice:?}"
+        );
+        let history = agent.history();
+        let last = history.last().unwrap().text_content();
+        assert!(
+            last.contains("<file path=\"parser.rs\">\n1\tfn parse() {}\n</file>"),
+            "{last}"
+        );
+    }
+
     /// A search carries the prompt its turn answers, as the user wrote it;
     /// the next turn's search carries the next prompt, and the context of a
     /// turn not yet begun carries none.
