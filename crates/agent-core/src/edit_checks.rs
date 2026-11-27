@@ -178,7 +178,9 @@ async fn check(tool: Arc<dyn ExecutableTool>, ctx: ExecutableToolContext, path: 
 }
 
 /// The errors in a diagnostics tool's answer, each as `path:line:column:
-/// message [source code]`; `None` when the answer is not one, or is `stale`.
+/// message [source code]`; `None` when the answer is not one, or is `stale`,
+/// or is `checking` without errors: the server's check of the file had yet to
+/// end, so no errors is not a clean file.
 /// A diagnostic without a severity counts as an error, as editors take it.
 fn errors_of(answer: &str, shown: &str) -> Answer {
     let answer: Value = serde_json::from_str(answer.trim()).ok()?;
@@ -186,27 +188,26 @@ fn errors_of(answer: &str, shown: &str) -> Answer {
         return None;
     }
     let diagnostics = answer["diagnostics"].as_array()?;
-    Some(
-        diagnostics
-            .iter()
-            .filter(|d| matches!(d["severity"].as_str(), None | Some("error")))
-            .map(|d| {
-                let start = &d["range"]["start"];
-                let line = start["line"].as_u64().map_or(1, |line| line + 1);
-                let column = start["character"].as_u64().map_or(1, |c| c + 1);
-                let message = d["message"].as_str().unwrap_or_default().trim();
-                let label: Vec<&str> = [d["source"].as_str(), d["code"].as_str()]
-                    .into_iter()
-                    .flatten()
-                    .collect();
-                if label.is_empty() {
-                    format!("{shown}:{line}:{column}: {message}")
-                } else {
-                    format!("{shown}:{line}:{column}: {message} [{}]", label.join(" "))
-                }
-            })
-            .collect(),
-    )
+    let errors: Vec<String> = diagnostics
+        .iter()
+        .filter(|d| matches!(d["severity"].as_str(), None | Some("error")))
+        .map(|d| {
+            let start = &d["range"]["start"];
+            let line = start["line"].as_u64().map_or(1, |line| line + 1);
+            let column = start["character"].as_u64().map_or(1, |c| c + 1);
+            let message = d["message"].as_str().unwrap_or_default().trim();
+            let label: Vec<&str> = [d["source"].as_str(), d["code"].as_str()]
+                .into_iter()
+                .flatten()
+                .collect();
+            if label.is_empty() {
+                format!("{shown}:{line}:{column}: {message}")
+            } else {
+                format!("{shown}:{line}:{column}: {message} [{}]", label.join(" "))
+            }
+        })
+        .collect();
+    (!errors.is_empty() || answer["checking"] != Value::Bool(true)).then_some(errors)
 }
 
 /// `path` as the agent's words name it: relative to `cwd` when inside it.
@@ -343,6 +344,20 @@ mod tests {
         let stale = json!({ "diagnostics": [], "stale": true }).to_string();
         assert_eq!(errors_of(&stale, "a.rs"), None);
         assert_eq!(errors_of("not json", "a.rs"), None);
+        // A check still running: its errors so far are told, no errors is
+        // nothing known.
+        let checking = |diagnostics: Value| {
+            json!({ "diagnostics": diagnostics, "checking": true }).to_string()
+        };
+        assert_eq!(errors_of(&checking(json!([])), "a.rs"), None);
+        let broken = json!([{
+            "range": { "start": { "line": 0, "character": 0 } },
+            "severity": "error", "message": "broken"
+        }]);
+        assert_eq!(
+            errors_of(&checking(broken), "a.rs"),
+            Some(vec!["a.rs:1:1: broken".to_string()])
+        );
         assert_eq!(
             errors_of(&json!({ "diagnostics": [] }).to_string(), "a.rs"),
             Some(vec![])

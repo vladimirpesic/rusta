@@ -69,8 +69,9 @@ adding or renaming a tool fails that test until this table is updated.
   still runs, the end waits for it, 15 seconds at most, and errors it finds keep
   the turn going one more step, up to three times a turn. A check still running
   when the file changes again or the next turn starts is dropped. An answer the
-  server gave for an older text of the file is not passed on. The check runs
-  only where `get_diagnostics` could run without asking, and
+  server gave for an older text of the file is not passed on, nor one that finds
+  no errors while the server's check of the file still runs. The check runs only
+  where `get_diagnostics` could run without asking, and
   `diagnostics_after_edit = false` (`--diagnostics-after-edit=false`,
   `RUSTA_DIAGNOSTICS_AFTER_EDIT=0`) turns it off.
 - **`glob`** lists files only, most recently modified first, 100 per page

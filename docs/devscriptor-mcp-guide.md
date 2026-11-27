@@ -291,6 +291,7 @@ The default 60 s per-tool timeout in most clients is **too short**. Raise it.
 | `scan_codebase` | Parses the whole tree | Per-tool timeout ≥ 180 s, or use `start_analysis` + `get_analysis_progress` |
 | First LSP call | Boots and indexes the language server, unless it started with the MCP server | Expect a slow first call; **do not** retry immediately |
 | `get_diagnostics` on a push-only server (typescript-language-server, clangd, gopls, jdtls) | The server pushes diagnostics after analysing the file, often in waves; Devscriptor waits for them to settle | Expect a few seconds; asked again about an unchanged file, it answers at once |
+| `get_diagnostics` on a Rust file | Devscriptor tells rust-analyzer the file is saved and waits for the `cargo check` that starts, whose errors rust-analyzer pushes | Expect seconds on a small crate, more on a large one; `wait_ms` bounds the wait, and `checking: true` says the check had yet to end |
 | `semantic_search` (cold) | Loads the embedding model | Allow ≥ 60 s on first use |
 | Server startup | Starts the language servers its working directory needs (those whose project markers it finds, plus the HTML, SQL and Bash servers) before answering `initialize` | Startup timeout ≈ 60 s |
 
