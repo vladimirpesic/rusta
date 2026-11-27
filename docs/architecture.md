@@ -240,7 +240,10 @@ is also why they are not a security boundary.
 
 **Delegation on request.** Sub-agents are launched only when asked for, nest one
 level by default, and inherit the session's permissions, so delegation never
-widens what is allowed or runs up cost unasked.
+widens what is allowed or runs up cost unasked. A sub-agent that writes while others do can work in a
+git worktree of its own and merge its work back, and Rusta can run a check it
+must pass, sending it back to fix what fails (see
+[Worktrees and checks](agents.md#worktrees-and-checks)).
 
 **One portable binary.** TLS is rustls with `ring` and bundled root
 certificates — no OpenSSL, and no C toolchain hazards — and archives are

@@ -8,6 +8,7 @@ that decides its role and tools, and hands back its last message.
 - [Profiles](#profiles)
 - [The `agent` tool](#the-agent-tool)
 - [Forking](#forking)
+- [Worktrees and checks](#worktrees-and-checks)
 - [Agent swarm](#agent-swarm)
 - [Sub-agent model pool](#sub-agent-model-pool)
 - [Stopped turns](#stopped-turns)
@@ -110,7 +111,8 @@ Each delegation gets an `agent_id` and keeps its records, with a note of its
 profile and model, so a resumed sub-agent comes back as the type and on the
 model it started with. Call `agent` with that `agent_id` and `resume: true` to
 continue it. A resume that names another `profile` or `model` is refused, with
-the ones the sub-agent runs as.
+the ones the sub-agent runs as. `isolation` and `check` are described
+[below](#worktrees-and-checks).
 
 ## Forking
 
@@ -130,6 +132,61 @@ unknown", rather than left dangling, which providers reject. `fork` refuses
 `resume`, `profile`, and a `model` other than `primary`. A fork keeps its
 records too, with its caller's instructions, under which it resumes; it starts
 without the caller's scheduled prompts, which stay with the session.
+
+## Worktrees and checks
+
+`agent` and `agent_swarm` take two more parameters: where the sub-agent works,
+and a command its work must pass.
+
+**`isolation: "worktree"`** runs the sub-agent in a git worktree of its own, so
+that sub-agents writing at once, or a sub-agent and the agent that launched it,
+do not step on each other's files. It needs a git repository.
+
+- **Its copy** is the repository as it stands when it is launched, uncommitted
+  and untracked files included, ignored files left out. They are gathered in a
+  temporary index, never the repository's own, into a commit no branch holds,
+  which is checked out, detached and with the repository's hooks off, under
+  Rusta's data directory (`worktrees/<agent_id>`). The worktree is the
+  sub-agent's working directory and the only path it may use; its first message
+  says so. On Linux and macOS, `node_modules`, `.venv` and `venv` at the
+  repository's top, where git ignores them, are linked into it, so its tests can
+  run.
+- **Its work comes back** when it finishes, however its run ended, file by file:
+  a file the working tree has not changed meanwhile takes the sub-agent's
+  version, deletions included. One both changed is merged three ways with
+  `git merge-file`; a conflict is left in the file with git's markers
+  (`<<<<<<< working tree` … `>>>>>>> sub-agent`), for the agent to resolve. A
+  file that cannot be merged, binary or deleted on one side and changed on the
+  other, keeps the working tree's version, and the report names the commit that
+  holds the sub-agent's (`git show <commit>:<path>`), which the ref
+  `refs/rusta/agents/<agent_id>/work` keeps until you delete it. Nothing is
+  staged or committed in your branches.
+- **The report** ends with what came back: the files taken, merged and left with
+  conflicts. The worktree is then removed. One that Rusta left behind because it
+  stopped while its sub-agent ran is removed once it has been untouched for a
+  week.
+- **One at a time.** Sub-agents bring their work back one after another, and a
+  file is replaced only if it is still as it was read for the merge.
+- **What it does not isolate:** MCP servers such as Devscriptor serve the
+  session's workspace, not the worktree.
+
+**`check`** is a shell command Rusta runs when the sub-agent has finished, in its
+working directory (its worktree, with `isolation`): the tests its work must pass,
+a build, a linter. The sub-agent is told of it before it starts.
+
+- **It runs as the sub-agent's own `bash`** runs a command: under the session's
+  hooks, rules, dangerous-command guard and permission mode, asking you where a
+  command would ask, at most five minutes. A sub-agent type without `bash` cannot
+  take one. A check that is refused, or that nobody can approve (a background
+  sub-agent asks nobody), is reported as not run.
+- **When it fails,** the sub-agent is given its output and sent back to fix the
+  cause, up to twice; it runs again after each return.
+- **The report** ends with how it went: passed, passed after the sub-agent was
+  sent back, failed (with the end of its last output), or not run and why. It is
+  not run when the sub-agent did not finish.
+
+In a swarm, `isolation` gives every member a worktree of its own, and `check` is
+run for each, with `{{item}}` replaced by the member's item.
 
 ## Agent swarm
 

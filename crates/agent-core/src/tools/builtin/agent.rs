@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use super::subagent::{
     SubagentMeta, bind_model, fork_agent, fork_meta, spawn_fork, spawn_with_profile,
 };
+use crate::delegation::{Delegation, Place};
 use crate::{
     Agent, ProfileRegistry,
     agent_loop::types::{
@@ -89,7 +90,9 @@ impl AgentTool {
                         "fork": {
                             "type": "boolean",
                             "description": "If true, the subagent starts from a snapshot of THIS conversation instead of an empty context, inheriting this agent's instructions, tools and model. Use it when the task needs what has already been established here and re-explaining it would be lossy or long. The snapshot is one-time: the two conversations do not stay in sync. Incompatible with `resume`, `profile` and `model` — a fork inherits rather than delegates."
-                        }
+                        },
+                        "isolation": crate::delegation::isolation_schema("the subagent"),
+                        "check": crate::delegation::check_schema("the subagent")
                     },
                     "required": ["prompt"]
                 }),
@@ -254,6 +257,10 @@ impl ExecutableTool for AgentTool {
         if fork && let Some(reason) = fork_conflict(&input) {
             return ExecutableToolResult::error(reason);
         }
+        let delegation = match Delegation::parse(&input) {
+            Ok(delegation) => delegation,
+            Err(e) => return ExecutableToolResult::error(e),
+        };
         // Every delegation gets an id and records, a fork too, so that one
         // that is stopped or fails can be resumed, and what it did read back.
         let agent_id: Option<String> = match input.get("agent_id").and_then(|v| v.as_str()) {
@@ -316,53 +323,76 @@ impl ExecutableTool for AgentTool {
         // forcing bypass let a sub-agent write and run commands unchecked even
         // while the parent was gating every such action. The parent's mode flows
         // in via the context and stays current across runtime `/yolo` switches.
+        // Where it works: a worktree of its own, made now, or this agent's
+        // working directory.
+        let place = match Place::new(ctx, &delegation, agent_id.as_deref().unwrap_or("sub")).await {
+            Ok(place) => place,
+            Err(e) => return ExecutableToolResult::error(e),
+        };
         let mut fork_source = None;
         let mut agent = if let Some(instructions) = saved
             .as_ref()
             .and_then(|meta| meta.fork_instructions.clone())
         {
             // A fork resumes under the instructions it ran under.
-            fork_agent(ctx, instructions, Some(profile_name.clone()), llm)
+            fork_agent(&place.ctx, instructions, Some(profile_name.clone()), llm)
         } else if fork {
-            let source = match ctx.fork_source.lock_or_recover().clone() {
+            let inherited = ctx.fork_source.lock_or_recover().clone();
+            let source = match inherited {
                 Some(source) => source,
                 // The loop fills this before running the batch that asked to
                 // fork, so an empty slot means the call did not come through a
                 // turn — a direct invocation with no conversation to inherit.
                 None => {
-                    return ExecutableToolResult::error(
+                    return abandon(
+                        place.worktree,
                         "fork is unavailable here: there is no conversation to inherit. \
                          Spawn without `fork` and describe the task in the prompt.",
-                    );
+                    )
+                    .await;
                 }
             };
-            let agent = spawn_fork(ctx, source.clone(), llm);
+            let agent = spawn_fork(&place.ctx, source.clone(), llm);
             fork_source = Some(source);
             agent
         } else {
             let Some(profile) = self.registry.resolve(&profile_name) else {
-                return ExecutableToolResult::error(format!("unknown profile: {profile_name}"));
+                return abandon(place.worktree, format!("unknown profile: {profile_name}")).await;
             };
-            spawn_with_profile(ctx, &profile, llm)
+            spawn_with_profile(&place.ctx, &profile, llm)
         };
+        if delegation.check.is_some() && !agent.has_tool("bash") {
+            return abandon(
+                place.worktree,
+                format!(
+                    "check needs a shell, and the {profile_name} agent type has none: leave \
+                     `check` out, or choose a type with `bash`."
+                ),
+            )
+            .await;
+        }
         agent.name_subagent(agent_id.clone());
 
         if let Some(path) = records_path.clone() {
             if let Some(parent) = path.parent()
                 && let Err(e) = crate::private_fs::create_dir_all_async(parent).await
             {
-                return ExecutableToolResult::error(format!(
-                    "failed to create subagent records dir: {e}"
-                ));
+                return abandon(
+                    place.worktree,
+                    format!("failed to create subagent records dir: {e}"),
+                )
+                .await;
             }
             let records = Records::new(path.clone());
             if resume {
                 match agent.with_resumed_records(records).await {
                     Ok(a) => agent = a,
                     Err(e) => {
-                        return ExecutableToolResult::error(format!(
-                            "failed to resume subagent records: {e}"
-                        ));
+                        return abandon(
+                            place.worktree,
+                            format!("failed to resume subagent records: {e}"),
+                        )
+                        .await;
                     }
                 }
             } else {
@@ -379,7 +409,7 @@ impl ExecutableTool for AgentTool {
                     },
                 };
                 if let Err(e) = meta.save(&path).await {
-                    return ExecutableToolResult::error(e);
+                    return abandon(place.worktree, e).await;
                 }
             }
         }
@@ -387,7 +417,7 @@ impl ExecutableTool for AgentTool {
         // The sub-agent answers on the model it was bound to. Prompting it with
         // the caller's model instead would ignore the `model` binding entirely.
         let Some(llm) = agent.llm() else {
-            return ExecutableToolResult::error("No LLM is available to run the subagent");
+            return abandon(place.worktree, "No LLM is available to run the subagent").await;
         };
 
         // The sub-agent deadline (`subagent_timeout_ms`) applies whether the
@@ -395,7 +425,8 @@ impl ExecutableTool for AgentTool {
         // timed-out sub-agent can still say so, and keep its records.
         let limit = ctx.background.agent_timeout();
         let cancel = CancellationToken::new();
-        let prompt = prompt.to_string();
+        let prompt = format!("{}{prompt}", place.briefing(&delegation, &ctx.cwd));
+        let worktree = place.worktree;
         if run_in_background {
             // Nobody is there to answer it once this turn has moved on: a
             // background sub-agent does not ask, and what would need asking is
@@ -419,9 +450,19 @@ impl ExecutableTool for AgentTool {
                         }
                     });
 
-                    let outcome =
-                        run_bounded(&mut agent, llm.as_ref(), &prompt, &combined, limit).await;
+                    let (outcome, notes) = crate::delegation::run(
+                        &mut agent,
+                        llm.as_ref(),
+                        &prompt,
+                        &combined,
+                        limit,
+                        &delegation,
+                        worktree,
+                    )
+                    .await;
                     report(outcome, &agent, agent_id.as_deref())
+                        .map(|text| crate::delegation::with_notes(text, &notes))
+                        .map_err(|text| crate::delegation::with_notes(text, &notes))
                 },
             );
             return ExecutableToolResult::text(format!(
@@ -429,12 +470,33 @@ impl ExecutableTool for AgentTool {
             ));
         }
 
-        let outcome = run_bounded(&mut agent, llm.as_ref(), &prompt, &cancel, limit).await;
+        let (outcome, notes) = crate::delegation::run(
+            &mut agent,
+            llm.as_ref(),
+            &prompt,
+            &cancel,
+            limit,
+            &delegation,
+            worktree,
+        )
+        .await;
         match report(outcome, &agent, agent_id.as_deref()) {
-            Ok(text) => ExecutableToolResult::text(text),
-            Err(text) => ExecutableToolResult::error(text),
+            Ok(text) => ExecutableToolResult::text(crate::delegation::with_notes(text, &notes)),
+            Err(text) => ExecutableToolResult::error(crate::delegation::with_notes(text, &notes)),
         }
     }
+}
+
+/// Discard the `worktree` of a sub-agent that will not run, and fail the
+/// call with `error`.
+async fn abandon(
+    worktree: Option<crate::worktree::Worktree>,
+    error: impl Into<String>,
+) -> ExecutableToolResult {
+    if let Some(worktree) = worktree {
+        worktree.discard().await;
+    }
+    ExecutableToolResult::error(error)
 }
 
 /// A fresh sub-agent id: `sub-` and a lowercase ULID.

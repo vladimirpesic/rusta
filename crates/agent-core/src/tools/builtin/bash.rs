@@ -15,7 +15,8 @@ use crate::agent_loop::types::{
 use crate::lossy_lines::LossyLines;
 
 const DEFAULT_TIMEOUT_SECONDS: u64 = 60;
-const MAX_TIMEOUT_SECONDS: u64 = 5 * 60;
+/// The longest a foreground command may run.
+pub(crate) const MAX_TIMEOUT_SECONDS: u64 = 5 * 60;
 const DEFAULT_BACKGROUND_TIMEOUT_SECONDS: u64 = 10 * 60;
 const MAX_BACKGROUND_TIMEOUT_SECONDS: u64 = 24 * 60 * 60;
 /// Maximum bytes of combined stdout/stderr to capture before truncating.

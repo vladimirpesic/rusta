@@ -1457,6 +1457,56 @@ impl Agent {
         }
     }
 
+    /// Whether this agent holds the tool `name`.
+    #[must_use]
+    pub fn has_tool(&self, name: &str) -> bool {
+        self.registry.lock_or_recover().get(name).is_some()
+    }
+
+    /// Run `command` as this agent's own `bash` call would run, through its
+    /// hooks, rules, guards and approvals, within the shell's longest
+    /// foreground time: whether it passed, and its output. `Err` when it did not
+    /// run — refused, or this agent has no shell — with why.
+    pub(crate) async fn run_check(
+        &mut self,
+        command: &str,
+        cancel: &CancellationToken,
+    ) -> Result<(bool, String), String> {
+        if self.registry.lock_or_recover().get("bash").is_none() {
+            return Err("the sub-agent's type has no shell to run it with".to_string());
+        }
+        const CALL_ID: &str = "check";
+        let call = lm_bridge::message::ToolCall::new(CALL_ID, "bash").with_arguments(
+            serde_json::json!({
+                "command": command,
+                "timeout": crate::tools::builtin::bash::MAX_TIMEOUT_SECONDS,
+                "auto_background_on_timeout": false,
+            })
+            .to_string(),
+        );
+        let mut dedup = crate::agent_loop::tool_dedup::ToolCallDeduplicator::new();
+        let outcome = crate::agent_loop::tool_call::run_tool_call_batch(
+            vec![call],
+            Arc::clone(&self.registry),
+            &self.tool_ctx,
+            &self.permissions,
+            cancel,
+            None,
+            &mut dedup,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let output = outcome
+            .messages
+            .first()
+            .map(Message::text_content)
+            .unwrap_or_default();
+        if outcome.refused.contains(CALL_ID) {
+            return Err(output);
+        }
+        Ok((!outcome.failed.contains(CALL_ID), output))
+    }
+
     /// What the session's requests used and cost so far, its sub-agents'
     /// included (`/usage`).
     #[must_use]
@@ -4640,6 +4690,295 @@ mod tests {
                 .clone()
         };
         assert_eq!(description(&parent), description(&child));
+    }
+
+    fn scripted(message: Message, finish: FinishReason) -> StepResult {
+        StepResult {
+            message,
+            usage: TokenUsage::empty(),
+            finish_reason: Some(finish),
+            response_id: None,
+            stop_reason: None,
+        }
+    }
+
+    fn call(id: &str, tool: &str, arguments: serde_json::Value) -> Message {
+        Message::assistant_tool_calls(vec![
+            ToolCall::new(id, tool).with_arguments(arguments.to_string()),
+        ])
+    }
+
+    /// A sub-agent launched with `isolation` works in a worktree of its own;
+    /// its check sends it back once, and its work comes back into the
+    /// parent's working tree when the check passes.
+    #[tokio::test]
+    async fn an_isolated_subagent_is_checked_and_its_work_comes_back() {
+        let repo = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .current_dir(repo.path())
+                .args(["-c", "user.name=T", "-c", "user.email=t@example.com"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(repo.path().join("README"), "start\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "start"]);
+
+        let check = "grep -q fixed made.txt";
+        let llm = ScriptedLlm::new(vec![
+            scripted(
+                call(
+                    "tc-agent",
+                    "agent",
+                    serde_json::json!({
+                        "prompt": "write made.txt",
+                        "isolation": "worktree",
+                        "check": check,
+                    }),
+                ),
+                FinishReason::ToolCalls,
+            ),
+            scripted(
+                call(
+                    "tc-w1",
+                    "write_file",
+                    serde_json::json!({ "path": "made.txt", "content": "draft\n" }),
+                ),
+                FinishReason::ToolCalls,
+            ),
+            scripted(Message::assistant_text("written"), FinishReason::Stop),
+            scripted(
+                call(
+                    "tc-w2",
+                    "write_file",
+                    serde_json::json!({ "path": "made.txt", "content": "fixed\n" }),
+                ),
+                FinishReason::ToolCalls,
+            ),
+            scripted(Message::assistant_text("fixed it"), FinishReason::Stop),
+            scripted(Message::assistant_text("done"), FinishReason::Stop),
+        ]);
+        let mut parent = Agent::new(repo.path().to_path_buf(), "sys")
+            .with_permission_mode(PermissionMode::BypassPermissions)
+            .with_llm(Arc::clone(&llm) as Arc<dyn Llm>);
+        parent.tool_ctx.background = Arc::new(crate::background::BackgroundManager::with_data_dir(
+            data.path().to_path_buf(),
+        ));
+        parent
+            .prompt(&*llm, "delegate", &CancellationToken::new())
+            .await
+            .unwrap();
+
+        let result = parent
+            .history()
+            .into_iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("tc-agent"))
+            .unwrap()
+            .text_content();
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("made.txt")).unwrap(),
+            "fixed\n",
+            "{result}"
+        );
+        assert!(
+            result.contains(&format!(
+                "Check `{check}`: passed after the sub-agent was sent back once."
+            )),
+            "{result}"
+        );
+        assert!(
+            result.contains("Its changes are in the working tree: made.txt."),
+            "{result}"
+        );
+        let messages = llm.messages.lock().unwrap();
+        let briefed = messages[1].iter().any(|m| {
+            m.text_content()
+                .contains("You work in a git worktree of your own")
+        });
+        assert!(briefed, "the sub-agent is told where it works");
+        let sent_back = messages[3].iter().any(|m| {
+            m.text_content()
+                .contains(&format!("Rusta ran your check `{check}`, and it failed"))
+        });
+        assert!(
+            sent_back,
+            "the sub-agent is sent back with the check's output"
+        );
+        let worktrees = data.path().join("worktrees");
+        let left: Vec<_> = std::fs::read_dir(&worktrees)
+            .map(|dir| {
+                dir.filter_map(Result::ok)
+                    .filter(|entry| entry.path().is_dir() && entry.file_name() != "no-hooks")
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(left.is_empty(), "the worktree is removed: {left:?}");
+    }
+
+    /// In a swarm with `isolation`, each member works in a worktree of its
+    /// own and passes its own check, `{{item}}` filled in; all their work
+    /// comes back.
+    #[tokio::test]
+    async fn swarm_members_work_in_worktrees_and_pass_their_checks() {
+        let repo = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .current_dir(repo.path())
+                .args(["-c", "user.name=T", "-c", "user.email=t@example.com"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(repo.path().join("README"), "start\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "start"]);
+        let write = |id: &str, file: &str| {
+            scripted(
+                call(
+                    id,
+                    "write_file",
+                    serde_json::json!({ "path": file, "content": "x\n" }),
+                ),
+                FinishReason::ToolCalls,
+            )
+        };
+        let llm = ScriptedLlm::new(vec![
+            scripted(
+                call(
+                    "tc-swarm",
+                    "agent_swarm",
+                    serde_json::json!({
+                        "description": "write two files",
+                        "items": ["a", "b"],
+                        "prompt_template": "write {{item}}.txt",
+                        "isolation": "worktree",
+                        "check": "test -f {{item}}.txt",
+                    }),
+                ),
+                FinishReason::ToolCalls,
+            ),
+            write("tc-a", "a.txt"),
+            scripted(Message::assistant_text("a done"), FinishReason::Stop),
+            write("tc-b", "b.txt"),
+            scripted(Message::assistant_text("b done"), FinishReason::Stop),
+            scripted(Message::assistant_text("done"), FinishReason::Stop),
+        ]);
+        let mut parent = Agent::new(repo.path().to_path_buf(), "sys")
+            .with_permission_mode(PermissionMode::BypassPermissions)
+            .with_llm(Arc::clone(&llm) as Arc<dyn Llm>)
+            .with_swarm_max_concurrency(Some(1));
+        parent.tool_ctx.background = Arc::new(crate::background::BackgroundManager::with_data_dir(
+            data.path().to_path_buf(),
+        ));
+        parent.set_swarm_mode(Some(crate::swarm::SwarmTrigger::Manual));
+        parent
+            .prompt(&*llm, "delegate", &CancellationToken::new())
+            .await
+            .unwrap();
+        let result = parent
+            .history()
+            .into_iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("tc-swarm"))
+            .unwrap()
+            .text_content();
+        for item in ["a", "b"] {
+            assert!(repo.path().join(format!("{item}.txt")).exists(), "{result}");
+            assert!(
+                result.contains(&format!("Check `test -f {item}.txt`: passed.")),
+                "{result}"
+            );
+            assert!(
+                result.contains(&format!("Its changes are in the working tree: {item}.txt.")),
+                "{result}"
+            );
+        }
+    }
+
+    /// A check the session's permissions do not let run is reported as not
+    /// run, not as failed: nobody could approve it here.
+    #[tokio::test]
+    async fn a_check_that_needs_approval_nobody_gives_is_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let llm = ScriptedLlm::new(vec![
+            scripted(
+                call(
+                    "tc-agent",
+                    "agent",
+                    serde_json::json!({ "prompt": "x", "check": "touch checked" }),
+                ),
+                FinishReason::ToolCalls,
+            ),
+            scripted(Message::assistant_text("did x"), FinishReason::Stop),
+            scripted(Message::assistant_text("done"), FinishReason::Stop),
+        ]);
+        let mut parent =
+            Agent::new(dir.path().to_path_buf(), "sys").with_llm(Arc::clone(&llm) as Arc<dyn Llm>);
+        parent.tool_ctx.background = Arc::new(crate::background::BackgroundManager::with_data_dir(
+            data.path().to_path_buf(),
+        ));
+        parent
+            .prompt(&*llm, "delegate", &CancellationToken::new())
+            .await
+            .unwrap();
+        let result = parent
+            .history()
+            .into_iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("tc-agent"))
+            .unwrap()
+            .text_content();
+        assert!(
+            result.contains("Check `touch checked`: not run: "),
+            "{result}"
+        );
+        assert!(!dir.path().join("checked").exists());
+    }
+
+    /// Isolation outside a git repository is refused, and nothing runs.
+    #[tokio::test]
+    async fn isolation_outside_a_repository_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let llm = ScriptedLlm::new(vec![
+            scripted(
+                call(
+                    "tc-agent",
+                    "agent",
+                    serde_json::json!({ "prompt": "x", "isolation": "worktree" }),
+                ),
+                FinishReason::ToolCalls,
+            ),
+            scripted(Message::assistant_text("done"), FinishReason::Stop),
+        ]);
+        let mut parent = Agent::new(dir.path().to_path_buf(), "sys")
+            .with_permission_mode(PermissionMode::BypassPermissions)
+            .with_llm(Arc::clone(&llm) as Arc<dyn Llm>);
+        parent.tool_ctx.background = Arc::new(crate::background::BackgroundManager::with_data_dir(
+            data.path().to_path_buf(),
+        ));
+        parent
+            .prompt(&*llm, "delegate", &CancellationToken::new())
+            .await
+            .unwrap();
+        let result = parent
+            .history()
+            .into_iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("tc-agent"))
+            .unwrap()
+            .text_content();
+        assert!(
+            result.starts_with("isolation needs a git repository"),
+            "{result}"
+        );
+        assert_eq!(llm.messages.lock().unwrap().len(), 2, "no sub-agent ran");
     }
 
     /// Drives one `agent` fork to completion and returns the (system, tools

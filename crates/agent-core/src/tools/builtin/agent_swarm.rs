@@ -17,10 +17,11 @@ use lm_bridge::tool::Tool;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use super::agent::{RunOutcome, new_agent_id, run_bounded, subagent_records_path};
+use super::agent::{RunOutcome, new_agent_id, subagent_records_path};
 use super::subagent::{
     SubagentMeta, bind_model, fork_agent, fork_meta, spawn_fork, spawn_with_profile,
 };
+use crate::delegation::Place;
 use crate::{
     Agent, ProfileRegistry,
     agent_loop::types::{
@@ -147,7 +148,9 @@ impl AgentSwarmTool {
                             "type": "object",
                             "additionalProperties": { "type": "string", "minLength": 1 },
                             "description": "Map of existing subagent agent_id to the prompt used to resume that subagent. These resumed subagents are launched before new item-based subagents."
-                        }
+                        },
+                        "isolation": crate::delegation::isolation_schema("each subagent"),
+                        "check": crate::delegation::check_schema("each subagent (with {{item}} replaced by its item)")
                     },
                     "required": ["description"],
                     "additionalProperties": false
@@ -201,6 +204,9 @@ struct Plan {
     resume: Vec<(String, String)>,
     fork: bool,
     model: Option<String>,
+    /// Where each member works, and the check it must pass; `{{item}}` in
+    /// the check is the member's item.
+    delegation: crate::delegation::Delegation,
 }
 
 /// A string that must be present when the key is.
@@ -266,6 +272,7 @@ fn parse(input: &Value) -> Result<Plan, String> {
         Some(Value::Bool(fork)) => *fork,
         Some(_) => return Err("fork must be a boolean.".to_string()),
     };
+    let delegation = crate::delegation::Delegation::parse(input)?;
     Ok(Plan {
         description,
         subagent_type,
@@ -274,6 +281,7 @@ fn parse(input: &Value) -> Result<Plan, String> {
         resume,
         fork,
         model,
+        delegation,
     })
 }
 
@@ -526,13 +534,14 @@ enum Prepared {
 
 impl AgentSwarmTool {
     /// Build one member: a resumed sub-agent as it was, a new one under the
-    /// swarm's type or as a fork, each with an id and records.
+    /// swarm's type, or as a fork, with the id `new_id`; each with records.
     async fn prepare(
         &self,
         spec: &Spec,
         ctx: &ExecutableToolContext,
         plan: &Plan,
         fork_source: Option<&ForkSource>,
+        new_id: String,
     ) -> Prepared {
         match spec {
             Spec::Resume { agent_id, .. } => {
@@ -626,7 +635,7 @@ impl AgentSwarmTool {
                         Member::Typed(profile)
                     }
                 };
-                let agent_id = new_agent_id();
+                let agent_id = new_id;
                 let path = subagent_records_path(ctx.background.data_dir(), &agent_id);
                 let unavailable = |error: String| {
                     Prepared::Unavailable(MemberResult::not_started(
@@ -775,30 +784,76 @@ impl ExecutableTool for AgentSwarmTool {
                         * u32::try_from(index.saturating_sub(INITIAL_LAUNCH_LIMIT - 1))
                             .unwrap_or(u32::MAX);
                     tokio::time::sleep_until(started_at + delay).await;
+                    let delegation = match spec {
+                        Spec::Spawn { item, .. } => {
+                            plan.delegation.for_item(PROMPT_TEMPLATE_PLACEHOLDER, item)
+                        }
+                        Spec::Resume { .. } => plan.delegation.clone(),
+                    };
+                    // The member's id names its worktree too.
+                    let id = match spec {
+                        Spec::Resume { agent_id, .. } => agent_id.clone(),
+                        Spec::Spawn { .. } => new_agent_id(),
+                    };
+                    let place = match Place::new(ctx, &delegation, &id).await {
+                        Ok(place) => place,
+                        Err(e) => {
+                            let item = match spec {
+                                Spec::Spawn { item, .. } => Some(item.clone()),
+                                Spec::Resume { .. } => None,
+                            };
+                            return (index, MemberResult::not_started(spec, None, item, e));
+                        }
+                    };
                     let (mut agent, agent_id, item) =
-                        match self.prepare(spec, ctx, plan, fork_source).await {
+                        match self.prepare(spec, &place.ctx, plan, fork_source, id).await {
                             Prepared::Ready {
                                 agent,
                                 agent_id,
                                 item,
                             } => (agent, agent_id, item),
-                            Prepared::Unavailable(result) => return (index, result),
+                            Prepared::Unavailable(result) => {
+                                if let Some(worktree) = place.worktree {
+                                    worktree.discard().await;
+                                }
+                                return (index, result);
+                            }
                         };
-                    let Some(llm) = agent.llm() else {
-                        return (
-                            index,
-                            MemberResult::not_started(
-                                spec,
-                                agent_id,
-                                item,
-                                "No LLM is available to run the subagent".to_string(),
-                            ),
-                        );
+                    let llm = match agent.llm() {
+                        Some(_) if delegation.check.is_some() && !agent.has_tool("bash") => Err(
+                            "check needs a shell, and this agent type has none: leave `check` \
+                             out, or choose a type with `bash`.",
+                        ),
+                        Some(llm) => Ok(llm),
+                        None => Err("No LLM is available to run the subagent"),
+                    };
+                    let llm = match llm {
+                        Ok(llm) => llm,
+                        Err(why) => {
+                            if let Some(worktree) = place.worktree {
+                                worktree.discard().await;
+                            }
+                            return (
+                                index,
+                                MemberResult::not_started(spec, agent_id, item, why.to_string()),
+                            );
+                        }
                     };
                     let cancel = CancellationToken::new();
-                    let outcome =
-                        run_bounded(&mut agent, llm.as_ref(), spec.prompt(), &cancel, limit).await;
+                    let prompt =
+                        format!("{}{}", place.briefing(&delegation, &ctx.cwd), spec.prompt());
+                    let (outcome, notes) = crate::delegation::run(
+                        &mut agent,
+                        llm.as_ref(),
+                        &prompt,
+                        &cancel,
+                        limit,
+                        &delegation,
+                        place.worktree,
+                    )
+                    .await;
                     let (status, stop_reason, body) = classify(outcome, &agent);
+                    let body = crate::delegation::with_notes(body, &notes);
                     (
                         index,
                         MemberResult {
@@ -871,8 +926,10 @@ mod tests {
         assert_eq!(
             names,
             [
+                "check",
                 "description",
                 "fork",
+                "isolation",
                 "items",
                 "prompt_template",
                 "resume_agent_ids",

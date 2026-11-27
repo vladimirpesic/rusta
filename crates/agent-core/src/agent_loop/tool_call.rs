@@ -80,6 +80,9 @@ pub struct ToolBatchOutcome {
     pub stop_turn: bool,
     /// The ids of the calls whose result is an error.
     pub failed: HashSet<String>,
+    /// The ids of the calls refused before they ran: by the tool's own
+    /// preflight, a hook, a rule, a guard or the user. Among `failed`.
+    pub refused: HashSet<String>,
 }
 
 /// A same-step duplicate: it never executes, and inherits the original's result.
@@ -122,6 +125,7 @@ pub async fn run_tool_call_batch(
     // Parallel to `tasks`: which slot each future fills, and its tool name.
     let mut task_slots: Vec<(CallSlot, String)> = Vec::with_capacity(prepared.len());
     let mut duplicates: Vec<DuplicateCall> = Vec::new();
+    let mut refused: HashSet<String> = HashSet::new();
 
     for prepared in prepared {
         let tool_call_id = prepared.id;
@@ -196,6 +200,7 @@ pub async fn run_tool_call_batch(
         // pre-approval validation) lands before the approval gate: asking the
         // user about a call the tool will not run would be noise.
         if let Err(reason) = tool.preflight(&args, ctx) {
+            refused.insert(tool_call_id.clone());
             let result = ExecutableToolResult::error(reason);
             fire_tool_lifecycle_hook(ctx, &name, &args, &result);
             if let Some(sender) = &tool_event_sender {
@@ -286,6 +291,7 @@ pub async fn run_tool_call_batch(
         };
 
         if let Some(reason) = denied {
+            refused.insert(tool_call_id.clone());
             let result = ExecutableToolResult::error(&reason);
             fire_tool_lifecycle_hook(ctx, &name, &args, &result);
             if let Some(sender) = &tool_event_sender {
@@ -423,6 +429,7 @@ pub async fn run_tool_call_batch(
         messages,
         stop_turn,
         failed,
+        refused,
     })
 }
 

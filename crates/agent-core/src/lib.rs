@@ -13,6 +13,7 @@ pub mod context_projector;
 pub mod context_usage;
 pub mod cron;
 pub mod dangerous_command;
+pub mod delegation;
 pub mod edit_checks;
 pub mod errors;
 pub mod git_context;
@@ -44,6 +45,7 @@ pub mod user_hooks;
 pub mod vision_fallback;
 pub mod web_reader_client;
 pub mod web_search_client;
+pub mod worktree;
 pub mod yaml;
 
 pub use agent::{Agent, FORK_INHERITANCE_NOTICE, PromptOrigin};
