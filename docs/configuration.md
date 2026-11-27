@@ -347,7 +347,7 @@ config type.
 | `KIMI_BASE_URL` / `ZAI_BASE_URL` / `DEEPSEEK_BASE_URL` / `OPENAI_BASE_URL` | Provider base URLs |
 | `KIMI_MODEL_NAME` / `ZAI_MODEL_NAME` / `DEEPSEEK_MODEL_NAME` / `OPENAI_MODEL_NAME` | Default model per provider |
 | `RUSTA_ZAI_API_KEY` | Z.AI key for Z.AI's own services — the hosted MCP servers on a Coding Plan, and the web search and reader on pay-per-token — preferred over `ZAI_API_KEY`; `--api-key` wins over both |
-| `ACP_GLM_THINKING` | `1`/`true` or `0`/`false`: switch GLM thinking on or off whatever the settings say. Models that cannot turn it off still think, at the lowest effort |
+| `RUSTA_GLM_THINKING` | `1`/`true` or `0`/`false`: switch GLM thinking on or off whatever the settings say. Models that cannot turn it off still think, at the lowest effort |
 | `Z_AI_VISION_MCP_URL` | Remote Z.AI vision MCP server, used instead of starting `@z_ai/mcp-server` with `npx` |
 
 No process Rusta starts sees the key variables above. The same holds for

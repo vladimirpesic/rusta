@@ -48,8 +48,8 @@ pub struct DeepseekChatProvider {
 
 impl DeepseekChatProvider {
     /// The output DeepSeek keeps free of the conversation: 256K (262,144)
-    /// tokens. Its Claude Code guide compacts at 786,432 tokens of the 1M
-    /// window, and its own harness caps output at 256K by default.
+    /// tokens, so a conversation compacts at 786,432 tokens of the 1M
+    /// window.
     pub const OUTPUT_RESERVATION: u32 = 262_144;
 
     pub fn new(

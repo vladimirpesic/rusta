@@ -46,9 +46,9 @@ impl DeepseekModelInfo {
     /// What Rusta knows about `model` without the live catalogue: the two
     /// models as DeepSeek's `GET /models` lists them, and the legacy
     /// `deepseek-v4-flash*` names, which DeepSeek still resolves to Flash.
-    /// Any other id is taken as text-only, as DeepSeek's own harness takes a
-    /// model that declares no image input, with the window, output ceiling
-    /// and effort ladder every listed model has.
+    /// Any other id is taken as text-only, since it declares no image input,
+    /// with the window, output ceiling and effort ladder every listed model
+    /// has.
     #[must_use]
     pub fn builtin(model: &str) -> Self {
         let lower = model.to_lowercase();

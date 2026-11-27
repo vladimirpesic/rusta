@@ -1,7 +1,5 @@
 //! MCP argument remapping and fuzzy tool-name resolution.
 //!
-//! Mirrors `glm-acp-agent/src/tools/mcp-arg-remap.ts`.
-//!
 //! Tool naming convention: MCP tools are exposed to the agent as
 //! `mcp__<server_name>__<tool_name>`. The builtin tool `web_search` may map to
 //! an MCP server such as `zai_web_search`; `resolve_tool_name` uses keyword

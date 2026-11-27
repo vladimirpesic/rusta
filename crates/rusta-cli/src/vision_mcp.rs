@@ -1,8 +1,8 @@
 //! MCP-based vision fallback for non-vision GLM models.
 //!
-//! Mirrors `glm-acp-agent/src/tools/vision-mcp-client.ts`: spawns a Z.AI
-//! vision MCP server and delegates image description to its `analyze_image`.
-//! Its `analyze_video` also serves models that read images but not video.
+//! Spawns Z.AI's vision MCP server and delegates image description to its
+//! `analyze_image`. Its `analyze_video` also serves models that read images
+//! but not video.
 
 use std::io::Write;
 
@@ -29,7 +29,7 @@ const NPX_COLD_START_TIMEOUT_MS: u64 = 120_000;
 /// describes it, which is slower than a typical tool round-trip.
 const VISION_TOOL_TIMEOUT_MS: u64 = 120_000;
 
-/// What the vision server is asked about an image (glm-acp-agent's prompt).
+/// What the vision server is asked about an image.
 const DESCRIBE_PROMPT: &str = "Describe this image in detail, including any text, code, UI elements, or other visible \
      content.";
 

@@ -112,7 +112,7 @@ impl GlmChatProvider {
             .with_reasoning_details_echo(false);
         // Only send a language hint; do not emit Z.AI telemetry headers.
         let _ = inner.set_header("Accept-Language", "en-US,en");
-        let thinking_override = std::env::var("ACP_GLM_THINKING")
+        let thinking_override = std::env::var("RUSTA_GLM_THINKING")
             .ok()
             .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes" | "on"));
         Ok(Self {
@@ -291,7 +291,7 @@ impl GlmChatProvider {
     ) -> Value {
         let mut extra = json!({});
 
-        // ACP_GLM_THINKING env override takes precedence over the model heuristic.
+        // RUSTA_GLM_THINKING takes precedence over the model heuristic.
         let requested_thinking = match thinking_override {
             Some(enabled) => enabled,
             None => {
@@ -762,7 +762,7 @@ mod tests {
         assert!(extra.get("reasoning_effort").is_none());
     }
 
-    /// The ACP thinking-off override suppresses effort the same way.
+    /// The thinking-off override suppresses effort the same way.
     #[test]
     fn thinking_override_off_suppresses_reasoning_effort() {
         let options = GenerateOptions {
