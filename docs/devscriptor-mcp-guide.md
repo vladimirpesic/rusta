@@ -573,6 +573,7 @@ Verified signatures (`*` = required):
 | `semantic_search` | `query*`, `entity_type`, `limit` |
 | `get_entity_details` | `entity_type*`, `name*`, `file_path` |
 | `get_relationships` | `entity_name*`, `entity_type`, `file_path`, `relationship_type` |
+| `get_change_impact` | `base`, `path`, `depth`, `limit` |
 | `search_context` | `query*`, `top_k`, `search_type`, `note_type`, `status`, `min_priority`, `max_content_length` |
 | `get_related_context` | `entity_type*`, `entity_name`, `file_path`, `max_content_length` |
 | `add_context_note` | `note_type*`, `title*`, `content*`, `summary`, `tags`, `priority`, `author`, `related_entities`, `related_concepts` |
@@ -584,7 +585,7 @@ Verified signatures (`*` = required):
 | `get_references` | `name`, `entity_type`, `file_path`, `line`, `character` †, `include_declaration` |
 | `rename_symbol` | `name`, `entity_type`, `file_path`, `line`, `character` †, `new_name*` |
 | `get_incoming_calls`, `get_outgoing_calls`, `get_subtypes`, `get_supertypes` | `item`, or the symbol as for `get_hover` † |
-| `get_diagnostics` | `file_path*` |
+| `get_diagnostics` | `file_path*`, `severity`, `wait_ms` |
 | `start_server` | `language_id*`, `project` |
 | `lsp_arch_detect` | `project_path` |
 | `lsp_arch_setup` | `project_path`, `auto_install`, `servers_to_install` |

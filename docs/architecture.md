@@ -57,15 +57,23 @@ A prompt starts a turn, and a turn is a loop of model steps:
    resource accesses do not conflict (two reads of one file, or edits of
    different files) run concurrently, and results keep the order of the calls.
    Identical calls in one step run once. Every result is bounded before it
-   enters the context.
+   enters the context. Where Devscriptor is connected, each file `write_file`
+   and `edit_file` changed is checked by its language server, and the errors
+   ride the call's result (see [Tools](tools.md#files)).
 5. The loop continues until the model answers without calling a tool, or a
-   [stop condition](agents.md#stopped-turns) hands the work back.
+   [stop condition](agents.md#stopped-turns) hands the work back. A language
+   server's check still running then is waited for, 15 seconds at most, and
+   errors it finds keep the turn going.
 
 Between steps the loop adds what the model should know: steered input from the
 TUI, a reminder for a todo list that fell behind, instruction files under
-directories the tools touched, announcements of loadable tools, the files it
-read that changed since (see [Write safety](permissions.md#write-safety)), and
-the completion of background tasks.
+directories the tools touched, announcements of loadable tools, changes to the
+files it read or wrote that it did not make (see
+[Write safety](permissions.md#write-safety)), the language server's answers for
+files it changed that came after their results, and the completion of
+background tasks. Each reply's token count teaches Rusta how the model counts
+(see [Context management](#context-management)), and the session's
+[usage](usage.md#usage-and-cost) is recorded.
 
 ## The system prompt
 

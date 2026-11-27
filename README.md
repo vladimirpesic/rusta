@@ -15,15 +15,25 @@ A lean, native Rust coding agent for the terminal, built for **Kimi**,
 - **Three front-ends:** headless runs for scripts and CI (with a JSON event
   stream), an interactive REPL, and an optional terminal UI.
 - **Agentic tooling:** file, shell, web and media tools; background tasks;
-  sub-agents and agent swarms; scheduled prompts; goals; skills; plan mode.
+  sub-agents and agent swarms, each optionally in a git worktree of its own and
+  held to a check command; scheduled prompts; goals; skills; plan mode.
+- **Code intelligence that watches the edits:** with Devscriptor, the language
+  server's errors in each file the agent writes come with the write's result,
+  and a turn does not end on a file it broke unawares.
 - **MCP client** for stdio and HTTP servers, with OAuth and progressive tool
   disclosure: a large server's most-used tools are at hand from the start, and
   the rest load on demand instead of flooding the tool table.
 - **Safety by default:** permission modes and rules, guards for dangerous
   commands and secrets, API keys withheld from the environment of every command
   and server it starts, a write guard, and workspace trust for project config.
+  Commands that can only read the workspace run without asking.
 - **Durable sessions:** JSONL records, resume, fork, export, and automatic
-  context compaction.
+  context compaction, measured as the model counts tokens, that brings back the
+  files the agent was working with. The agent is told of the changes made to
+  its files behind its back.
+- **Usage and cost:** `/usage` shows the session's tokens, what the prompt cache
+  served, and the cost at the provider's published prices; a cache that keeps
+  missing is reported.
 - A **single self-contained binary** for Linux, macOS and Windows.
 
 ## Install

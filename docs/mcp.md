@@ -205,3 +205,10 @@ and in 19 with the main tools preloaded and the reminder. The guidance comes in
 a full form and a read-only form, for sub-agents that get only its read-only
 tools. [devscriptor-mcp-guide.md](devscriptor-mcp-guide.md) explains how to get
 the most out of Devscriptor from any MCP-capable agent.
+
+Each file `write_file` or `edit_file` changes is checked with Devscriptor's
+`get_diagnostics`, and its errors come with the call's result (see
+[Tools](tools.md#files)); `diagnostics_after_edit = false` turns that off. With
+Devscriptor 1.1.0 or newer, a Rust file's check includes what rust-analyzer's
+`cargo check` finds, type errors among them; an older Devscriptor reports the
+language server's own analysis alone.
